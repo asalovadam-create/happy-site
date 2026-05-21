@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="Happy Toys — Premium wholesale toy catalog for store owners">
+  <meta name="theme-color" content="#f0f0f0">
+  <meta property="og:title" content="Happy Toys — Wholesale Catalog">
+  <meta property="og:description" content="Оптовый каталог игрушек нового поколения">
+  <title>Happy Toys — Wholesale</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Toast layer ──────────────────────────────────────── -->
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- ── App shell ────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- ── Sidebar ────────────────────────────────────────── -->
+  <nav class="sidebar" id="sidebar">
+
+    <!-- Logo -->
+    <div class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+          <path d="M2 17l10 5 10-5"/>
+          <path d="M2 12l10 5 10-5"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-name">Happy Toys</div>
+        <div class="logo-sub">Wholesale</div>
+      </div>
+    </div>
+
+    <!-- Search -->
+    <div class="sidebar-search">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </svg>
+      <input
+        id="sideSearch"
+        type="text"
+        placeholder="Поиск по каталогу..."
+        autocomplete="off"
+        oninput="onSearch(this.value)"
+        onkeydown="if(event.key==='Escape')closeSearch()"
+      >
+    </div>
+
+    <!-- Search dropdown -->
+    <div class="search-dropdown" id="searchDrop"></div>
+
+    <!-- Navigation -->
+    <div class="nav-section">Разделы</div>
+
+    <button id="nav-catalog" class="nav-link active" onclick="navigate('catalog')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <rect x="3" y="3" width="7" height="7" rx="1"/>
+        <rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/>
+        <rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+      Каталог
+    </button>
+
+    <button id="nav-admin" class="nav-link" onclick="navigate('admin')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      Администрирование
+    </button>
+
+    <!-- Categories -->
+    <div class="nav-section">Категории</div>
+    <div class="sidebar-cats" id="catNav">
+      <!-- populated by JS -->
+    </div>
+
+  </nav>
+
+  <!-- ── Main ───────────────────────────────────────────── -->
+  <div class="main">
+
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="topbar-title" id="topTitle">Каталог товаров</div>
+
+      <!-- Stock filters -->
+      <div class="topbar-filter">
+        <button id="fAll"    class="filter-btn active" onclick="setStock(null)">Все</button>
+        <button id="f_ok"    class="filter-btn"        onclick="setStock('ok')">В наличии</button>
+        <button id="f_low"   class="filter-btn"        onclick="setStock('low')">Мало</button>
+      </div>
+
+      <!-- Sort -->
+      <select class="sort-select" onchange="setSort(this.value)">
+        <option value="default">Сортировка</option>
+        <option value="price-asc">Цена ↑</option>
+        <option value="price-desc">Цена ↓</option>
+        <option value="name">По названию</option>
+        <option value="stock">По остатку</option>
+      </select>
+
+      <!-- Cart toggle -->
+      <button class="cart-toggle-btn" onclick="toggleCart()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <path d="M16 10a4 4 0 01-8 0"/>
+        </svg>
+        Корзина
+        <span class="badge" id="cartBadge">0</span>
+      </button>
+    </header>
+
+    <!-- Page content -->
+    <main class="content" id="mainContent">
+      <!-- populated by JS -->
+    </main>
+
+  </div>
+
+  <!-- ── Cart panel ──────────────────────────────────────── -->
+  <aside class="cart-panel" id="cartPanel">
+
+    <div class="cart-head">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round">
+        <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+        <line x1="3" y1="6" x2="21" y2="6"/>
+        <path d="M16 10a4 4 0 01-8 0"/>
+      </svg>
+      <h2>Корзина</h2>
+      <span class="cart-head-count" id="cartHeadCount">0</span>
+      <button class="cart-close" onclick="toggleCart()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="cart-list" id="cartList">
+      <div class="cart-empty-msg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
+          <line x1="3" y1="6" x2="21" y2="6"/>
+          <path d="M16 10a4 4 0 01-8 0"/>
+        </svg>
+        <p>Корзина пуста.<br>Добавьте товары из каталога.</p>
+      </div>
+    </div>
+
+    <div class="cart-foot">
+      <div class="cart-total-row">
+        <div>
+          <div class="cart-total-label">Итого</div>
+          <div class="cart-total-sub" id="cartTotalQty">0 шт</div>
+        </div>
+        <div class="cart-total-val" id="cartTotalVal">€0.00</div>
+      </div>
+      <textarea
+        class="cart-comment"
+        id="cartComment"
+        rows="2"
+        placeholder="Комментарий к заказу..."
+      ></textarea>
+      <button class="share-btn" onclick="openShareModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <circle cx="18" cy="5" r="3"/>
+          <circle cx="6" cy="12" r="3"/>
+          <circle cx="18" cy="19" r="3"/>
+          <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+          <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+        </svg>
+        Поделиться корзиной
+      </button>
+    </div>
+
+  </aside>
+
+</div><!-- #app -->
+
+<!-- ── Product modal ────────────────────────────────────── -->
+<div class="overlay" id="productOverlay">
+  <div class="modal">
+    <div class="modal-img" id="modalImg"></div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- ── Share modal ───────────────────────────────────────── -->
+<div class="overlay" id="shareOverlay">
+  <div class="modal share-modal" onclick="event.stopPropagation()">
+
+    <div class="share-modal-head">
+      <div>
+        <h2>Поделиться корзиной</h2>
+        <p>Отправьте заказ представителю Happy Toys</p>
+      </div>
+      <button class="modal-close" style="position:static;" onclick="closeShareModal()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="share-modal-body">
+
+      <!-- Summary -->
+      <div class="share-summary" id="shareSummary"></div>
+
+      <!-- Link -->
+      <div class="share-link">
+        <span id="shareUrlSpan">Генерация ссылки...</span>
+        <button class="copy-btn" onclick="copyShareLink()">Копировать</button>
+      </div>
+
+      <!-- Actions -->
+      <div class="share-actions">
+        <button class="share-action wa" onclick="shareWhatsApp()">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+            <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+          </svg>
+          Отправить в WhatsApp
+        </button>
+        <button class="share-action" onclick="exportPDF()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="9" y1="13" x2="15" y2="13"/>
+            <line x1="9" y1="17" x2="15" y2="17"/>
+          </svg>
+          Экспорт PDF
+        </button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── Scripts ───────────────────────────────────────────── -->
+<script src="/static/app.js"></script>
+
+</body>
+</html>
