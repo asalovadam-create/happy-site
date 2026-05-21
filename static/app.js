@@ -1,90 +1,78 @@
 /* ============================================================
-   Happy Toys — app.js
-   All frontend logic: state · API · render · cart · modals
+   Happy Toys — app.js v2
    ============================================================ */
-
 'use strict';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 const State = {
-  page:       'catalog',   // catalog | admin
+  page:       'home',
   products:   [],
   total:      0,
   pageNum:    1,
   perPage:    40,
   category:   null,
-  brand:      null,
   search:     '',
   stock:      null,
   sort:       'default',
   loading:    false,
-  cart:       {},          // { id: { product, qty } }
-  cartOpen:   true,
+  cart:       {},
+  cartOpen:   false,
+  user:       null,   // { role, token, customer? }
   adminToken: null,
 };
 
 // ── API ───────────────────────────────────────────────────────────────────────
 const API = {
-  base: '',   // same-origin; change to http://localhost:8000 for dev
+  base: '',
 
-  async get(path) {
-    const r = await fetch(this.base + path);
+  async req(method, path, body, isForm = false) {
+    const headers = {};
+    if (!isForm) headers['Content-Type'] = 'application/json';
+    const token = State.user?.token;
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const opts = { method, headers };
+    if (body) opts.body = isForm ? body : JSON.stringify(body);
+
+    const r = await fetch(this.base + path, opts);
     if (!r.ok) throw new Error(await r.text());
     return r.json();
   },
 
-  async post(path, body) {
-    const headers = { 'Content-Type': 'application/json' };
-    if (State.adminToken) headers['Authorization'] = `Bearer ${State.adminToken}`;
-    const r = await fetch(this.base + path, { method: 'POST', headers, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
+  get(path)         { return this.req('GET', path); },
+  post(path, body)  { return this.req('POST', path, body); },
 
-  async products(params = {}) {
+  products(params = {}) {
     const q = new URLSearchParams({ page: State.pageNum, per_page: State.perPage });
     if (params.category) q.set('category', params.category);
-    if (params.brand)    q.set('brand',    params.brand);
     if (params.search)   q.set('search',   params.search);
     if (params.stock)    q.set('stock',    params.stock);
     if (params.sort && params.sort !== 'default') q.set('sort', params.sort);
     return this.get(`/api/products?${q}`);
   },
 
-  async search(q) {
-    return this.get(`/api/products/search?q=${encodeURIComponent(q)}&limit=6`);
-  },
+  search(q)       { return this.get(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`); },
+  product(id)     { return this.get(`/api/products/${id}`); },
+  categories()    { return this.get('/api/categories'); },
+  shareCart(p)    { return this.post('/api/cart/share', p); },
+  login(u, p)     { return this.post('/api/auth/login', { username: u, password: p }); },
+  register(body)  { return this.post('/api/auth/register', body); },
+  me()            { return this.get('/api/auth/me'); },
+  adminStats()    { return this.get('/api/admin/stats'); },
+  adminCarts()    { return this.get('/api/admin/carts'); },
+  adminCustomers(){ return this.get('/api/admin/customers'); },
 
-  async product(id) { return this.get(`/api/products/${id}`); },
-
-  async categories() { return this.get('/api/categories'); },
-
-  async shareCart(payload) { return this.post('/api/cart/share', payload); },
-
-  async login(u, p) {
-    return this.post('/api/auth/login', { username: u, password: p });
-  },
-
-  async adminStats() {
-    const r = await fetch(this.base + '/api/admin/stats', {
-      headers: { 'Authorization': `Bearer ${State.adminToken}` }
-    });
-    return r.json();
-  },
-
-  async adminCarts() {
-    const r = await fetch(this.base + '/api/admin/carts', {
-      headers: { 'Authorization': `Bearer ${State.adminToken}` }
-    });
-    return r.json();
+  async uploadImage(file) {
+    const form = new FormData();
+    form.append('file', file);
+    return this.req('POST', '/api/upload-image', form, true);
   },
 };
 
-// ── DOM refs ──────────────────────────────────────────────────────────────────
+// ── DOM helpers ───────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function eur(n) { return '€' + parseFloat(n).toFixed(2); }
+function rub(n) { return '₽' + parseFloat(n).toFixed(2); }
 
 function stockLabel(s) {
   return s === 'ok' ? 'В наличии' : s === 'low' ? 'Мало' : 'Нет';
@@ -92,8 +80,13 @@ function stockLabel(s) {
 
 function escHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])
   );
+}
+
+function initials(c) {
+  if (!c) return '?';
+  return ((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'');
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -101,69 +94,149 @@ function toast(msg, type = 'ok') {
   const wrap = $('toastWrap');
   const el = document.createElement('div');
   el.className = `toast ${type}`;
-  el.innerHTML = `
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-      ${type === 'ok'
-        ? '<polyline points="20 6 9 17 4 12"/>'
-        : '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'}
-    </svg>
-    <span>${escHtml(msg)}</span>`;
+  el.textContent = msg;
   wrap.appendChild(el);
   requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
   setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, 3000);
 }
 
-// ── Products render ───────────────────────────────────────────────────────────
-function renderProductCard(p) {
-  const inCart = !!State.cart[p.id];
-  const disabled = p.stock === 'out' ? 'disabled' : '';
-  return `
-  <div class="product-card" data-id="${p.id}">
-    <div class="card-img" onclick="openProduct(${p.id})">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async">
-      <span class="card-brand">${escHtml(p.brand)}</span>
-      <span class="card-stock stock-${p.stock}">${stockLabel(p.stock)}</span>
-    </div>
-    <div class="card-body" onclick="openProduct(${p.id})">
-      <div class="card-name">${escHtml(p.name)}</div>
-      <div class="card-sku">SKU: ${escHtml(p.sku)}</div>
-      <div class="card-price">${eur(p.price)} <span class="card-price-unit">/ шт</span></div>
-    </div>
-    <div class="card-footer">
-      <div class="qty">
-        <button class="qty-btn" onclick="adjustQty(${p.id}, -1)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
-        <input class="qty-input" id="qty-${p.id}" type="number" value="1" min="1" max="999">
-        <button class="qty-btn" onclick="adjustQty(${p.id}, 1)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
+// ── Cart ──────────────────────────────────────────────────────────────────────
+function addToCart(id, qty = 1) {
+  const p = State.products.find(x => x.id === id) || State._lastProduct;
+  if (!p || p.stock === 'out') return;
+  if (State.cart[id]) {
+    State.cart[id].qty += qty;
+  } else {
+    State.cart[id] = { product: p, qty };
+  }
+  renderCart();
+  toast(`${p.name.slice(0,30)} добавлен в корзину`);
+  updateCartBadge();
+}
+
+function removeFromCart(id) {
+  delete State.cart[id];
+  renderCart();
+  updateCartBadge();
+}
+
+function adjustQty(id, delta) {
+  if (!State.cart[id]) return;
+  State.cart[id].qty = Math.max(1, State.cart[id].qty + delta);
+  renderCart();
+}
+
+function updateCartBadge() {
+  const count = Object.values(State.cart).reduce((s, i) => s + i.qty, 0);
+  const badge = $('cartBadge');
+  if (badge) {
+    badge.textContent = count;
+    badge.style.display = count > 0 ? 'flex' : 'none';
+  }
+  const headCount = $('cartHeadCount');
+  if (headCount) headCount.textContent = count;
+}
+
+function toggleCart() {
+  State.cartOpen = !State.cartOpen;
+  $('cartDrawer').classList.toggle('open', State.cartOpen);
+  $('cartBackdrop').classList.toggle('show', State.cartOpen);
+}
+
+function renderCart() {
+  const list = $('cartList');
+  const foot = $('cartFoot');
+  if (!list) return;
+
+  const items = Object.values(State.cart);
+  if (!items.length) {
+    list.innerHTML = `<div class="cart-empty">
+      <svg viewBox="0 0 64 64" fill="none"><path d="M8 16h48l-6 28H14L8 16z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><circle cx="22" cy="54" r="3" fill="currentColor"/><circle cx="42" cy="54" r="3" fill="currentColor"/><path d="M2 8h8l4 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+      <p>Корзина пуста</p></div>`;
+    if (foot) foot.style.display = 'none';
+    return;
+  }
+
+  if (foot) foot.style.display = 'block';
+
+  let html = '';
+  let total = 0;
+  let totalQty = 0;
+
+  items.forEach(({ product: p, qty }) => {
+    const sub = p.price * qty;
+    total += sub;
+    totalQty += qty;
+    html += `
+    <div class="cart-item">
+      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
+      <div class="cart-item-info">
+        <div class="cart-item-name">${escHtml(p.name)}</div>
+        <div class="cart-item-sku">SKU: ${escHtml(p.sku)}</div>
+        <div class="qty-row" style="margin-top:6px">
+          <button onclick="adjustQty(${p.id},-1)">−</button>
+          <input type="number" value="${qty}" min="1"
+            onchange="State.cart[${p.id}].qty=Math.max(1,parseInt(this.value)||1);renderCart();updateCartBadge()">
+          <button onclick="adjustQty(${p.id},1)">+</button>
+        </div>
+        <div class="cart-item-price">${rub(sub)}</div>
       </div>
-      <button class="add-btn ${inCart ? 'in-cart' : ''}" id="addbtn-${p.id}"
-        onclick="addToCart(${p.id})" ${disabled}>
-        ${inCart ? 'В корзине' : 'Добавить'}
+      <button class="cart-item-remove" onclick="removeFromCart(${p.id})">✕</button>
+    </div>`;
+  });
+
+  list.innerHTML = html;
+
+  const totalVal = $('cartTotalVal');
+  const totalQtyEl = $('cartTotalQty');
+  if (totalVal) totalVal.textContent = rub(total);
+  if (totalQtyEl) totalQtyEl.textContent = `${totalQty} шт`;
+}
+
+// ── Product Card ──────────────────────────────────────────────────────────────
+function renderProductCard(p) {
+  const tagMap = { 'Новинка': 'new', 'Хит': 'hit', 'Акция': 'sale', 'Эксклюзив': 'excl' };
+  const tagClass = { 'Новинка': 'tag-new', 'Хит': 'tag-hit', 'Акция': 'tag-sale', 'Эксклюзив': 'tag-excl' };
+
+  const tags = (p.tags || []).map(t => `<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
+  const disabled = p.stock === 'out' ? 'disabled' : '';
+  const inCart = !!State.cart[p.id];
+
+  return `
+  <div class="product-card" onclick="openProduct(${p.id})">
+    <div class="card-img-wrap">
+      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async">
+      ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+      <span class="stock-badge stock-${p.stock}">${stockLabel(p.stock)}</span>
+    </div>
+    <div class="card-body">
+      <div class="card-name">${escHtml(p.name)}</div>
+      <div class="card-brand">${escHtml(p.brand)}</div>
+    </div>
+    <div class="card-price-row">
+      <div class="card-price">${rub(p.price)}<small>/шт</small></div>
+      <button class="card-add ${inCart ? 'in-cart' : ''}" ${disabled}
+        onclick="event.stopPropagation();addToCart(${p.id})">
+        ${inCart ? '✓' : '+'}
       </button>
     </div>
   </div>`;
 }
 
 function renderSkeletons(n = 8) {
-  return Array(n).fill(0).map(() => `
-    <div class="skeleton skel-card" style="border-radius:12px;aspect-ratio:1;"></div>`).join('');
+  return Array(n).fill(0).map(() => `<div class="skeleton skel-card"></div>`).join('');
 }
 
-// ── Load & render catalog ─────────────────────────────────────────────────────
+// ── Load products ─────────────────────────────────────────────────────────────
 async function loadProducts() {
   if (State.loading) return;
   State.loading = true;
-
   const grid = $('productsGrid');
   if (grid) grid.innerHTML = renderSkeletons(8);
 
   try {
     const data = await API.products({
       category: State.category,
-      brand:    State.brand,
       search:   State.search,
       stock:    State.stock,
       sort:     State.sort,
@@ -175,515 +248,634 @@ async function loadProducts() {
       grid.innerHTML = State.products.length
         ? State.products.map(renderProductCard).join('')
         : `<div class="empty-state">
-             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-               <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
-             </svg>
-             <h3>Товары не найдены</h3>
-             <p>Попробуйте изменить фильтры или поиск</p>
-           </div>`;
-      const countEl = $('productCount');
-      if (countEl) countEl.textContent = `${data.total} позиций`;
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+             <h3>Ничего не найдено</h3><p>Попробуйте изменить фильтры</p></div>`;
     }
+
+    const countEl = $('productCount');
+    if (countEl) countEl.textContent = `${data.total} позиций`;
+
+    renderPagination(data.page, data.pages);
   } catch (e) {
     console.error(e);
-    if (grid) grid.innerHTML = `<div class="empty-state"><h3>Ошибка загрузки</h3><p>Попробуйте обновить страницу</p></div>`;
+    if (grid) grid.innerHTML = `<div class="empty-state"><h3>Ошибка загрузки</h3></div>`;
   } finally {
     State.loading = false;
   }
 }
 
-// ── Catalog page ──────────────────────────────────────────────────────────────
-function renderCatalog() {
-  $('mainContent').innerHTML = `
-    <div class="page-enter">
-      <div class="section-head">
-        <h2>Каталог</h2>
-        <span id="productCount">—</span>
-        <span class="reset-link" onclick="clearFilters()">Сбросить фильтры</span>
-      </div>
-      <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
-    </div>`;
+function renderPagination(page, pages) {
+  const el = $('pagination');
+  if (!el || pages <= 1) { if (el) el.innerHTML = ''; return; }
+
+  let html = '';
+  for (let i = 1; i <= Math.min(pages, 10); i++) {
+    html += `<button class="page-btn ${i === page ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
+  }
+  el.innerHTML = html;
+}
+
+function goPage(n) {
+  State.pageNum = n;
+  loadProducts();
+  $('mainContent').scrollIntoView({ behavior: 'smooth' });
+}
+
+// ── Filters ───────────────────────────────────────────────────────────────────
+function setCategory(cat) {
+  State.category = cat;
+  State.pageNum  = 1;
+  document.querySelectorAll('.cat-pill').forEach(b => b.classList.toggle('active', b.dataset.cat === (cat || '')));
   loadProducts();
 }
 
-// ── Category filter pills ─────────────────────────────────────────────────────
-async function loadCategories() {
-  try {
-    const cats = await API.categories();
-    const nav = $('catNav');
-    if (!nav) return;
-    nav.innerHTML = cats.map(c => `
-      <button class="nav-link ${State.category === c.name ? 'active' : ''}"
-        onclick="setCategory('${escHtml(c.name)}')">
-        ${catIcon(c.name)}
-        ${escHtml(c.name)}
-        <span class="nav-count">${c.count}</span>
-      </button>`).join('');
-  } catch (e) { console.error(e); }
+function setStock(s) {
+  State.stock = s;
+  State.pageNum = 1;
+  document.querySelectorAll('.filter-chip').forEach(b => b.classList.toggle('active', b.dataset.stock === (s || '')));
+  loadProducts();
 }
 
-function catIcon(name) {
-  const icons = {
-    'Куклы': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="12" cy="7" r="4"/><path d="M12 11c-4 0-7 2-7 5v1h14v-1c0-3-3-5-7-5z"/></svg>',
-    'Конструкторы': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><path d="M13 17h8M17 13v8"/></svg>',
-    'Машинки': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M5 17H3a2 2 0 01-2-2V9a2 2 0 012-2h12l3 5h1a2 2 0 012 2v1h-2"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
-    'Настольные игры': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>',
-    'Мягкие игрушки': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/></svg>',
-  };
-  return icons[name] || '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><circle cx="12" cy="12" r="10"/></svg>';
-}
-
-function setCategory(name) {
-  State.category = (State.category === name) ? null : name;
-  State.pageNum  = 1;
-  loadCategories();
+function setSort(v) {
+  State.sort = v;
+  State.pageNum = 1;
   loadProducts();
 }
 
 function clearFilters() {
   State.category = null;
-  State.brand    = null;
-  State.search   = '';
   State.stock    = null;
   State.sort     = 'default';
+  State.search   = '';
   State.pageNum  = 1;
-  const si = $('sideSearch');
+  const si = $('topSearch');
   if (si) si.value = '';
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  $('fAll').classList.add('active');
-  loadCategories();
   loadProducts();
 }
 
-// ── Stock filter ──────────────────────────────────────────────────────────────
-function setStock(val) {
-  State.stock   = val || null;
-  State.pageNum = 1;
-  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-  const id = val ? `f_${val}` : 'fAll';
-  if ($(id)) $(id).classList.add('active');
-  loadProducts();
-}
+// ── Home page ─────────────────────────────────────────────────────────────────
+async function renderHome() {
+  let cats = [];
+  try { cats = await API.categories(); } catch(e){}
 
-// ── Sort ──────────────────────────────────────────────────────────────────────
-function setSort(val) {
-  State.sort    = val;
-  State.pageNum = 1;
-  loadProducts();
-}
+  const catPills = cats.map(c =>
+    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');setCategory('${escHtml(c.name)}')">${escHtml(c.name)} <small>${c.count}</small></button>`
+  ).join('');
 
-// ── Cart ──────────────────────────────────────────────────────────────────────
-function addToCart(id) {
-  const p = State.products.find(x => x.id === id);
-  if (!p) return;
-  const qtyEl = $(`qty-${id}`);
-  const qty = Math.max(1, parseInt(qtyEl?.value || 1));
-  State.cart[id] = { product: p, qty };
-  updateCartUI();
-  const btn = $(`addbtn-${id}`);
-  if (btn) { btn.textContent = 'В корзине'; btn.classList.add('in-cart'); }
-  toast(`${p.name} — добавлено`);
-}
-
-function removeFromCart(id) {
-  delete State.cart[id];
-  updateCartUI();
-  const btn = $(`addbtn-${id}`);
-  if (btn) { btn.textContent = 'Добавить'; btn.classList.remove('in-cart'); }
-}
-
-function changeCartQty(id, delta) {
-  if (!State.cart[id]) return;
-  const newQty = State.cart[id].qty + delta;
-  if (newQty <= 0) { removeFromCart(id); return; }
-  State.cart[id].qty = newQty;
-  updateCartUI();
-}
-
-function updateCartUI() {
-  const items  = Object.values(State.cart);
-  const count  = items.length;
-  const totalE = items.reduce((s, i) => s + parseFloat(i.product.price) * i.qty, 0);
-  const totalQ = items.reduce((s, i) => s + i.qty, 0);
-
-  // badge
-  const badge = $('cartBadge');
-  if (badge) badge.textContent = count;
-  const headCount = $('cartHeadCount');
-  if (headCount) headCount.textContent = count;
-
-  const tv = $('cartTotalVal');
-  const tq = $('cartTotalQty');
-  if (tv) tv.textContent = eur(totalE);
-  if (tq) tq.textContent = `${totalQ} шт`;
-
-  const list = $('cartList');
-  if (!list) return;
-
-  if (!count) {
-    list.innerHTML = `<div class="cart-empty-msg">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-        <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/>
-        <line x1="3" y1="6" x2="21" y2="6"/>
-        <path d="M16 10a4 4 0 01-8 0"/>
-      </svg>
-      <p>Корзина пуста.<br>Добавьте товары из каталога.</p>
-    </div>`;
-    return;
-  }
-
-  list.innerHTML = items.map(({ product: p, qty }) => `
-    <div class="cart-item">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-      <div class="cart-item-info">
-        <div class="cart-item-name">${escHtml(p.name)}</div>
-        <div class="cart-item-sku">${escHtml(p.sku)}</div>
-        <div class="cart-item-row">
-          <span class="cart-item-sub">${eur(parseFloat(p.price) * qty)}</span>
-          <div class="cart-item-qty">
-            <button onclick="changeCartQty(${p.id}, -1)">−</button>
-            <span>${qty}</span>
-            <button onclick="changeCartQty(${p.id}, 1)">+</button>
-          </div>
-        </div>
+  $('mainContent').innerHTML = `
+    <div class="home-hero">
+      <h1>Happy Toys<br>Оптовый каталог</h1>
+      <p>Лучшие игрушки для вашего магазина</p>
+      <div class="hero-stats">
+        <div class="hero-stat"><strong>200+</strong><span>Товаров</span></div>
+        <div class="hero-stat"><strong>10</strong><span>Брендов</span></div>
+        <div class="hero-stat"><strong>8</strong><span>Категорий</span></div>
       </div>
-      <button class="cart-item-del" onclick="removeFromCart(${p.id})">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>`).join('');
+    </div>
+
+    <div class="cat-scroll">
+      <button class="cat-pill active" data-cat="" onclick="navigate('catalog');setCategory(null)">Все товары</button>
+      ${catPills}
+    </div>
+
+    <div class="section-title">
+      Популярные товары
+      <a onclick="navigate('catalog')">Все →</a>
+    </div>
+
+    <div class="filters-row">
+      <button class="filter-chip active" data-stock="" onclick="setStock(null)">Все</button>
+      <button class="filter-chip" data-stock="ok" onclick="setStock('ok')">В наличии</button>
+      <button class="filter-chip" data-stock="low" onclick="setStock('low')">Заканчиваются</button>
+      <select class="sort-chip" onchange="setSort(this.value)">
+        <option value="default">Сортировка</option>
+        <option value="price-asc">Цена ↑</option>
+        <option value="price-desc">Цена ↓</option>
+        <option value="name">По названию</option>
+      </select>
+    </div>
+
+    <div class="results-info">
+      <span id="productCount">Загрузка...</span>
+      <span class="reset-link" onclick="clearFilters()">Сбросить</span>
+    </div>
+
+    <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
+    <div id="pagination" class="pagination"></div>
+  `;
+
+  loadProducts();
 }
 
-function toggleCart() {
-  State.cartOpen = !State.cartOpen;
-  const panel = $('cartPanel');
-  if (panel) panel.classList.toggle('hidden', !State.cartOpen);
-}
+// ── Catalog page ──────────────────────────────────────────────────────────────
+async function renderCatalog() {
+  let cats = [];
+  try { cats = await API.categories(); } catch(e){}
 
-// ── Qty controls on card ──────────────────────────────────────────────────────
-function adjustQty(id, d) {
-  const inp = $(`qty-${id}`);
-  if (!inp) return;
-  inp.value = Math.max(1, parseInt(inp.value || 1) + d);
+  const catPills = [
+    `<button class="cat-pill ${!State.category ? 'active' : ''}" data-cat="" onclick="setCategory(null)">Все</button>`,
+    ...cats.map(c =>
+      `<button class="cat-pill ${State.category===c.name ? 'active' : ''}" data-cat="${escHtml(c.name)}" onclick="setCategory('${escHtml(c.name)}')">${escHtml(c.name)}</button>`
+    )
+  ].join('');
+
+  $('mainContent').innerHTML = `
+    <div class="cat-scroll" style="padding-top:14px">${catPills}</div>
+
+    <div class="filters-row">
+      <button class="filter-chip active" data-stock="" onclick="setStock(null)">Все</button>
+      <button class="filter-chip" data-stock="ok" onclick="setStock('ok')">В наличии</button>
+      <button class="filter-chip" data-stock="low" onclick="setStock('low')">Мало</button>
+      <select class="sort-chip" onchange="setSort(this.value)">
+        <option value="default">Сортировка</option>
+        <option value="price-asc">Цена ↑</option>
+        <option value="price-desc">Цена ↓</option>
+        <option value="name">А-Я</option>
+      </select>
+    </div>
+
+    <div class="results-info">
+      <span id="productCount">Загрузка...</span>
+      <span class="reset-link" onclick="clearFilters()">Сбросить фильтры</span>
+    </div>
+
+    <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
+    <div id="pagination" class="pagination"></div>
+  `;
+
+  loadProducts();
 }
 
 // ── Product modal ─────────────────────────────────────────────────────────────
 async function openProduct(id) {
   const overlay = $('productOverlay');
   overlay.classList.add('open');
-  document.body.style.overflow = 'hidden';
-
-  $('modalImg').innerHTML   = `<div style="width:100%;height:100%;background:var(--bg2)"></div>`;
-  $('modalBody').innerHTML  = `<div style="padding:20px;color:var(--text3);font-size:13px;">Загрузка...</div>`;
+  $('modalInner').innerHTML = `<div style="padding:40px;text-align:center"><div class="skeleton" style="width:100%;aspect-ratio:1;border-radius:20px 20px 0 0;margin-bottom:16px"></div></div>`;
 
   try {
     const p = await API.product(id);
-    $('modalImg').innerHTML = `
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-      <button class="modal-close" onclick="closeProductModal()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>`;
+    State._lastProduct = p;
 
-    const similarHtml = p.similar && p.similar.length
-      ? `<div class="modal-similar">
-           <h4>Похожие товары</h4>
-           <div class="similar-grid">
-             ${p.similar.map(s => `
-               <div class="similar-card" onclick="openProduct(${s.id})">
-                 <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}">
-                 <div>
-                   <div class="similar-card-name">${escHtml(s.name)}</div>
-                   <div class="similar-card-price">${eur(s.price)}</div>
-                 </div>
-               </div>`).join('')}
-           </div>
-         </div>` : '';
+    const inCart = !!State.cart[id];
+    const disabled = p.stock === 'out' ? 'disabled' : '';
 
-    $('modalBody').innerHTML = `
-      <div class="modal-brand">${escHtml(p.brand)}</div>
-      <div class="modal-name">${escHtml(p.name)}</div>
-      <div class="modal-sku">SKU: ${escHtml(p.sku)} · ${escHtml(p.category)}</div>
-      <div class="modal-price">${eur(p.price)}</div>
-      <div class="modal-desc">${escHtml(p.description)}</div>
-      <div class="modal-meta">
-        <span class="meta-chip">${escHtml(p.category)}</span>
-        <span class="meta-chip">Возраст ${p.age_min}+</span>
-        <span class="meta-chip stock-${p.stock}">${stockLabel(p.stock)} (${p.stock_qty} шт)</span>
-        <span class="meta-chip">Мин. заказ: ${p.min_order} шт</span>
-        ${(p.tags || []).map(t => `<span class="meta-chip">${escHtml(t)}</span>`).join('')}
-      </div>
-      <div class="modal-add-row">
-        <div class="modal-qty">
-          <button onclick="adjustModalQty(-1)">−</button>
-          <input id="modalQtyInp" type="number" value="${State.cart[p.id]?.qty || 1}" min="1">
-          <button onclick="adjustModalQty(1)">+</button>
+    const similar = (p.similar || []).map(s => `
+      <div class="similar-card" onclick="openProduct(${s.id})">
+        <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}">
+        <div class="similar-card-info">
+          <div class="similar-card-name">${escHtml(s.name)}</div>
+          <div class="similar-card-price">${rub(s.price)}</div>
         </div>
-        <button class="modal-add" onclick="addToCartModal(${p.id})" ${p.stock === 'out' ? 'disabled style="opacity:.5;cursor:not-allowed"' : ''}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          ${State.cart[p.id] ? 'Обновить количество' : 'Добавить в корзину'}
-        </button>
+      </div>`).join('');
+
+    $('modalInner').innerHTML = `
+      <img class="product-modal-img" src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
+      <div class="product-modal-body">
+        <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
+        <div class="product-modal-name">${escHtml(p.name)}</div>
+        <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Мин. заказ: ${p.min_order} шт · Возраст: ${p.age_min}+</div>
+        <div class="product-modal-price">${rub(p.price)} <small>/ шт</small></div>
+        <div class="product-modal-desc">${escHtml(p.description)}</div>
+
+        <div class="product-modal-add">
+          <div class="qty-row">
+            <button onclick="adjustModalQty(-1)">−</button>
+            <input id="modalQty" type="number" value="1" min="1" max="999">
+            <button onclick="adjustModalQty(1)">+</button>
+          </div>
+          <button class="btn-primary" style="flex:1" ${disabled}
+            onclick="addToCart(${p.id}, parseInt($('modalQty').value)||1);closeProductModal()">
+            ${inCart ? '✓ В корзине' : 'В корзину'}
+          </button>
+        </div>
+
+        ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
       </div>
-      ${similarHtml}`;
-  } catch (e) {
-    $('modalBody').innerHTML = `<div style="padding:20px;color:var(--danger)">Ошибка загрузки</div>`;
+    `;
+  } catch(e) {
+    $('modalInner').innerHTML = `<div style="padding:40px;text-align:center;color:#999">Ошибка загрузки</div>`;
   }
 }
 
 function adjustModalQty(d) {
-  const inp = $('modalQtyInp');
-  if (inp) inp.value = Math.max(1, parseInt(inp.value || 1) + d);
-}
-
-function addToCartModal(id) {
-  const p = State.products.find(x => x.id === id) || State.cart[id]?.product;
-  const qty = parseInt($('modalQtyInp')?.value || 1);
-  if (!p) return;
-  State.cart[id] = { product: p, qty };
-  updateCartUI();
-  closeProductModal();
-  toast(`${p.name} — добавлено (${qty} шт)`);
+  const el = $('modalQty');
+  if (el) el.value = Math.max(1, (parseInt(el.value)||1) + d);
 }
 
 function closeProductModal() {
   $('productOverlay').classList.remove('open');
-  document.body.style.overflow = '';
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+function openAuth()  { $('authOverlay').classList.add('open'); }
+function closeAuth() { $('authOverlay').classList.remove('open'); }
+
+function switchTab(tab) {
+  $('formLogin').style.display    = tab === 'login'    ? 'block' : 'none';
+  $('formRegister').style.display = tab === 'register' ? 'block' : 'none';
+  $('tabLogin').classList.toggle('active',    tab === 'login');
+  $('tabRegister').classList.toggle('active', tab === 'register');
+}
+
+async function doLogin() {
+  const u = $('loginEmail')?.value.trim();
+  const p = $('loginPass')?.value;
+  if (!u || !p) return toast('Заполните все поля', 'err');
+  try {
+    const data = await API.login(u, p);
+    State.user = { token: data.token, role: data.role, customer: data.customer };
+    if (data.role === 'admin') State.adminToken = data.token;
+    closeAuth();
+    toast('Добро пожаловать!');
+    updateAuthBtn();
+    if (data.role === 'admin') $('bn-admin').style.display = 'flex';
+  } catch(e) {
+    toast('Неверные данные', 'err');
+  }
+}
+
+async function doRegister() {
+  const first = $('regFirst')?.value.trim();
+  const last  = $('regLast')?.value.trim();
+  const email = $('regEmail')?.value.trim();
+  const phone = $('regPhone')?.value.trim();
+  const addr  = $('regAddr')?.value.trim();
+  const pass  = $('regPass')?.value;
+  if (!first||!last||!email||!phone||!pass) return toast('Заполните все поля', 'err');
+  if (pass.length < 6) return toast('Пароль минимум 6 символов', 'err');
+  try {
+    const data = await API.register({ first_name: first, last_name: last, email, phone, address: addr, password: pass });
+    State.user = { token: data.token, role: 'customer', customer: data.customer };
+    closeAuth();
+    toast(`Добро пожаловать, ${first}!`);
+    updateAuthBtn();
+  } catch(e) {
+    const msg = e.message.includes('already') ? 'Email уже зарегистрирован' : 'Ошибка регистрации';
+    toast(msg, 'err');
+  }
+}
+
+function doLogout() {
+  State.user       = null;
+  State.adminToken = null;
+  $('bn-admin').style.display = 'none';
+  updateAuthBtn();
+  navigate('home');
+  toast('Вы вышли из аккаунта');
+}
+
+function updateAuthBtn() {
+  const btn = $('authBtn');
+  if (!btn) return;
+  if (State.user) {
+    btn.style.background = 'var(--accent)';
+    btn.querySelector('svg').style.color = '#fff';
+  } else {
+    btn.style.background = '';
+    btn.querySelector('svg').style.color = '';
+  }
+}
+
+// ── Profile page ──────────────────────────────────────────────────────────────
+function renderProfile() {
+  const mc = $('mainContent');
+
+  if (!State.user) {
+    mc.innerHTML = `
+      <div style="padding:40px 20px;text-align:center">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5" stroke-linecap="round" style="margin-bottom:16px"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        <h3 style="font-family:'Nunito',sans-serif;font-weight:900;margin-bottom:8px">Войдите в аккаунт</h3>
+        <p style="color:#999;margin-bottom:20px;font-size:14px">Чтобы видеть историю заказов и управлять профилем</p>
+        <button class="btn-primary" onclick="openAuth()" style="display:inline-flex">Войти / Регистрация</button>
+      </div>`;
+    return;
+  }
+
+  if (State.user.role === 'admin') {
+    navigate('admin');
+    return;
+  }
+
+  const c = State.user.customer;
+  const orders = c?.orders || [];
+
+  const ordersHtml = orders.length
+    ? orders.map(o => `
+        <div class="order-row">
+          <div>
+            <div class="order-code">#${o.code}</div>
+            <div class="order-meta">${o.date?.slice(0,10)} · ${o.items_count} позиций</div>
+          </div>
+          <div class="order-total">${rub(o.total)}</div>
+        </div>`).join('')
+    : `<p style="color:#999;font-size:14px">Заказов пока нет</p>`;
+
+  mc.innerHTML = `
+    <div class="profile-page">
+      <div class="profile-header">
+        <div class="profile-avatar">${initials(c)}</div>
+        <div>
+          <div class="profile-name">${escHtml(c?.first_name||'')} ${escHtml(c?.last_name||'')}</div>
+          <div class="profile-email">${escHtml(c?.email||'')}</div>
+        </div>
+      </div>
+
+      <div class="profile-card">
+        <h3>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          Контактные данные
+        </h3>
+        <div class="info-row"><span>Телефон</span><span>${escHtml(c?.phone||'—')}</span></div>
+        <div class="info-row"><span>Email</span><span>${escHtml(c?.email||'—')}</span></div>
+        <div class="info-row"><span>Адрес доставки</span><span>${escHtml(c?.address||'—')}</span></div>
+        <div class="info-row"><span>Дата регистрации</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
+      </div>
+
+      <div class="profile-card">
+        <h3>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+          История заказов (${orders.length})
+        </h3>
+        ${ordersHtml}
+      </div>
+
+      <button class="btn-danger" onclick="doLogout()">Выйти из аккаунта</button>
+    </div>`;
 }
 
 // ── Share modal ───────────────────────────────────────────────────────────────
 async function openShareModal() {
   const items = Object.values(State.cart);
-  if (!items.length) { toast('Корзина пуста', 'info'); return; }
+  if (!items.length) { toast('Корзина пуста', 'err'); return; }
 
-  let total = 0;
-  const rows = items.map(({ product: p, qty }) => {
-    const sub = parseFloat(p.price) * qty;
-    total += sub;
-    return `<div class="share-row"><span>${escHtml(p.name)} ×${qty}</span><span>${eur(sub)}</span></div>`;
-  }).join('');
-
-  $('shareSummary').innerHTML  = rows + `<div class="share-row total"><span>${items.length} позиций, ${items.reduce((s,i)=>s+i.qty,0)} шт</span><span>${eur(total)}</span></div>`;
   $('shareOverlay').classList.add('open');
-  document.body.style.overflow = 'hidden';
+
+  const rows = items.map(({product:p, qty}) => `
+    <div class="share-summary-row">
+      <span>${escHtml(p.name.slice(0,35))} ×${qty}</span>
+      <span>${rub(p.price * qty)}</span>
+    </div>`).join('');
+
+  const total = items.reduce((s,{product:p,qty}) => s + p.price*qty, 0);
+  $('shareSummary').innerHTML = rows + `<div class="share-summary-row" style="font-weight:900;border-top:1px solid #eee;padding-top:8px;margin-top:4px"><span>Итого</span><span>${rub(total)}</span></div>`;
+  $('shareUrlSpan').textContent = 'Генерация...';
 
   try {
     const payload = {
-      items:   items.map(({ product: p, qty }) => ({ product_id: p.id, price: p.price, name: p.name, sku: p.sku, quantity: qty, image: p.image })),
+      items: items.map(({product:p,qty}) => ({ id:p.id, name:p.name, sku:p.sku, price:p.price, quantity:qty })),
       comment: $('cartComment')?.value || '',
+      customer_id: State.user?.customer?.id || null,
     };
     const data = await API.shareCart(payload);
-    $('shareUrlSpan').textContent = `${location.origin}/cart/${data.code}`;
-  } catch (e) {
-    $('shareUrlSpan').textContent = `${location.origin}/cart/DEMO${Math.random().toString(36).slice(2,7).toUpperCase()}`;
+    $('shareUrlSpan').textContent = `${location.origin}/api/cart/${data.code}`;
+  } catch(e) {
+    $('shareUrlSpan').textContent = 'Ошибка генерации';
   }
 }
 
-function closeShareModal() {
-  $('shareOverlay').classList.remove('open');
-  document.body.style.overflow = '';
-}
+function closeShareModal() { $('shareOverlay').classList.remove('open'); }
 
 function copyShareLink() {
   const url = $('shareUrlSpan').textContent;
-  navigator.clipboard.writeText(url).then(() => toast('Ссылка скопирована!')).catch(() => toast('Скопируйте вручную', 'info'));
+  navigator.clipboard.writeText(url)
+    .then(() => toast('Ссылка скопирована!'))
+    .catch(() => toast('Скопируйте вручную', 'info'));
 }
 
 function shareWhatsApp() {
   const items = Object.values(State.cart);
   let msg = 'Мой заказ Happy Toys:\n';
   let total = 0;
-  items.forEach(({ product: p, qty }) => {
-    const sub = parseFloat(p.price) * qty;
+  items.forEach(({product:p,qty}) => {
+    const sub = p.price * qty;
     total += sub;
-    msg += `• ${p.name} (${p.sku}) ×${qty} = ${eur(sub)}\n`;
+    msg += `• ${p.name} (${p.sku}) ×${qty} = ${rub(sub)}\n`;
   });
-  msg += `\nИтого: ${eur(total)}\n${$('shareUrlSpan').textContent}`;
+  msg += `\nИтого: ${rub(total)}\n${$('shareUrlSpan').textContent}`;
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
-function exportPDF() {
-  toast('PDF формируется...', 'info');
-  setTimeout(() => toast('PDF готов к скачиванию!'), 1800);
+// ── Admin page ────────────────────────────────────────────────────────────────
+async function renderAdmin() {
+  const mc = $('mainContent');
+
+  if (!State.user || State.user.role !== 'admin') {
+    mc.innerHTML = `
+      <div style="padding:40px 20px;text-align:center">
+        <p style="margin-bottom:16px;color:#999">Только для администратора</p>
+        <button class="btn-primary" onclick="openAuth()" style="display:inline-flex">Войти</button>
+      </div>`;
+    return;
+  }
+
+  mc.innerHTML = `<div class="admin-page">
+    <div class="admin-stats" id="adminStats">${[1,2,3,4,5].map(() => `<div class="stat-card skeleton" style="height:80px"></div>`).join('')}</div>
+    <div id="adminBody"></div>
+  </div>`;
+
+  try {
+    const [stats, carts, customers] = await Promise.all([API.adminStats(), API.adminCarts(), API.adminCustomers()]);
+    $('adminStats').innerHTML = `
+      <div class="stat-card"><div class="stat-label">Товаров</div><div class="stat-val">${stats.total_products}</div></div>
+      <div class="stat-card"><div class="stat-label">Мало</div><div class="stat-val" style="color:var(--yellow)">${stats.low_stock}</div></div>
+      <div class="stat-card"><div class="stat-label">Нет</div><div class="stat-val" style="color:var(--red)">${stats.out_of_stock}</div></div>
+      <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
+      <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
+
+    $('adminBody').innerHTML = renderAddProductForm() + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []);
+  } catch(e) {
+    $('adminBody').innerHTML = `<p style="color:#999">Ошибка загрузки</p>`;
+  }
 }
 
-// ── Instant search ────────────────────────────────────────────────────────────
+function renderAddProductForm() {
+  const CATS = ['Куклы','Конструкторы','Машинки','Настольные игры','Мягкие игрушки','Развивающие','Пазлы','Творчество'];
+  const BRANDS = ['LEGO','Barbie','Hot Wheels','Hasbro','Mattel','Playmobil','Fisher-Price','Ravensburger','Schleich','Funko'];
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Добавить товар
+    </h3>
+
+    <div class="img-upload-area" id="imgUploadArea" onclick="$('imgFile').click()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+      <p>Нажмите чтобы загрузить фото<br><small>или вставьте URL ниже</small></p>
+      <input type="file" id="imgFile" accept="image/*" onchange="previewUpload(this)">
+    </div>
+
+    <div class="form-grid full">
+      <div class="field"><label>URL изображения (если есть)</label><input id="fimg" type="url" placeholder="https://..."></div>
+    </div>
+
+    <div class="form-grid">
+      <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
+      <div class="field"><label>SKU *</label><input id="fsku" type="text" placeholder="HT-0201"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Цена (₽) *</label><input id="fprice" type="number" step="0.01" placeholder="999.99"></div>
+      <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Категория</label><select id="fcat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select></div>
+      <div class="field"><label>Бренд</label><select id="fbrand">${BRANDS.map(b=>`<option>${b}</option>`).join('')}</select></div>
+    </div>
+    <div class="form-grid full">
+      <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
+    </div>
+    <button class="btn-primary" onclick="submitProduct()">Добавить товар</button>
+  </div>`;
+}
+
+async function previewUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const area = $('imgUploadArea');
+  area.innerHTML = `<div class="skeleton" style="width:100%;height:160px"></div>`;
+
+  try {
+    const data = await API.uploadImage(file);
+    $('fimg').value = data.url;
+    area.classList.add('has-img');
+    area.innerHTML = `<img src="${data.url}" alt="preview">`;
+  } catch(e) {
+    // Fallback: use local FileReader
+    const reader = new FileReader();
+    reader.onload = ev => {
+      $('fimg').value = ev.target.result;
+      area.classList.add('has-img');
+      area.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+async function submitProduct() {
+  const body = {
+    name:      $('fn')?.value?.trim(),
+    sku:       $('fsku')?.value?.trim(),
+    price:     parseFloat($('fprice')?.value || 0),
+    stock_qty: parseInt($('fqty')?.value || 0),
+    category:  $('fcat')?.value,
+    brand:     $('fbrand')?.value,
+    image:     $('fimg')?.value || '',
+    description: $('fdesc')?.value || '',
+    stock: 'ok', min_order: 1, age_min: 3,
+  };
+  if (!body.name || !body.sku || !body.price) { toast('Заполните обязательные поля', 'err'); return; }
+  try {
+    await API.post('/api/products', body);
+    toast('Товар добавлен!');
+    renderAdmin();
+  } catch(e) {
+    toast('Ошибка при добавлении', 'err');
+  }
+}
+
+function renderCustomersTable(customers) {
+  if (!customers.length) return `<div class="admin-section"><h3>Клиенты</h3><p style="color:#999;font-size:14px">Нет зарегистрированных клиентов</p></div>`;
+
+  const rows = customers.map(c => `
+    <tr>
+      <td><div class="c-name">${escHtml(c.first_name)} ${escHtml(c.last_name)}</div><div class="c-email">${escHtml(c.email)}</div></td>
+      <td>${escHtml(c.phone||'—')}</td>
+      <td>${escHtml(c.address||'—')}</td>
+      <td class="c-orders">${(c.orders||[]).length}</td>
+      <td>${c.created_at?.slice(0,10)||'—'}</td>
+    </tr>`).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Клиенты (${customers.length})
+    </h3>
+    <div style="overflow-x:auto">
+      <table class="customers-table">
+        <thead><tr><th>Имя</th><th>Телефон</th><th>Адрес</th><th>Заказов</th><th>Дата</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderAdminCarts(carts) {
+  if (!carts.length) return `<div class="admin-section"><h3>Корзины</h3><p style="color:#999;font-size:14px">Нет корзин</p></div>`;
+  return `
+  <div class="admin-section">
+    <h3>Последние корзины (${carts.length})</h3>
+    <div class="cart-rows">
+      ${carts.map(c => `
+        <div class="cart-row">
+          <div class="cart-row-info">
+            <div class="cart-row-name">${escHtml(c.store_name||'Клиент')} — ${c.items?.length||0} позиций</div>
+            <div class="cart-row-meta">${c.code} · ${c.created_at?.slice(0,10)}</div>
+          </div>
+          <div class="cart-row-total">${rub(c.total)}</div>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
 let _searchTimer;
 function onSearch(val) {
   clearTimeout(_searchTimer);
   const q = val.trim();
-  if (!q) { closeSearch(); return; }
+  if (!q) { $('searchDrop')?.classList.remove('open'); return; }
   _searchTimer = setTimeout(async () => {
     try {
       const data = await API.search(q);
-      showSearchDrop(data.items);
-    } catch (e) {}
+      const drop = $('searchDrop');
+      if (!data.items.length) { drop.classList.remove('open'); return; }
+      drop.innerHTML = data.items.map(p => `
+        <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
+          <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
+          <div>
+            <div class="search-result-name">${escHtml(p.name)}</div>
+            <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
+          </div>
+          <span class="search-result-price">${rub(p.price)}</span>
+        </div>`).join('');
+      drop.classList.add('open');
+    } catch(e){}
   }, 200);
-}
-
-function showSearchDrop(items) {
-  const drop = $('searchDrop');
-  if (!items.length) { closeSearch(); return; }
-  drop.innerHTML = items.map(p => `
-    <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-      <div>
-        <div class="search-result-name">${escHtml(p.name)}</div>
-        <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
-      </div>
-      <span class="search-result-price">${eur(p.price)}</span>
-    </div>`).join('');
-  drop.classList.add('open');
 }
 
 function closeSearch() {
   $('searchDrop')?.classList.remove('open');
 }
 
-// ── Admin page ────────────────────────────────────────────────────────────────
-async function renderAdmin() {
-  $('mainContent').innerHTML = `<div class="page-enter">
-    <div class="admin-stats" id="adminStats">
-      ${[1,2,3,4].map(() => `<div class="stat-card skeleton" style="height:80px;"></div>`).join('')}
-    </div>
-    <div id="adminBody"><p style="color:var(--text3);font-size:13px;">Загрузка...</p></div>
-  </div>`;
-
-  if (!State.adminToken) {
-    $('adminBody').innerHTML = renderLoginForm();
-    return;
-  }
-
-  try {
-    const [stats, carts] = await Promise.all([API.adminStats(), API.adminCarts()]);
-    $('adminStats').innerHTML = `
-      <div class="stat-card"><div class="stat-label">Товаров</div><div class="stat-val">${stats.total_products}</div></div>
-      <div class="stat-card"><div class="stat-label">Мало на складе</div><div class="stat-val">${stats.low_stock}</div></div>
-      <div class="stat-card"><div class="stat-label">Нет в наличии</div><div class="stat-val">${stats.out_of_stock}</div></div>
-      <div class="stat-card"><div class="stat-label">Корзин всего</div><div class="stat-val">${stats.total_carts}</div></div>`;
-    $('adminBody').innerHTML = renderAdminForm() + renderAdminCarts(carts.carts || []);
-  } catch (e) {
-    $('adminStats').innerHTML = '';
-    $('adminBody').innerHTML = renderLoginForm();
-  }
-}
-
-function renderLoginForm() {
-  return `
-    <div class="form-card" style="max-width:380px;">
-      <div class="form-title">Вход для администратора</div>
-      <div class="form-grid full">
-        <div class="field"><label>Логин</label><input id="adminUser" type="text" placeholder="admin"></div>
-        <div class="field"><label>Пароль</label><input id="adminPass" type="password" placeholder="••••••••"></div>
-      </div>
-      <button class="form-submit" onclick="doLogin()">Войти</button>
-    </div>`;
-}
-
-async function doLogin() {
-  const u = $('adminUser')?.value;
-  const p = $('adminPass')?.value;
-  if (!u || !p) return;
-  try {
-    const data = await API.login(u, p);
-    State.adminToken = data.token;
-    toast('Вход выполнен!');
-    renderAdmin();
-  } catch (e) {
-    toast('Неверные данные', 'info');
-  }
-}
-
-function renderAdminForm() {
-  const CATS = ['Куклы','Конструкторы','Машинки','Настольные игры','Мягкие игрушки','Развивающие','Пазлы','Творчество'];
-  const BRANDS = ['LEGO','Barbie','Hot Wheels','Hasbro','Mattel','Playmobil','Fisher-Price','Ravensburger','Schleich','Funko'];
-  return `
-    <div class="form-card" style="margin-bottom:24px;">
-      <div class="form-title">Добавить товар</div>
-      <div class="form-grid">
-        <div class="field"><label>Название</label><input id="fn" type="text" placeholder="Название товара"></div>
-        <div class="field"><label>SKU</label><input id="fsku" type="text" placeholder="HT-0201"></div>
-      </div>
-      <div class="form-grid">
-        <div class="field"><label>Цена (€)</label><input id="fprice" type="number" step="0.01" placeholder="9.99"></div>
-        <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
-      </div>
-      <div class="form-grid">
-        <div class="field"><label>Категория</label>
-          <select id="fcat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select>
-        </div>
-        <div class="field"><label>Бренд</label>
-          <select id="fbrand">${BRANDS.map(b=>`<option>${b}</option>`).join('')}</select>
-        </div>
-      </div>
-      <div class="form-grid full">
-        <div class="field"><label>URL изображения (Cloudinary/CDN)</label><input id="fimg" type="url" placeholder="https://res.cloudinary.com/..."></div>
-      </div>
-      <div class="form-grid full">
-        <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
-      </div>
-      <button class="form-submit" onclick="submitProduct()">Добавить товар</button>
-    </div>`;
-}
-
-async function submitProduct() {
-  const body = {
-    name: $('fn')?.value, sku: $('fsku')?.value,
-    price: parseFloat($('fprice')?.value || 0),
-    stock_qty: parseInt($('fqty')?.value || 0),
-    category: $('fcat')?.value, brand: $('fbrand')?.value,
-    image: $('fimg')?.value, description: $('fdesc')?.value,
-    stock: 'ok', min_order: 1, age_min: 3,
-  };
-  if (!body.name || !body.sku || !body.price) { toast('Заполните обязательные поля', 'info'); return; }
-  try {
-    await API.post('/api/products', body);
-    toast('Товар добавлен в каталог!');
-    renderAdmin();
-  } catch (e) {
-    toast('Ошибка при добавлении', 'info');
-  }
-}
-
-function renderAdminCarts(carts) {
-  if (!carts.length) return `<p style="color:var(--text3);font-size:13px;">Нет корзин</p>`;
-  return `
-    <div class="section-head"><h2>Последние корзины</h2><span>${carts.length} всего</span></div>
-    <div class="carts-list">
-      ${carts.map(c => `
-        <div class="cart-row">
-          <div class="cart-row-info">
-            <div class="cart-row-name">${c.store_name || 'Клиент'} — ${c.items?.length || 0} позиций</div>
-            <div class="cart-row-meta">${c.code} · ${c.created_at?.slice(0,10)}</div>
-          </div>
-          <div class="cart-row-total">${eur(c.total)}</div>
-          <button class="open-btn" onclick="toast('Корзина: ${c.code}', 'info')">Открыть</button>
-        </div>`).join('')}
-    </div>`;
-}
-
 // ── Navigation ────────────────────────────────────────────────────────────────
 function navigate(page) {
   State.page = page;
-  document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-  const link = $(`nav-${page}`);
-  if (link) link.classList.add('active');
-  $('topTitle').textContent = page === 'catalog' ? 'Каталог товаров' : 'Администрирование';
+  State.pageNum = 1;
 
+  document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
+  const btn = $(`bn-${page}`);
+  if (btn) btn.classList.add('active');
+
+  if (page === 'home')    renderHome();
   if (page === 'catalog') renderCatalog();
+  if (page === 'profile') renderProfile();
   if (page === 'admin')   renderAdmin();
 }
 
-// ── Close modals on overlay click ────────────────────────────────────────────
+// ── Events ────────────────────────────────────────────────────────────────────
 document.addEventListener('click', e => {
   if (e.target.id === 'productOverlay') closeProductModal();
   if (e.target.id === 'shareOverlay')   closeShareModal();
-  if (!e.target.closest('#sideSearch') && !e.target.closest('#searchDrop')) closeSearch();
+  if (e.target.id === 'authOverlay')    closeAuth();
+  if (!e.target.closest('#topSearch') && !e.target.closest('#searchDrop')) closeSearch();
 });
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeProductModal(); closeShareModal(); closeSearch(); }
+  if (e.key === 'Escape') { closeProductModal(); closeShareModal(); closeAuth(); closeSearch(); }
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  loadCategories();
-  navigate('catalog');
+  renderCart();
+  navigate('home');
 });
