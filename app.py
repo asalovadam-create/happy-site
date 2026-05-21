@@ -88,7 +88,7 @@ _cache_exp: dict = {}
 def c_get(k):
     return _cache[k] if k in _cache and time.time() < _cache_exp.get(k, 0) else None
 
-def c_set(k, v, ttl=30):
+def c_set(k, v, ttl=60):
     _cache[k] = v; _cache_exp[k] = time.time() + ttl
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -234,6 +234,9 @@ async def products(
 @app.get("/api/products/search")
 async def search_products(q: str, limit: int = 6):
     if len(q) < 2: return {"items": []}
+    ck = f"search:{q.lower()}:{limit}"
+    cached = c_get(ck)
+    if cached: return cached
     ql = q.lower()
     results = []
     for p in _products.values():
@@ -241,14 +244,21 @@ async def search_products(q: str, limit: int = 6):
         score = (10 if ql in p["name"].lower() else 0) + (8 if ql in p["sku"].lower() else 0) + (4 if ql in p["brand"].lower() else 0)
         if score: results.append((score, p))
     results.sort(key=lambda x: x[0], reverse=True)
-    return {"items": [r[1] for r in results[:limit]]}
+    result = {"items": [r[1] for r in results[:limit]]}
+    c_set(ck, result, ttl=30)
+    return result
 
 @app.get("/api/products/{pid}")
 async def get_product(pid: int):
+    ck = f"prod:{pid}"
+    cached = c_get(ck)
+    if cached: return cached
     p = _products.get(pid)
     if not p: raise HTTPException(404, "Not found")
     similar = [x for x in _products.values() if x["category"]==p["category"] and x["id"]!=pid and x["is_active"]][:4]
-    return {**p, "similar": similar}
+    result = {**p, "similar": similar}
+    c_set(ck, result, ttl=60)
+    return result
 
 @app.post("/api/products", status_code=201)
 async def create_product(b: ProductIn, _=Depends(require_admin)):
@@ -284,7 +294,11 @@ async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
 # ── Categories / Brands ───────────────────────────────────────────────────────
 @app.get("/api/categories")
 async def categories():
-    return [{"name": c, "count": sum(1 for p in _products.values() if p["category"]==c and p["is_active"])} for c in CATEGORIES]
+    cached = c_get("cats")
+    if cached: return cached
+    result = [{"name": c, "count": sum(1 for p in _products.values() if p["category"]==c and p["is_active"])} for c in CATEGORIES]
+    c_set("cats", result, ttl=120)
+    return result
 
 @app.get("/api/brands")
 async def brands():
@@ -347,6 +361,24 @@ async def admin_customer(uid: str, _=Depends(require_admin)):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "products": len(_products), "ts": datetime.utcnow().isoformat()}
+
+# ── Cache-control middleware ──────────────────────────────────────────────────
+from fastapi import Response
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class CacheHeaderMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/static/"):
+            response.headers["Cache-Control"] = "public, max-age=86400, immutable"
+        elif path in ("/api/categories", "/api/brands"):
+            response.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=60"
+        elif path.startswith("/api/products") and request.method == "GET":
+            response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=30"
+        return response
+
+app.add_middleware(CacheHeaderMiddleware)
 
 if __name__ == "__main__":
     import uvicorn
