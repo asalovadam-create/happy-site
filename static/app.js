@@ -21,6 +21,15 @@ const State = {
   adminToken: null,
 };
 
+// ── Client-side cache ────────────────────────────────────────────────────────
+const _jsCache = {};
+async function cachedCategories() {
+  if (_jsCache.cats) return _jsCache.cats;
+  const data = await API.categories();
+  _jsCache.cats = data;
+  return data;
+}
+
 // ── API ───────────────────────────────────────────────────────────────────────
 const API = {
   base: '',
@@ -316,11 +325,13 @@ function clearFilters() {
 // ── Home page ─────────────────────────────────────────────────────────────────
 async function renderHome() {
   let cats = [];
-  try { cats = await API.categories(); } catch(e){}
+  try { cats = await cachedCategories(); } catch(e){}
 
   const catPills = cats.map(c =>
     `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');setCategory('${escHtml(c.name)}')">${escHtml(c.name)} <small>${c.count}</small></button>`
   ).join('');
+
+  const productsPromise = API.products({ category: State.category, search: State.search, stock: State.stock, sort: State.sort });
 
   $('mainContent').innerHTML = `
     <div class="home-hero">
@@ -370,7 +381,7 @@ async function renderHome() {
 // ── Catalog page ──────────────────────────────────────────────────────────────
 async function renderCatalog() {
   let cats = [];
-  try { cats = await API.categories(); } catch(e){}
+  try { cats = await cachedCategories(); } catch(e){}
 
   const catPills = [
     `<button class="cat-pill ${!State.category ? 'active' : ''}" data-cat="" onclick="setCategory(null)">Все</button>`,
@@ -644,14 +655,38 @@ function copyShareLink() {
 
 function shareWhatsApp() {
   const items = Object.values(State.cart);
-  let msg = 'Мой заказ Happy Toys:\n';
+  if (!items.length) return;
+
+  const c = State.user?.customer;
+  const name = c ? `${c.first_name} ${c.last_name}`.trim() : 'Покупатель';
+  const phone = c?.phone ? ` | Тел: ${c.phone}` : '';
+  const comment = $('cartComment')?.value?.trim();
+
+  let msg = `🧸 *Заказ Happy Toys*\n`;
+  msg += `👤 ${name}${phone}\n`;
+  msg += `────────────────\n`;
+
   let total = 0;
-  items.forEach(({product:p,qty}) => {
+  let totalQty = 0;
+  items.forEach(({product:p, qty}) => {
     const sub = p.price * qty;
     total += sub;
-    msg += `• ${p.name} (${p.sku}) ×${qty} = ${rub(sub)}\n`;
+    totalQty += qty;
+    msg += `• ${p.name}\n`;
+    msg += `  SKU: ${p.sku} | ${qty} шт × ₽${p.price.toFixed(2)} = ₽${sub.toFixed(2)}\n`;
   });
-  msg += `\nИтого: ${rub(total)}\n${$('shareUrlSpan').textContent}`;
+
+  msg += `────────────────\n`;
+  msg += `📦 Позиций: ${items.length} | Товаров: ${totalQty} шт\n`;
+  msg += `💰 Итого: ₽${total.toFixed(2)}\n`;
+
+  if (comment) msg += `\n💬 ${comment}\n`;
+
+  const url = $('shareUrlSpan')?.textContent;
+  if (url && url !== 'Генерация...' && url !== 'Ошибка генерации') {
+    msg += `\n🔗 ${url}`;
+  }
+
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
@@ -840,7 +875,7 @@ function onSearch(val) {
         </div>`).join('');
       drop.classList.add('open');
     } catch(e){}
-  }, 200);
+  }, 50);
 }
 
 function closeSearch() {
