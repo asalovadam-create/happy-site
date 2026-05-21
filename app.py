@@ -1,9 +1,9 @@
 """
 Happy Toys — Wholesale Catalog
-FastAPI backend · JWT auth · in-memory DB (swap to PostgreSQL)
+FastAPI backend · JWT auth · user registration · image upload · in-memory DB
 """
 
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,19 +13,19 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, timedelta
-import jwt, hashlib, random, string, time, os
+import jwt, hashlib, random, string, time, os, base64, uuid
 
-app = FastAPI(title="Happy Toys API", version="1.0.0", docs_url="/api/docs")
+app = FastAPI(title="Happy Toys API", version="2.0.0", docs_url="/api/docs")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 # ── Config ───────────────────────────────────────────────────────────────────
-JWT_SECRET = os.getenv("JWT_SECRET", "happytoys-secret-2025")
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
-security   = HTTPBearer(auto_error=False)
+JWT_SECRET  = os.getenv("JWT_SECRET",  "happytoys-secret-2025")
+ADMIN_USER  = os.getenv("ADMIN_USER",  "admin")
+ADMIN_PASS  = os.getenv("ADMIN_PASS",  "admin123")
+security    = HTTPBearer(auto_error=False)
 
 # ── Seed data ────────────────────────────────────────────────────────────────
 CATEGORIES = ["Куклы","Конструкторы","Машинки","Настольные игры","Мягкие игрушки","Развивающие","Пазлы","Творчество"]
@@ -53,11 +53,6 @@ IMGS = [
     "https://images.unsplash.com/photo-1567365672-15b7f0b9ce6e?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1611532736597-de2d4265fba3?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1553481187-be93c21490a9?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1590336667820-a40b1ebbd3b4?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1600456899121-68eda5b33ef2?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1577401239170-897942555fb3?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1566576912321-d58ddd7a6088?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1471286174890-9c112ffca5b4?w=600&h=600&fit=crop&q=80",
 ]
 DESC = "Высококачественная игрушка. Соответствует стандартам CE и EN71. Безопасные материалы, яркие цвета. Идеально для оптовых закупок."
 
@@ -85,7 +80,8 @@ def _seed():
 
 _products = _seed()
 _carts    = {}
-_users    = {ADMIN_USER: hashlib.sha256(ADMIN_PASS.encode()).hexdigest()}
+_users_admin = {ADMIN_USER: hashlib.sha256(ADMIN_PASS.encode()).hexdigest()}
+_customers   = {}   # uid -> customer dict
 _cache: dict = {}
 _cache_exp: dict = {}
 
@@ -96,20 +92,45 @@ def c_set(k, v, ttl=30):
     _cache[k] = v; _cache_exp[k] = time.time() + ttl
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-def make_token(user): 
-    return jwt.encode({"sub": user, "exp": datetime.utcnow() + timedelta(hours=24)}, JWT_SECRET, algorithm="HS256")
+def make_token(sub, role="customer"):
+    return jwt.encode({"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(hours=24)}, JWT_SECRET, algorithm="HS256")
 
 def require_admin(creds: HTTPAuthorizationCredentials = Depends(security)):
     if not creds:
         raise HTTPException(401, "Token required")
     try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
+        if payload.get("role") != "admin":
+            raise HTTPException(403, "Admin only")
+        return payload
+    except jwt.PyJWTError:
+        raise HTTPException(401, "Invalid token")
+
+def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
+    if not creds:
+        return None
+    try:
         return jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
     except:
-        raise HTTPException(401, "Invalid token")
+        return None
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     username: str; password: str
+
+class RegisterIn(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    phone: str
+    password: str
+    address: Optional[str] = ""
+
+class CustomerUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    phone: Optional[str] = None
+    address: Optional[str] = None
 
 class ProductIn(BaseModel):
     name: str; sku: str; price: float; brand: str; category: str
@@ -120,23 +141,66 @@ class ProductPatch(BaseModel):
     name: Optional[str]=None; price: Optional[float]=None
     stock: Optional[str]=None; stock_qty: Optional[int]=None
     description: Optional[str]=None; is_active: Optional[bool]=None
+    image: Optional[str]=None
 
 class ShareIn(BaseModel):
     items: List[dict]
     comment: str = ""; store_name: str = ""; contact: str = ""
+    customer_id: Optional[str] = None
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+# ── Auth ──────────────────────────────────────────────────────────────────────
 @app.post("/api/auth/login")
 async def login(b: LoginIn):
     h = hashlib.sha256(b.password.encode()).hexdigest()
-    if _users.get(b.username) != h:
-        raise HTTPException(401, "Invalid credentials")
-    return {"token": make_token(b.username), "username": b.username}
+    if _users_admin.get(b.username) == h:
+        return {"token": make_token(b.username, "admin"), "username": b.username, "role": "admin"}
+    # Check customers by email
+    for uid, c in _customers.items():
+        if c["email"] == b.username and c["password_hash"] == h:
+            return {"token": make_token(uid, "customer"), "customer": _safe_customer(c), "role": "customer"}
+    raise HTTPException(401, "Invalid credentials")
 
+@app.post("/api/auth/register", status_code=201)
+async def register(b: RegisterIn):
+    # Check email unique
+    for c in _customers.values():
+        if c["email"] == b.email:
+            raise HTTPException(400, "Email already registered")
+    uid = str(uuid.uuid4())
+    _customers[uid] = {
+        "id": uid,
+        "first_name": b.first_name,
+        "last_name": b.last_name,
+        "email": b.email,
+        "phone": b.phone,
+        "address": b.address,
+        "password_hash": hashlib.sha256(b.password.encode()).hexdigest(),
+        "created_at": datetime.utcnow().isoformat(),
+        "orders": [],
+    }
+    token = make_token(uid, "customer")
+    return {"token": token, "customer": _safe_customer(_customers[uid]), "role": "customer"}
+
+def _safe_customer(c):
+    return {k: v for k, v in c.items() if k != "password_hash"}
+
+@app.get("/api/auth/me")
+async def me(payload=Depends(get_current_user)):
+    if not payload:
+        raise HTTPException(401)
+    if payload.get("role") == "admin":
+        return {"role": "admin", "username": payload["sub"]}
+    uid = payload["sub"]
+    if uid not in _customers:
+        raise HTTPException(404)
+    return {"role": "customer", "customer": _safe_customer(_customers[uid])}
+
+# ── Products ──────────────────────────────────────────────────────────────────
 @app.get("/api/products")
 async def products(
     page: int = 1, per_page: int = 40,
@@ -204,6 +268,20 @@ async def delete_product(pid: int, _=Depends(require_admin)):
     if pid not in _products: raise HTTPException(404, "Not found")
     _products[pid]["is_active"] = False; _cache.clear()
 
+# ── Image upload ──────────────────────────────────────────────────────────────
+@app.post("/api/upload-image")
+async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
+    """Upload image and return base64 data URL (stored in memory)"""
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:  # 10MB limit
+        raise HTTPException(400, "File too large (max 10MB)")
+    
+    media_type = file.content_type or "image/jpeg"
+    b64 = base64.b64encode(content).decode()
+    data_url = f"data:{media_type};base64,{b64}"
+    return {"url": data_url, "filename": file.filename}
+
+# ── Categories / Brands ───────────────────────────────────────────────────────
 @app.get("/api/categories")
 async def categories():
     return [{"name": c, "count": sum(1 for p in _products.values() if p["category"]==c and p["is_active"])} for c in CATEGORIES]
@@ -212,31 +290,59 @@ async def categories():
 async def brands():
     return [{"name": b, "count": sum(1 for p in _products.values() if p["brand"]==b and p["is_active"])} for b in BRANDS]
 
+# ── Cart / Share ──────────────────────────────────────────────────────────────
 @app.post("/api/cart/share")
 async def share_cart(b: ShareIn):
     code = "".join(random.choices(string.ascii_uppercase+string.digits, k=8))
     total = sum(i.get("price",0)*i.get("quantity",0) for i in b.items)
-    _carts[code] = {"code": code, "items": b.items, "total": round(total,2),
-                     "comment": b.comment, "store_name": b.store_name,
-                     "contact": b.contact, "created_at": datetime.utcnow().isoformat()}
-    return _carts[code]
+    cart_data = {
+        "code": code, "items": b.items, "total": round(total,2),
+        "comment": b.comment, "store_name": b.store_name,
+        "contact": b.contact, "created_at": datetime.utcnow().isoformat(),
+        "customer_id": b.customer_id,
+    }
+    _carts[code] = cart_data
+    # Link order to customer
+    if b.customer_id and b.customer_id in _customers:
+        _customers[b.customer_id]["orders"].append({
+            "code": code, "total": round(total,2),
+            "items_count": len(b.items),
+            "date": datetime.utcnow().isoformat(),
+        })
+    return cart_data
 
 @app.get("/api/cart/{code}")
 async def get_cart(code: str):
     if code not in _carts: raise HTTPException(404, "Cart not found")
     return _carts[code]
 
+# ── Admin ─────────────────────────────────────────────────────────────────────
 @app.get("/api/admin/stats")
 async def stats(_=Depends(require_admin)):
     active = [p for p in _products.values() if p["is_active"]]
-    return {"total_products": len(active),
-            "low_stock": sum(1 for p in active if p["stock"]=="low"),
-            "out_of_stock": sum(1 for p in active if p["stock"]=="out"),
-            "total_carts": len(_carts)}
+    return {
+        "total_products": len(active),
+        "low_stock": sum(1 for p in active if p["stock"]=="low"),
+        "out_of_stock": sum(1 for p in active if p["stock"]=="out"),
+        "total_carts": len(_carts),
+        "total_customers": len(_customers),
+    }
 
 @app.get("/api/admin/carts")
 async def admin_carts(_=Depends(require_admin)):
     return {"carts": sorted(_carts.values(), key=lambda x: x["created_at"], reverse=True)[:50]}
+
+@app.get("/api/admin/customers")
+async def admin_customers(_=Depends(require_admin)):
+    return {"customers": [_safe_customer(c) for c in sorted(_customers.values(), key=lambda x: x["created_at"], reverse=True)]}
+
+@app.get("/api/admin/customers/{uid}")
+async def admin_customer(uid: str, _=Depends(require_admin)):
+    if uid not in _customers: raise HTTPException(404)
+    c = _safe_customer(_customers[uid])
+    # attach cart details
+    c["cart_details"] = [_carts[o["code"]] for o in c.get("orders",[]) if o["code"] in _carts]
+    return c
 
 @app.get("/api/health")
 async def health():
