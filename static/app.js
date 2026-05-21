@@ -876,6 +876,13 @@ document.addEventListener('keydown', e => {
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
-  renderCart();
+  // Make sure cart drawer is closed on load
+  const drawer = $('cartDrawer');
+  const backdrop = $('cartBackdrop');
+  if (drawer) drawer.classList.remove('open');
+  if (backdrop) backdrop.classList.remove('show');
+  State.cartOpen = false;
+
+  updateCartBadge();
   navigate('home');
 });
