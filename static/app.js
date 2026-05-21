@@ -552,7 +552,7 @@ function renderProfile() {
   }
 
   if (State.user.role === 'admin') {
-    navigate('admin');
+    renderAdmin();
     return;
   }
 
@@ -855,6 +855,9 @@ function navigate(page) {
   document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
   const btn = $(`bn-${page}`);
   if (btn) btn.classList.add('active');
+
+  const mc = $('mainContent');
+  if (!mc) return;
 
   if (page === 'home')    renderHome();
   if (page === 'catalog') renderCatalog();
