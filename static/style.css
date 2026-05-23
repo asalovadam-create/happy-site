@@ -906,7 +906,8 @@ body {
 }
 .img-upload-area:hover { border-color: var(--accent); background: #fff5f0; }
 .img-upload-area.has-img { border-style: solid; border-color: var(--accent); padding: 0; overflow: hidden; }
-/* img-upload-area img — see bottom */
+.img-upload-area img { width:100%; height:100%; object-fit:contain; display:block; }
+.img-upload-area.has-img { padding:0; border-style:solid; border-color:var(--accent); aspect-ratio:1; overflow:hidden; background:#f8f8f8; }
 .img-upload-area svg { width: 40px; height: 40px; color: var(--text3); margin-bottom: 8px; }
 .img-upload-area p { font-size: 13px; color: var(--text3); }
 .img-upload-area input { display: none; }
@@ -1040,76 +1041,157 @@ body {
 }
 .btn-danger:hover { background: #fff0f0; }
 
-/* ── Cart bottom buttons ─────────────────────────────────────────────────── */
-.cart-bottom-btns {
-  display: flex;
-  gap: 10px;
-  align-items: stretch;
-}
-.cart-bottom-btns .btn-primary { flex: 1; min-width: 0; }
-.btn-pdf-cart {
-  flex-shrink: 0;
+
+/* ══════════════════════════════════════════════════════════════
+   PROFILE PAGE — новый дизайн
+   ══════════════════════════════════════════════════════════════ */
+.profile-page { padding: 0 0 32px; }
+
+.profile-hero {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 0 16px;
-  background: #fff;
-  color: var(--accent);
-  border: 2.5px solid var(--accent);
-  border-radius: var(--radius);
-  font-size: 13px;
-  font-weight: 800;
-  cursor: pointer;
-  white-space: nowrap;
-  font-family: inherit;
-  transition: background .15s, color .15s;
+  gap: 16px;
+  padding: 24px 20px 20px;
+  background: linear-gradient(135deg, #FF6B35 0%, #ff8c5a 100%);
+  color: #fff;
+  margin-bottom: 16px;
 }
-.btn-pdf-cart:hover  { background: var(--accent); color: #fff; }
-.btn-pdf-cart:active { transform: scale(0.95); }
+.profile-avatar-lg {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.25);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-weight: 900;
+  font-family: 'Nunito', sans-serif;
+  flex-shrink: 0;
+  border: 3px solid rgba(255,255,255,.4);
+  color: #fff;
+}
+.profile-avatar-lg.admin-avatar { font-size: 28px; background: rgba(255,255,255,.3); }
+.profile-hero-info { flex: 1; min-width: 0; }
+.profile-name { font-size: 20px; font-weight: 900; margin-bottom: 4px; }
+.profile-email { font-size: 13px; opacity: .85; }
+.profile-role-badge {
+  display: inline-block; margin-top: 6px;
+  background: rgba(255,255,255,.25); border-radius: 20px;
+  padding: 3px 10px; font-size: 11px; font-weight: 700;
+  letter-spacing: .4px;
+}
 
-/* ── img upload fix — квадрат без растяжки ──────────────────────────────── */
-.img-upload-area.has-img {
-  border-style: solid;
-  border-color: var(--accent);
-  padding: 0;
-  overflow: hidden;
-  background: #f8f8f8;
-  aspect-ratio: 1;
+/* Admin banner — кнопка перехода в панель */
+.profile-admin-banner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 16px 20px;
+  background: #fff;
+  border-radius: var(--radius);
+  margin: 0 16px 12px;
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  transition: transform .15s, box-shadow .15s;
 }
-.img-upload-area img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
+.profile-admin-banner:hover { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(0,0,0,.1); }
+.profile-admin-banner:active { transform: scale(0.98); }
+.pab-left { display: flex; align-items: center; gap: 12px; }
+.pab-left svg { color: var(--accent); }
+.pab-title { font-size: 15px; font-weight: 800; color: var(--text); }
+.pab-sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+.profile-card {
+  background: #fff;
+  border-radius: var(--radius);
+  padding: 16px 20px;
+  margin: 0 16px 12px;
+  box-shadow: var(--shadow);
 }
+.profile-card h3 {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 800; color: var(--text);
+  margin-bottom: 14px; padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.orders-count-badge {
+  background: var(--accent); color: #fff;
+  border-radius: 20px; padding: 1px 8px;
+  font-size: 11px; font-weight: 700;
+}
+.order-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 0; border-bottom: 1px solid #f5f5f5;
+  cursor: pointer; transition: background .1s;
+  border-radius: 6px; margin: 0 -4px; padding: 10px 4px;
+}
+.order-row:last-child { border-bottom: none; }
+.order-row:hover { background: #fafafa; }
+.order-code { font-size: 14px; font-weight: 700; color: var(--text); }
+.order-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.order-right { display: flex; align-items: center; gap: 8px; }
+.order-total { font-size: 15px; font-weight: 900; color: var(--accent); }
+.orders-empty {
+  text-align: center; padding: 24px 0;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.orders-empty p { font-size: 14px; color: var(--text2); }
+
+.btn-logout {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: calc(100% - 32px); margin: 8px 16px 0;
+  padding: 14px; border-radius: var(--radius);
+  background: #fff5f5; color: #e53e3e;
+  border: 2px solid #fed7d7;
+  font-size: 14px; font-weight: 700;
+  cursor: pointer; font-family: inherit;
+  transition: background .15s, border-color .15s;
+}
+.btn-logout:hover { background: #fed7d7; border-color: #e53e3e; }
+.btn-logout:active { transform: scale(0.98); }
+
+/* Страница не авторизован */
+.empty-auth-page {
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; min-height: 60vh;
+  padding: 40px 24px; text-align: center;
+}
+.empty-auth-icon {
+  width: 80px; height: 80px; border-radius: 50%;
+  background: #f5f5f5; display: flex;
+  align-items: center; justify-content: center;
+  margin-bottom: 20px; color: #ccc;
+}
+.empty-auth-page h2 { font-size: 22px; font-weight: 900; margin-bottom: 10px; }
+.empty-auth-page p { font-size: 14px; color: var(--text2); margin-bottom: 24px; line-height: 1.5; }
+
+/* ── Share modal — PDF кнопка рядом с WA ────────────────────────────────── */
+.share-btns {
+  display: flex;
+  gap: 10px;
+}
+.btn-wa { flex: 1; }
+.btn-pdf-share {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 0 18px; border-radius: 12px;
+  background: #fff; color: var(--accent);
+  border: 2.5px solid var(--accent);
+  font-size: 13px; font-weight: 800;
+  cursor: pointer; white-space: nowrap;
+  font-family: inherit; transition: background .15s, color .15s;
+  min-height: 48px;
+}
+.btn-pdf-share:hover  { background: var(--accent); color: #fff; }
+.btn-pdf-share:active { transform: scale(0.97); }
 
 /* ── iOS / Android ───────────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
-
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
-  .bottom-nav {
-    padding-bottom: env(safe-area-inset-bottom);
-    height: calc(var(--bottomnav-h) + env(safe-area-inset-bottom));
-  }
-  #mainContent {
-    padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom) + 16px);
-  }
-  .cart-drawer-foot {
-    padding-bottom: calc(16px + env(safe-area-inset-bottom));
-  }
+  .bottom-nav { padding-bottom: env(safe-area-inset-bottom); height: calc(var(--bottomnav-h) + env(safe-area-inset-bottom)); }
+  #mainContent { padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom) + 16px); }
+  .cart-drawer-foot { padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
 }
-@media (display-mode: standalone) {
-  .topbar { padding-top: env(safe-area-inset-top, 0px); }
-}
-.cart-drawer-list, .cat-scroll, .filters-row, .similar-scroll {
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-}
+@media (display-mode: standalone) { .topbar { padding-top: env(safe-area-inset-top, 0px); } }
+.cart-drawer-list, .cat-scroll, .filters-row, .similar-scroll { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 @media (hover: none) and (pointer: coarse) {
   .product-card:hover  { transform: none; box-shadow: var(--shadow); }
-  .product-card:active { transform: scale(0.97); transition: transform .1s; }
-  .card-add:active     { transform: scale(0.9); }
-  .btn-primary:active  { transform: scale(0.97); }
+  .product-card:active { transform: scale(0.97); }
+  .card-add:active { transform: scale(0.9); }
+  .btn-primary:active { transform: scale(0.97); }
 }
 .cart-drawer, .overlay, .product-card { will-change: transform; }
