@@ -17,6 +17,20 @@ import jwt, hashlib, random, string, time, os, base64, uuid
 
 app = FastAPI(title="Happy Toys API", version="2.0.0", docs_url="/api/docs")
 app.add_middleware(GZipMiddleware, minimum_size=500)
+
+from starlette.middleware.base import BaseHTTPMiddleware
+class CacheHeaders(BaseHTTPMiddleware):
+    async def dispatch(self, req, call_next):
+        resp = await call_next(req)
+        path = req.url.path
+        if path.startswith('/static/'):
+            resp.headers['Cache-Control'] = 'public, max-age=86400, immutable'
+        elif path in ('/api/categories', '/api/brands'):
+            resp.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=600'
+        elif path.startswith('/api/products'):
+            resp.headers['Cache-Control'] = 'public, max-age=30, stale-while-revalidate=60'
+        return resp
+app.add_middleware(CacheHeaders)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -88,7 +102,7 @@ _cache_exp: dict = {}
 def c_get(k):
     return _cache[k] if k in _cache and time.time() < _cache_exp.get(k, 0) else None
 
-def c_set(k, v, ttl=60):
+def c_set(k, v, ttl=30):
     _cache[k] = v; _cache_exp[k] = time.time() + ttl
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -228,13 +242,13 @@ async def products(
     s = (page-1)*per_page
     result = {"items": items[s:s+per_page], "total": total, "page": page,
               "per_page": per_page, "pages": (total+per_page-1)//per_page}
-    c_set(ck, result)
+    c_set(ck, result, 60)
     return result
 
 @app.get("/api/products/search")
-async def search_products(q: str, limit: int = 6):
+async def search_products(q: str, limit: int = 8):
     if len(q) < 2: return {"items": []}
-    ck = f"search:{q.lower()}:{limit}"
+    ck = f"srch:{q.lower()}:{limit}"
     cached = c_get(ck)
     if cached: return cached
     ql = q.lower()
@@ -245,20 +259,15 @@ async def search_products(q: str, limit: int = 6):
         if score: results.append((score, p))
     results.sort(key=lambda x: x[0], reverse=True)
     result = {"items": [r[1] for r in results[:limit]]}
-    c_set(ck, result, ttl=30)
+    c_set(ck, result, 120)
     return result
 
 @app.get("/api/products/{pid}")
 async def get_product(pid: int):
-    ck = f"prod:{pid}"
-    cached = c_get(ck)
-    if cached: return cached
     p = _products.get(pid)
     if not p: raise HTTPException(404, "Not found")
     similar = [x for x in _products.values() if x["category"]==p["category"] and x["id"]!=pid and x["is_active"]][:4]
-    result = {**p, "similar": similar}
-    c_set(ck, result, ttl=60)
-    return result
+    return {**p, "similar": similar}
 
 @app.post("/api/products", status_code=201)
 async def create_product(b: ProductIn, _=Depends(require_admin)):
@@ -294,10 +303,10 @@ async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
 # ── Categories / Brands ───────────────────────────────────────────────────────
 @app.get("/api/categories")
 async def categories():
-    cached = c_get("cats")
+    cached = c_get("__cats__")
     if cached: return cached
     result = [{"name": c, "count": sum(1 for p in _products.values() if p["category"]==c and p["is_active"])} for c in CATEGORIES]
-    c_set("cats", result, ttl=120)
+    c_set("__cats__", result, 300)
     return result
 
 @app.get("/api/brands")
@@ -361,24 +370,6 @@ async def admin_customer(uid: str, _=Depends(require_admin)):
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "products": len(_products), "ts": datetime.utcnow().isoformat()}
-
-# ── Cache-control middleware ──────────────────────────────────────────────────
-from fastapi import Response
-from starlette.middleware.base import BaseHTTPMiddleware
-
-class CacheHeaderMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        path = request.url.path
-        if path.startswith("/static/"):
-            response.headers["Cache-Control"] = "public, max-age=86400, immutable"
-        elif path in ("/api/categories", "/api/brands"):
-            response.headers["Cache-Control"] = "public, max-age=120, stale-while-revalidate=60"
-        elif path.startswith("/api/products") and request.method == "GET":
-            response.headers["Cache-Control"] = "public, max-age=60, stale-while-revalidate=30"
-        return response
-
-app.add_middleware(CacheHeaderMiddleware)
 
 if __name__ == "__main__":
     import uvicorn
