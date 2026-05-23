@@ -1,943 +1,1115 @@
-/* ============================================================
-   Happy Toys — app.js v2
-   ============================================================ */
-'use strict';
+/* ── Reset & Variables ───────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-// ── State ─────────────────────────────────────────────────────────────────────
-const State = {
-  page:       'home',
-  products:   [],
-  total:      0,
-  pageNum:    1,
-  perPage:    40,
-  category:   null,
-  search:     '',
-  stock:      null,
-  sort:       'default',
-  loading:    false,
-  cart:       {},
-  cartOpen:   false,
-  user:       null,   // { role, token, customer? }
-  adminToken: null,
-};
-
-// ── Category cache (avoid double-fetch on home+catalog) ───────────────────────
-let _catCache = null, _catCacheTs = 0;
-async function getCategories() {
-  if (_catCache && Date.now() - _catCacheTs < 60000) return _catCache;
-  try { _catCache = await API.categories(); _catCacheTs = Date.now(); }
-  catch(e) { _catCache = []; }
-  return _catCache;
+:root {
+  --accent:    #FF6B35;
+  --accent2:   #FFB347;
+  --green:     #2ECC71;
+  --red:       #E74C3C;
+  --yellow:    #F1C40F;
+  --bg:        #F5F5F5;
+  --card:      #FFFFFF;
+  --text1:     #1A1A2E;
+  --text2:     #555;
+  --text3:     #999;
+  --border:    #E8E8E8;
+  --topbar-h:  60px;
+  --bottomnav-h: 64px;
+  --radius:    14px;
+  --shadow:    0 2px 12px rgba(0,0,0,0.08);
 }
 
-// ── API ───────────────────────────────────────────────────────────────────────
-const API = {
-  base: '',
-
-  async req(method, path, body, isForm = false) {
-    const headers = {};
-    if (!isForm) headers['Content-Type'] = 'application/json';
-    const token = State.user?.token;
-    if (token) headers['Authorization'] = `Bearer ${token}`;
-
-    const opts = { method, headers };
-    if (body) opts.body = isForm ? body : JSON.stringify(body);
-
-    const r = await fetch(this.base + path, opts);
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-
-  get(path)         { return this.req('GET', path); },
-  post(path, body)  { return this.req('POST', path, body); },
-
-  products(params = {}) {
-    const q = new URLSearchParams({ page: State.pageNum, per_page: State.perPage });
-    if (params.category) q.set('category', params.category);
-    if (params.search)   q.set('search',   params.search);
-    if (params.stock)    q.set('stock',    params.stock);
-    if (params.sort && params.sort !== 'default') q.set('sort', params.sort);
-    return this.get(`/api/products?${q}`);
-  },
-
-  search(q)       { return this.get(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`); },
-  product(id)     { return this.get(`/api/products/${id}`); },
-  categories()    { return this.get('/api/categories'); },
-  shareCart(p)    { return this.post('/api/cart/share', p); },
-  login(u, p)     { return this.post('/api/auth/login', { username: u, password: p }); },
-  register(body)  { return this.post('/api/auth/register', body); },
-  me()            { return this.get('/api/auth/me'); },
-  adminStats()    { return this.get('/api/admin/stats'); },
-  adminCarts()    { return this.get('/api/admin/carts'); },
-  adminCustomers(){ return this.get('/api/admin/customers'); },
-
-  async uploadImage(file) {
-    const form = new FormData();
-    form.append('file', file);
-    return this.req('POST', '/api/upload-image', form, true);
-  },
-};
-
-// ── DOM helpers ───────────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-
-function rub(n) { return '₽' + parseFloat(n).toFixed(2); }
-
-function stockLabel(s) {
-  return s === 'ok' ? 'В наличии' : s === 'low' ? 'Мало' : 'Нет';
+html { font-size: 16px; }
+body {
+  font-family: 'Nunito Sans', sans-serif;
+  background: var(--bg);
+  color: var(--text1);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
 }
 
-function escHtml(s) {
-  return String(s).replace(/[&<>"']/g, c =>
-    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])
-  );
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #ddd; border-radius: 3px; }
+
+/* ── App ─────────────────────────────────────────────────────────────────── */
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
-function initials(c) {
-  if (!c) return '?';
-  return ((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'');
+/* ── Topbar ──────────────────────────────────────────────────────────────── */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: var(--topbar-h);
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
-function toast(msg, type = 'ok') {
-  const wrap = $('toastWrap');
-  const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.textContent = msg;
-  wrap.appendChild(el);
-  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
-  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, 3000);
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: 'Nunito', sans-serif;
+  font-weight: 900;
+  font-size: 17px;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-// ── Cart ──────────────────────────────────────────────────────────────────────
-function addToCart(id, qty = 1) {
-  const p = State.products.find(x => x.id === id) || State._lastProduct;
-  if (!p || p.stock === 'out') return;
-  if (State.cart[id]) {
-    State.cart[id].qty += qty;
-  } else {
-    State.cart[id] = { product: p, qty };
+.brand-star { width: 26px; height: 26px; flex-shrink: 0; }
+
+.topbar-search {
+  flex: 1;
+  position: relative;
+  max-width: 480px;
+}
+
+.topbar-search svg {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px; height: 16px;
+  color: var(--text3);
+}
+
+.topbar-search input {
+  width: 100%;
+  padding: 9px 12px 9px 36px;
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .2s;
+}
+
+.topbar-search input:focus { border-color: var(--accent); }
+
+.search-drop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0; right: 0;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.14);
+  overflow: hidden;
+  display: none;
+  z-index: 200;
+}
+.search-drop.open { display: block; }
+
+.search-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.search-result:hover { background: var(--bg); }
+.search-result img { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; }
+.search-result-name { font-weight: 700; font-size: 13px; }
+.search-result-meta { font-size: 11px; color: var(--text3); }
+.search-result-price { margin-left: auto; font-weight: 800; font-size: 13px; color: var(--accent); white-space: nowrap; }
+
+.topbar-right { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+
+.icon-btn {
+  width: 40px; height: 40px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  transition: background .15s;
+}
+.icon-btn:hover { background: var(--bg); }
+.icon-btn svg { width: 22px; height: 22px; color: var(--text1); }
+
+.cart-badge {
+  position: absolute;
+  top: 2px; right: 2px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  min-width: 17px;
+  height: 17px;
+  border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 4px;
+  font-family: 'Nunito', sans-serif;
+}
+
+/* ── Main content ────────────────────────────────────────────────────────── */
+#mainContent {
+  flex: 1;
+  padding-bottom: calc(var(--bottomnav-h) + 16px);
+  min-height: 0;
+}
+
+/* ── Bottom Nav ──────────────────────────────────────────────────────────── */
+.bottom-nav {
+  position: fixed;
+  bottom: 0; left: 0; right: 0;
+  height: var(--bottomnav-h);
+  background: #fff;
+  border-top: 1px solid var(--border);
+  display: flex;
+  z-index: 100;
+  box-shadow: 0 -2px 12px rgba(0,0,0,0.07);
+}
+
+.bn-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  cursor: pointer;
+  color: var(--text3);
+  font-size: 10px;
+  font-family: 'Nunito', sans-serif;
+  font-weight: 700;
+  transition: color .2s;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.bn-btn svg { width: 22px; height: 22px; transition: transform .2s; }
+.bn-btn.active { color: var(--accent); }
+.bn-btn.active svg { transform: scale(1.1); }
+
+/* ── Home Page ───────────────────────────────────────────────────────────── */
+.home-hero {
+  background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
+  padding: 28px 20px 24px;
+  color: #fff;
+}
+
+.home-hero h1 {
+  font-family: 'Nunito', sans-serif;
+  font-size: 26px;
+  font-weight: 900;
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.home-hero p { font-size: 14px; opacity: .88; margin-bottom: 16px; }
+
+.hero-stats {
+  display: flex;
+  gap: 16px;
+}
+
+.hero-stat {
+  background: rgba(255,255,255,0.22);
+  border-radius: 10px;
+  padding: 8px 14px;
+  text-align: center;
+}
+
+.hero-stat strong {
+  display: block;
+  font-family: 'Nunito', sans-serif;
+  font-size: 22px;
+  font-weight: 900;
+}
+
+.hero-stat span { font-size: 11px; opacity: .85; }
+
+/* Category Pills */
+.cat-scroll {
+  padding: 14px 16px 4px;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.cat-scroll::-webkit-scrollbar { display: none; }
+
+.cat-pill {
+  flex-shrink: 0;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  border-radius: 24px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: 'Nunito', sans-serif;
+  cursor: pointer;
+  transition: all .2s;
+  white-space: nowrap;
+  color: var(--text2);
+}
+
+.cat-pill:hover, .cat-pill.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* Section title */
+.section-title {
+  font-family: 'Nunito', sans-serif;
+  font-size: 18px;
+  font-weight: 900;
+  padding: 16px 16px 10px;
+  color: var(--text1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-title a {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* ── Products Grid ───────────────────────────────────────────────────────── */
+.products-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 0 10px;
+}
+
+@media (min-width: 600px) {
+  .products-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (min-width: 900px) {
+  .products-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+@media (min-width: 1200px) {
+  .products-grid { grid-template-columns: repeat(5, 1fr); }
+}
+
+/* ── Product Card ────────────────────────────────────────────────────────── */
+.product-card {
+  background: #fff;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  transition: transform .2s, box-shadow .2s;
+  cursor: pointer;
+}
+
+.product-card:hover { transform: translateY(-3px); box-shadow: 0 8px 24px rgba(0,0,0,0.12); }
+
+.card-img-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: #f8f8f8;
+}
+
+.card-img-wrap img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform .3s;
+}
+.product-card:hover .card-img-wrap img { transform: scale(1.04); }
+
+.card-tags {
+  position: absolute;
+  top: 8px; left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tag {
+  font-size: 10px;
+  font-weight: 800;
+  font-family: 'Nunito', sans-serif;
+  padding: 3px 7px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.tag-hit     { background: #FF6B35; color: #fff; }
+.tag-new     { background: #2ECC71; color: #fff; }
+.tag-sale    { background: #E74C3C; color: #fff; }
+.tag-excl    { background: #9B59B6; color: #fff; }
+
+.stock-badge {
+  position: absolute;
+  bottom: 8px; right: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  font-family: 'Nunito', sans-serif;
+  padding: 3px 8px;
+  border-radius: 8px;
+}
+.stock-ok  { background: #d4f4e2; color: #1a7a46; }
+.stock-low { background: #fff3cd; color: #856404; }
+.stock-out { background: #f8d7da; color: #842029; }
+
+.card-body {
+  padding: 10px 11px 4px;
+  flex: 1;
+}
+
+.card-name {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.35;
+  margin-bottom: 4px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-brand {
+  font-size: 11px;
+  color: var(--text3);
+  font-weight: 600;
+}
+
+.card-price-row {
+  padding: 6px 11px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.card-price {
+  font-family: 'Nunito', sans-serif;
+  font-size: 16px;
+  font-weight: 900;
+  color: var(--accent);
+}
+
+.card-price small { font-size: 11px; font-weight: 600; color: var(--text3); }
+
+.card-add {
+  flex-shrink: 0;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .2s, transform .15s;
+  font-weight: 300;
+  line-height: 1;
+}
+.card-add:hover { background: #e05a25; transform: scale(1.1); }
+.card-add.in-cart { background: var(--green); }
+.card-add:disabled { background: #ddd; cursor: not-allowed; }
+
+/* ── Qty controls ────────────────────────────────────────────────────────── */
+.qty-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.qty-row button {
+  width: 28px; height: 28px;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+  flex-shrink: 0;
+}
+.qty-row button:hover { background: var(--bg); }
+.qty-row input {
+  width: 40px;
+  text-align: center;
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 4px 0;
+  font-family: inherit;
+  outline: none;
+}
+
+/* ── Cart Drawer ─────────────────────────────────────────────────────────── */
+.cart-drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: min(380px, 100vw);
+  background: #fff;
+  z-index: 300;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform .3s cubic-bezier(.4,0,.2,1);
+  box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+}
+
+.cart-drawer.open { transform: translateX(0); }
+
+.cart-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 299;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .3s;
+}
+.cart-backdrop.show { opacity: 1; pointer-events: all; }
+
+.cart-drawer-head {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cart-drawer-head h2 {
+  font-family: 'Nunito', sans-serif;
+  font-size: 20px;
+  font-weight: 900;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.badge-pill {
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+.cart-drawer-head button {
+  border: none; background: none; font-size: 20px; cursor: pointer; color: var(--text3); padding: 4px;
+}
+
+.cart-drawer-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.cart-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 200px;
+  gap: 12px;
+  color: var(--text3);
+}
+.cart-empty svg { width: 52px; height: 52px; }
+.cart-empty p { font-size: 14px; font-weight: 600; }
+
+.cart-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: flex-start;
+}
+.cart-item img { width: 60px; height: 60px; object-fit: cover; border-radius: 10px; flex-shrink: 0; }
+.cart-item-info { flex: 1; min-width: 0; }
+.cart-item-name { font-size: 13px; font-weight: 700; margin-bottom: 2px; line-height: 1.3; }
+.cart-item-sku { font-size: 11px; color: var(--text3); }
+.cart-item-price { font-size: 14px; font-weight: 900; color: var(--accent); font-family: 'Nunito', sans-serif; margin-top: 6px; }
+.cart-item-remove { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 18px; padding: 2px 4px; flex-shrink: 0; }
+
+.cart-drawer-foot {
+  padding: 14px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--border);
+}
+
+.cart-drawer-foot textarea {
+  width: 100%;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  margin-bottom: 12px;
+  transition: border-color .2s;
+}
+.cart-drawer-foot textarea:focus { border-color: var(--accent); }
+
+.cart-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 700;
+}
+.cart-total-row small { font-size: 12px; color: var(--text3); font-weight: 600; }
+.cart-total-row strong { font-family: 'Nunito', sans-serif; font-size: 22px; font-weight: 900; color: var(--accent); }
+
+/* ── Filters row ─────────────────────────────────────────────────────────── */
+.filters-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.filters-row::-webkit-scrollbar { display: none; }
+
+.filter-chip {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: 'Nunito', sans-serif;
+  cursor: pointer;
+  transition: all .2s;
+  color: var(--text2);
+}
+.filter-chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.sort-chip {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: 'Nunito', inherit;
+  cursor: pointer;
+  outline: none;
+  color: var(--text2);
+}
+
+/* ── Product count ───────────────────────────────────────────────────────── */
+.results-info {
+  padding: 8px 16px 6px;
+  font-size: 12px;
+  color: var(--text3);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.reset-link {
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+/* ── Product Modal ───────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 400;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .25s;
+}
+.overlay.open { opacity: 1; pointer-events: all; }
+
+.modal {
+  background: #fff;
+  width: 100%;
+  max-width: 560px;
+  border-radius: 20px 20px 0 0;
+  max-height: 92vh;
+  overflow-y: auto;
+  position: relative;
+}
+
+@media (min-width: 600px) {
+  .overlay { align-items: center; }
+  .modal { border-radius: 20px; max-height: 85vh; }
+}
+
+.modal-x {
+  position: absolute;
+  top: 14px; right: 14px;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: var(--bg);
+  font-size: 14px;
+  cursor: pointer;
+  z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.product-modal-img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 20px 20px 0 0;
+}
+
+.product-modal-body { padding: 20px; }
+
+.product-modal-brand { font-size: 12px; color: var(--text3); font-weight: 700; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+.product-modal-name { font-family: 'Nunito', sans-serif; font-size: 22px; font-weight: 900; margin-bottom: 8px; line-height: 1.2; }
+.product-modal-sku { font-size: 12px; color: var(--text3); margin-bottom: 14px; }
+.product-modal-price { font-family: 'Nunito', sans-serif; font-size: 30px; font-weight: 900; color: var(--accent); margin-bottom: 16px; }
+.product-modal-price small { font-size: 14px; color: var(--text3); font-weight: 600; }
+.product-modal-desc { font-size: 14px; color: var(--text2); line-height: 1.6; margin-bottom: 20px; }
+
+.product-modal-add {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.product-modal-add .btn-primary { flex: 1; }
+
+.similar-title {
+  font-family: 'Nunito', sans-serif;
+  font-size: 16px;
+  font-weight: 800;
+  margin-bottom: 12px;
+}
+
+.similar-scroll {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-bottom: 4px;
+}
+.similar-scroll::-webkit-scrollbar { display: none; }
+
+.similar-card {
+  flex-shrink: 0;
+  width: 120px;
+  background: var(--bg);
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.similar-card img { width: 120px; height: 120px; object-fit: cover; }
+.similar-card-info { padding: 7px 8px; }
+.similar-card-name { font-size: 11px; font-weight: 700; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.similar-card-price { font-size: 12px; font-weight: 900; color: var(--accent); font-family: 'Nunito', sans-serif; }
+
+/* ── Auth Modal ──────────────────────────────────────────────────────────── */
+.auth-modal {
+  background: #fff;
+  width: 100%;
+  max-width: 420px;
+  border-radius: 20px 20px 0 0;
+  padding: 24px 24px 32px;
+  position: relative;
+}
+@media (min-width: 600px) { .auth-modal { border-radius: 20px; } }
+
+.auth-tabs {
+  display: flex;
+  gap: 0;
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 4px;
+  margin-bottom: 20px;
+}
+.auth-tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  border-radius: 9px;
+  padding: 9px;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: 'Nunito', sans-serif;
+  cursor: pointer;
+  transition: all .2s;
+  color: var(--text2);
+}
+.auth-tab.active { background: #fff; color: var(--accent); box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+
+.fields-row { display: flex; gap: 10px; }
+.fields-row .field { flex: 1; }
+
+/* ── Form fields ─────────────────────────────────────────────────────────── */
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; font-weight: 700; color: var(--text2); margin-bottom: 5px; }
+.field input, .field select, .field textarea {
+  width: 100%;
+  padding: 10px 13px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .2s;
+  background: #fff;
+}
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  padding: 13px 20px;
+  font-size: 15px;
+  font-weight: 800;
+  font-family: 'Nunito', sans-serif;
+  cursor: pointer;
+  transition: background .2s, transform .15s;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+}
+.btn-primary:hover { background: #e05a25; }
+.btn-primary:active { transform: scale(.97); }
+.btn-primary.full { width: 100%; }
+
+/* ── Profile page ────────────────────────────────────────────────────────── */
+.profile-page { padding: 20px 16px; }
+.profile-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #fff;
+  border-radius: 16px;
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.profile-avatar {
+  width: 56px; height: 56px;
+  background: linear-gradient(135deg, #FF6B35, #FFB347);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Nunito', sans-serif;
+  font-size: 22px;
+  font-weight: 900;
+  color: #fff;
+  flex-shrink: 0;
+}
+.profile-name { font-family: 'Nunito', sans-serif; font-size: 18px; font-weight: 900; }
+.profile-email { font-size: 13px; color: var(--text3); }
+
+.profile-card {
+  background: #fff;
+  border-radius: 16px;
+  padding: 18px;
+  margin-bottom: 14px;
+  box-shadow: var(--shadow);
+}
+.profile-card h3 {
+  font-family: 'Nunito', sans-serif;
+  font-size: 15px;
+  font-weight: 800;
+  margin-bottom: 14px;
+  color: var(--text1);
+  display: flex; align-items: center; gap: 7px;
+}
+.info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.info-row:last-child { border-bottom: none; }
+.info-row span:first-child { color: var(--text3); font-weight: 600; }
+.info-row span:last-child { font-weight: 700; }
+
+.order-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.order-row:last-child { border-bottom: none; }
+.order-code { font-weight: 800; color: var(--accent); }
+.order-meta { color: var(--text3); font-size: 11px; }
+.order-total { font-weight: 900; font-family: 'Nunito', sans-serif; }
+
+/* ── Admin Page ──────────────────────────────────────────────────────────── */
+.admin-page { padding: 16px; }
+
+.admin-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 20px;
+}
+@media (min-width: 600px) { .admin-stats { grid-template-columns: repeat(5, 1fr); } }
+
+.stat-card {
+  background: #fff;
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+}
+.stat-label { font-size: 11px; color: var(--text3); font-weight: 700; margin-bottom: 4px; }
+.stat-val { font-family: 'Nunito', sans-serif; font-size: 28px; font-weight: 900; color: var(--text1); }
+
+.admin-section {
+  background: #fff;
+  border-radius: 16px;
+  padding: 18px;
+  margin-bottom: 16px;
+  box-shadow: var(--shadow);
+}
+.admin-section h3 {
+  font-family: 'Nunito', sans-serif;
+  font-size: 16px;
+  font-weight: 900;
+  margin-bottom: 16px;
+  display: flex; align-items: center; gap: 7px;
+}
+
+/* Image upload */
+.img-upload-area {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  margin-bottom: 10px;
+}
+.img-upload-area:hover { border-color: var(--accent); background: #fff5f0; }
+.img-upload-area.has-img { border-style: solid; border-color: var(--accent); padding: 0; overflow: hidden; }
+/* img-upload-area img — see bottom */
+.img-upload-area svg { width: 40px; height: 40px; color: var(--text3); margin-bottom: 8px; }
+.img-upload-area p { font-size: 13px; color: var(--text3); }
+.img-upload-area input { display: none; }
+
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 480px) { .form-grid { grid-template-columns: 1fr; } }
+.form-grid.full { grid-template-columns: 1fr; }
+
+/* Customers table */
+.customers-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.customers-table th { text-align: left; padding: 8px 10px; font-size: 11px; color: var(--text3); font-weight: 700; border-bottom: 2px solid var(--border); }
+.customers-table td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.customers-table tr:last-child td { border-bottom: none; }
+.customers-table tr:hover td { background: #fafafa; }
+.c-name { font-weight: 700; }
+.c-email { color: var(--text3); font-size: 11px; }
+.c-orders { font-weight: 800; color: var(--accent); font-family: 'Nunito', sans-serif; }
+
+/* Cart rows */
+.cart-rows { display: flex; flex-direction: column; gap: 10px; }
+.cart-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: 12px;
+  font-size: 13px;
+}
+.cart-row-info { flex: 1; }
+.cart-row-name { font-weight: 700; }
+.cart-row-meta { font-size: 11px; color: var(--text3); }
+.cart-row-total { font-weight: 900; font-family: 'Nunito', sans-serif; color: var(--accent); }
+
+/* Share modal */
+.share-modal { padding: 24px; }
+.share-modal h2 { font-family: 'Nunito', sans-serif; font-size: 20px; font-weight: 900; margin-bottom: 14px; }
+.share-summary { background: var(--bg); border-radius: 12px; padding: 14px; margin-bottom: 14px; font-size: 13px; max-height: 200px; overflow-y: auto; }
+.share-summary-row { display: flex; justify-content: space-between; padding: 4px 0; }
+.share-link-box { display: flex; gap: 8px; align-items: center; background: var(--bg); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; }
+.share-link-box span { flex: 1; font-size: 12px; color: var(--text2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-link-box button { flex-shrink: 0; border: none; background: var(--accent); color: #fff; border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 700; cursor: pointer; }
+.share-btns { display: flex; gap: 10px; }
+.btn-wa { flex: 1; background: #25D366; color: #fff; border: none; border-radius: 12px; padding: 12px; font-size: 14px; font-weight: 800; font-family: 'Nunito', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; }
+
+/* ── Skeleton ────────────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite;
+}
+@keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+.skel-card { border-radius: var(--radius); aspect-ratio: 1.2; }
+
+/* ── Toast ───────────────────────────────────────────────────────────────── */
+.toast-wrap {
+  position: fixed;
+  top: 70px; right: 12px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.toast {
+  background: #1A1A2E;
+  color: #fff;
+  padding: 11px 16px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateX(120%);
+  transition: transform .3s cubic-bezier(.4,0,.2,1);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+  pointer-events: auto;
+}
+.toast.show { transform: translateX(0); }
+.toast.ok::before { content: '✓'; color: var(--green); font-weight: 900; }
+.toast.err::before { content: '✕'; color: var(--red); font-weight: 900; }
+.toast.info::before { content: 'ℹ'; color: var(--accent2); }
+
+/* ── Empty / Loading ─────────────────────────────────────────────────────── */
+.empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text3);
+}
+.empty-state svg { width: 48px; height: 48px; margin-bottom: 12px; }
+.empty-state h3 { font-family: 'Nunito', sans-serif; font-size: 18px; font-weight: 900; margin-bottom: 6px; color: var(--text2); }
+.empty-state p { font-size: 14px; }
+
+/* ── Pagination ──────────────────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 16px;
+  flex-wrap: wrap;
+}
+.page-btn {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s;
+}
+.page-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.page-btn:hover:not(.active) { border-color: var(--accent); color: var(--accent); }
+
+/* ── Logout btn ──────────────────────────────────────────────────────────── */
+.btn-danger {
+  background: #fff;
+  color: var(--red);
+  border: 1.5px solid var(--red);
+  border-radius: 12px;
+  padding: 11px 20px;
+  font-size: 14px;
+  font-weight: 800;
+  font-family: 'Nunito', sans-serif;
+  cursor: pointer;
+  transition: background .2s;
+  width: 100%;
+}
+.btn-danger:hover { background: #fff0f0; }
+
+/* ── Cart bottom buttons ─────────────────────────────────────────────────── */
+.cart-bottom-btns {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.cart-bottom-btns .btn-primary { flex: 1; min-width: 0; }
+.btn-pdf-cart {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 16px;
+  background: #fff;
+  color: var(--accent);
+  border: 2.5px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+  transition: background .15s, color .15s;
+}
+.btn-pdf-cart:hover  { background: var(--accent); color: #fff; }
+.btn-pdf-cart:active { transform: scale(0.95); }
+
+/* ── img upload fix — квадрат без растяжки ──────────────────────────────── */
+.img-upload-area.has-img {
+  border-style: solid;
+  border-color: var(--accent);
+  padding: 0;
+  overflow: hidden;
+  background: #f8f8f8;
+  aspect-ratio: 1;
+}
+.img-upload-area img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* ── iOS / Android ───────────────────────────────────────────────────────── */
+button, a, input, select, textarea, label { touch-action: manipulation; }
+
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom);
+    height: calc(var(--bottomnav-h) + env(safe-area-inset-bottom));
   }
-  renderCart();
-  toast(`${p.name.slice(0,30)} добавлен в корзину`);
-  updateCartBadge();
-}
-
-function removeFromCart(id) {
-  delete State.cart[id];
-  renderCart();
-  updateCartBadge();
-}
-
-function adjustQty(id, delta) {
-  if (!State.cart[id]) return;
-  State.cart[id].qty = Math.max(1, State.cart[id].qty + delta);
-  renderCart();
-}
-
-function updateCartBadge() {
-  const count = Object.values(State.cart).reduce((s, i) => s + i.qty, 0);
-  const badge = $('cartBadge');
-  if (badge) {
-    badge.textContent = count;
-    badge.style.display = count > 0 ? 'flex' : 'none';
+  #mainContent {
+    padding-bottom: calc(var(--bottomnav-h) + env(safe-area-inset-bottom) + 16px);
   }
-  const headCount = $('cartHeadCount');
-  if (headCount) headCount.textContent = count;
-}
-
-function toggleCart() {
-  State.cartOpen = !State.cartOpen;
-  $('cartDrawer').classList.toggle('open', State.cartOpen);
-  $('cartBackdrop').classList.toggle('show', State.cartOpen);
-}
-
-function renderCart() {
-  const list = $('cartList');
-  const foot = $('cartFoot');
-  if (!list) return;
-
-  const items = Object.values(State.cart);
-  if (!items.length) {
-    list.innerHTML = `<div class="cart-empty">
-      <svg viewBox="0 0 64 64" fill="none"><path d="M8 16h48l-6 28H14L8 16z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><circle cx="22" cy="54" r="3" fill="currentColor"/><circle cx="42" cy="54" r="3" fill="currentColor"/><path d="M2 8h8l4 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
-      <p>Корзина пуста</p></div>`;
-    if (foot) foot.style.display = 'none';
-    return;
-  }
-
-  if (foot) foot.style.display = 'block';
-
-  let html = '';
-  let total = 0;
-  let totalQty = 0;
-
-  items.forEach(({ product: p, qty }) => {
-    const sub = p.price * qty;
-    total += sub;
-    totalQty += qty;
-    html += `
-    <div class="cart-item">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-      <div class="cart-item-info">
-        <div class="cart-item-name">${escHtml(p.name)}</div>
-        <div class="cart-item-sku">SKU: ${escHtml(p.sku)}</div>
-        <div class="qty-row" style="margin-top:6px">
-          <button onclick="adjustQty(${p.id},-1)">−</button>
-          <input type="number" value="${qty}" min="1"
-            onchange="State.cart[${p.id}].qty=Math.max(1,parseInt(this.value)||1);renderCart();updateCartBadge()">
-          <button onclick="adjustQty(${p.id},1)">+</button>
-        </div>
-        <div class="cart-item-price">${rub(sub)}</div>
-      </div>
-      <button class="cart-item-remove" onclick="removeFromCart(${p.id})">✕</button>
-    </div>`;
-  });
-
-  list.innerHTML = html;
-
-  const totalVal = $('cartTotalVal');
-  const totalQtyEl = $('cartTotalQty');
-  if (totalVal) totalVal.textContent = rub(total);
-  if (totalQtyEl) totalQtyEl.textContent = `${totalQty} шт`;
-}
-
-// ── Product Card ──────────────────────────────────────────────────────────────
-function renderProductCard(p) {
-  const tagMap = { 'Новинка': 'new', 'Хит': 'hit', 'Акция': 'sale', 'Эксклюзив': 'excl' };
-  const tagClass = { 'Новинка': 'tag-new', 'Хит': 'tag-hit', 'Акция': 'tag-sale', 'Эксклюзив': 'tag-excl' };
-
-  const tags = (p.tags || []).map(t => `<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
-  const disabled = p.stock === 'out' ? 'disabled' : '';
-  const inCart = !!State.cart[p.id];
-
-  return `
-  <div class="product-card" onclick="openProduct(${p.id})">
-    <div class="card-img-wrap">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async">
-      ${tags ? `<div class="card-tags">${tags}</div>` : ''}
-      <span class="stock-badge stock-${p.stock}">${stockLabel(p.stock)}</span>
-    </div>
-    <div class="card-body">
-      <div class="card-name">${escHtml(p.name)}</div>
-      <div class="card-brand">${escHtml(p.brand)}</div>
-    </div>
-    <div class="card-price-row">
-      <div class="card-price">${rub(p.price)}<small>/шт</small></div>
-      <button class="card-add ${inCart ? 'in-cart' : ''}" ${disabled}
-        onclick="event.stopPropagation();addToCart(${p.id})">
-        ${inCart ? '✓' : '+'}
-      </button>
-    </div>
-  </div>`;
-}
-
-function renderSkeletons(n = 8) {
-  return Array(n).fill(0).map(() => `<div class="skeleton skel-card"></div>`).join('');
-}
-
-// ── Load products ─────────────────────────────────────────────────────────────
-let _loadCtrl = null;  // AbortController
-async function loadProducts() {
-  // Отмена предыдущего запроса
-  if (_loadCtrl) _loadCtrl.abort();
-  _loadCtrl = new AbortController();
-  State.loading = true;
-  const grid = $('productsGrid');
-  if (grid) grid.innerHTML = renderSkeletons(8);
-
-  try {
-    const data = await API.products({
-      category: State.category,
-      search:   State.search,
-      stock:    State.stock,
-      sort:     State.sort,
-    });
-    State.products = data.items;
-    State.total    = data.total;
-
-    if (grid) {
-      grid.innerHTML = State.products.length
-        ? State.products.map(renderProductCard).join('')
-        : `<div class="empty-state">
-             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-             <h3>Ничего не найдено</h3><p>Попробуйте изменить фильтры</p></div>`;
-    }
-
-    const countEl = $('productCount');
-    if (countEl) countEl.textContent = `${data.total} позиций`;
-
-    renderPagination(data.page, data.pages);
-  } catch (e) {
-    console.error(e);
-    if (grid) grid.innerHTML = `<div class="empty-state"><h3>Ошибка загрузки</h3></div>`;
-  } finally {
-    State.loading = false;
+  .cart-drawer-foot {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
 }
-
-function renderPagination(page, pages) {
-  const el = $('pagination');
-  if (!el || pages <= 1) { if (el) el.innerHTML = ''; return; }
-
-  let html = '';
-  for (let i = 1; i <= Math.min(pages, 10); i++) {
-    html += `<button class="page-btn ${i === page ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
-  }
-  el.innerHTML = html;
+@media (display-mode: standalone) {
+  .topbar { padding-top: env(safe-area-inset-top, 0px); }
 }
-
-function goPage(n) {
-  State.pageNum = n;
-  loadProducts();
-  $('mainContent').scrollIntoView({ behavior: 'smooth' });
+.cart-drawer-list, .cat-scroll, .filters-row, .similar-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
 }
-
-// ── Filters ───────────────────────────────────────────────────────────────────
-function setCategory(cat) {
-  State.category = cat;
-  State.pageNum  = 1;
-  document.querySelectorAll('.cat-pill').forEach(b => b.classList.toggle('active', b.dataset.cat === (cat || '')));
-  loadProducts();
+@media (hover: none) and (pointer: coarse) {
+  .product-card:hover  { transform: none; box-shadow: var(--shadow); }
+  .product-card:active { transform: scale(0.97); transition: transform .1s; }
+  .card-add:active     { transform: scale(0.9); }
+  .btn-primary:active  { transform: scale(0.97); }
 }
-
-function setStock(s) {
-  State.stock = s;
-  State.pageNum = 1;
-  document.querySelectorAll('.filter-chip').forEach(b => b.classList.toggle('active', b.dataset.stock === (s || '')));
-  loadProducts();
-}
-
-function setSort(v) {
-  State.sort = v;
-  State.pageNum = 1;
-  loadProducts();
-}
-
-function clearFilters() {
-  State.category = null;
-  State.stock    = null;
-  State.sort     = 'default';
-  State.search   = '';
-  State.pageNum  = 1;
-  const si = $('topSearch');
-  if (si) si.value = '';
-  loadProducts();
-}
-
-// ── Home page ─────────────────────────────────────────────────────────────────
-async function renderHome() {
-  let cats = [];
-  try { cats = await getCategories(); } catch(e){}
-
-  const catPills = cats.map(c =>
-    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');setCategory('${escHtml(c.name)}')">${escHtml(c.name)} <small>${c.count}</small></button>`
-  ).join('');
-
-  $('mainContent').innerHTML = `
-    <div class="home-hero">
-      <h1>Happy Toys<br>Оптовый каталог</h1>
-      <p>Лучшие игрушки для вашего магазина</p>
-      <div class="hero-stats">
-        <div class="hero-stat"><strong>200+</strong><span>Товаров</span></div>
-        <div class="hero-stat"><strong>10</strong><span>Брендов</span></div>
-        <div class="hero-stat"><strong>8</strong><span>Категорий</span></div>
-      </div>
-    </div>
-
-    <div class="cat-scroll">
-      <button class="cat-pill active" data-cat="" onclick="navigate('catalog');setCategory(null)">Все товары</button>
-      ${catPills}
-    </div>
-
-    <div class="section-title">
-      Популярные товары
-      <a onclick="navigate('catalog')">Все →</a>
-    </div>
-
-    <div class="filters-row">
-      <button class="filter-chip active" data-stock="" onclick="setStock(null)">Все</button>
-      <button class="filter-chip" data-stock="ok" onclick="setStock('ok')">В наличии</button>
-      <button class="filter-chip" data-stock="low" onclick="setStock('low')">Заканчиваются</button>
-      <select class="sort-chip" onchange="setSort(this.value)">
-        <option value="default">Сортировка</option>
-        <option value="price-asc">Цена ↑</option>
-        <option value="price-desc">Цена ↓</option>
-        <option value="name">По названию</option>
-      </select>
-    </div>
-
-    <div class="results-info">
-      <span id="productCount">Загрузка...</span>
-      <span class="reset-link" onclick="clearFilters()">Сбросить</span>
-    </div>
-
-    <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
-    <div id="pagination" class="pagination"></div>
-  `;
-
-  loadProducts();
-}
-
-// ── Catalog page ──────────────────────────────────────────────────────────────
-async function renderCatalog() {
-  let cats = [];
-  try { cats = await getCategories(); } catch(e){}
-
-  const catPills = [
-    `<button class="cat-pill ${!State.category ? 'active' : ''}" data-cat="" onclick="setCategory(null)">Все</button>`,
-    ...cats.map(c =>
-      `<button class="cat-pill ${State.category===c.name ? 'active' : ''}" data-cat="${escHtml(c.name)}" onclick="setCategory('${escHtml(c.name)}')">${escHtml(c.name)}</button>`
-    )
-  ].join('');
-
-  $('mainContent').innerHTML = `
-    <div class="cat-scroll" style="padding-top:14px">${catPills}</div>
-
-    <div class="filters-row">
-      <button class="filter-chip active" data-stock="" onclick="setStock(null)">Все</button>
-      <button class="filter-chip" data-stock="ok" onclick="setStock('ok')">В наличии</button>
-      <button class="filter-chip" data-stock="low" onclick="setStock('low')">Мало</button>
-      <select class="sort-chip" onchange="setSort(this.value)">
-        <option value="default">Сортировка</option>
-        <option value="price-asc">Цена ↑</option>
-        <option value="price-desc">Цена ↓</option>
-        <option value="name">А-Я</option>
-      </select>
-    </div>
-
-    <div class="results-info">
-      <span id="productCount">Загрузка...</span>
-      <span class="reset-link" onclick="clearFilters()">Сбросить фильтры</span>
-    </div>
-
-    <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
-    <div id="pagination" class="pagination"></div>
-  `;
-
-  loadProducts();
-}
-
-// ── Product modal ─────────────────────────────────────────────────────────────
-async function openProduct(id) {
-  const overlay = $('productOverlay');
-  overlay.classList.add('open');
-  $('modalInner').innerHTML = `<div style="padding:40px;text-align:center"><div class="skeleton" style="width:100%;aspect-ratio:1;border-radius:20px 20px 0 0;margin-bottom:16px"></div></div>`;
-
-  try {
-    const p = await API.product(id);
-    State._lastProduct = p;
-
-    const inCart = !!State.cart[id];
-    const disabled = p.stock === 'out' ? 'disabled' : '';
-
-    const similar = (p.similar || []).map(s => `
-      <div class="similar-card" onclick="openProduct(${s.id})">
-        <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}">
-        <div class="similar-card-info">
-          <div class="similar-card-name">${escHtml(s.name)}</div>
-          <div class="similar-card-price">${rub(s.price)}</div>
-        </div>
-      </div>`).join('');
-
-    $('modalInner').innerHTML = `
-      <img class="product-modal-img" src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-      <div class="product-modal-body">
-        <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
-        <div class="product-modal-name">${escHtml(p.name)}</div>
-        <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Мин. заказ: ${p.min_order} шт · Возраст: ${p.age_min}+</div>
-        <div class="product-modal-price">${rub(p.price)} <small>/ шт</small></div>
-        <div class="product-modal-desc">${escHtml(p.description)}</div>
-
-        <div class="product-modal-add">
-          <div class="qty-row">
-            <button onclick="adjustModalQty(-1)">−</button>
-            <input id="modalQty" type="number" value="1" min="1" max="999">
-            <button onclick="adjustModalQty(1)">+</button>
-          </div>
-          <button class="btn-primary" style="flex:1" ${disabled}
-            onclick="addToCart(${p.id}, parseInt($('modalQty').value)||1);closeProductModal()">
-            ${inCart ? '✓ В корзине' : 'В корзину'}
-          </button>
-        </div>
-
-        ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
-      </div>
-    `;
-  } catch(e) {
-    $('modalInner').innerHTML = `<div style="padding:40px;text-align:center;color:#999">Ошибка загрузки</div>`;
-  }
-}
-
-function adjustModalQty(d) {
-  const el = $('modalQty');
-  if (el) el.value = Math.max(1, (parseInt(el.value)||1) + d);
-}
-
-function closeProductModal() {
-  $('productOverlay').classList.remove('open');
-}
-
-// ── Auth ──────────────────────────────────────────────────────────────────────
-function openAuth()  { $('authOverlay').classList.add('open'); }
-function closeAuth() { $('authOverlay').classList.remove('open'); }
-
-function switchTab(tab) {
-  $('formLogin').style.display    = tab === 'login'    ? 'block' : 'none';
-  $('formRegister').style.display = tab === 'register' ? 'block' : 'none';
-  $('tabLogin').classList.toggle('active',    tab === 'login');
-  $('tabRegister').classList.toggle('active', tab === 'register');
-}
-
-async function doLogin() {
-  const u = $('loginEmail')?.value.trim();
-  const p = $('loginPass')?.value;
-  if (!u || !p) return toast('Заполните все поля', 'err');
-  try {
-    const data = await API.login(u, p);
-    State.user = { token: data.token, role: data.role, customer: data.customer };
-    if (data.role === 'admin') State.adminToken = data.token;
-    closeAuth();
-    toast('Добро пожаловать!');
-    updateAuthBtn();
-    if (data.role === 'admin') $('bn-admin').style.display = 'flex';
-  } catch(e) {
-    toast('Неверные данные', 'err');
-  }
-}
-
-async function doRegister() {
-  const first = $('regFirst')?.value.trim();
-  const last  = $('regLast')?.value.trim();
-  const email = $('regEmail')?.value.trim();
-  const phone = $('regPhone')?.value.trim();
-  const addr  = $('regAddr')?.value.trim();
-  const pass  = $('regPass')?.value;
-  if (!first||!last||!email||!phone||!pass) return toast('Заполните все поля', 'err');
-  if (pass.length < 6) return toast('Пароль минимум 6 символов', 'err');
-  try {
-    const data = await API.register({ first_name: first, last_name: last, email, phone, address: addr, password: pass });
-    State.user = { token: data.token, role: 'customer', customer: data.customer };
-    closeAuth();
-    toast(`Добро пожаловать, ${first}!`);
-    updateAuthBtn();
-  } catch(e) {
-    const msg = e.message.includes('already') ? 'Email уже зарегистрирован' : 'Ошибка регистрации';
-    toast(msg, 'err');
-  }
-}
-
-function doLogout() {
-  State.user       = null;
-  State.adminToken = null;
-  $('bn-admin').style.display = 'none';
-  updateAuthBtn();
-  navigate('home');
-  toast('Вы вышли из аккаунта');
-}
-
-function updateAuthBtn() {
-  const btn = $('authBtn');
-  if (!btn) return;
-  if (State.user) {
-    btn.style.background = 'var(--accent)';
-    btn.querySelector('svg').style.color = '#fff';
-  } else {
-    btn.style.background = '';
-    btn.querySelector('svg').style.color = '';
-  }
-}
-
-// ── Profile page ──────────────────────────────────────────────────────────────
-function renderProfile() {
-  const mc = $('mainContent');
-
-  if (!State.user) {
-    mc.innerHTML = `
-      <div style="padding:40px 20px;text-align:center">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="1.5" stroke-linecap="round" style="margin-bottom:16px"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        <h3 style="font-family:'Nunito',sans-serif;font-weight:900;margin-bottom:8px">Войдите в аккаунт</h3>
-        <p style="color:#999;margin-bottom:20px;font-size:14px">Чтобы видеть историю заказов и управлять профилем</p>
-        <button class="btn-primary" onclick="openAuth()" style="display:inline-flex">Войти / Регистрация</button>
-      </div>`;
-    return;
-  }
-
-  if (State.user.role === 'admin') {
-    renderAdmin();
-    return;
-  }
-
-  const c = State.user.customer;
-  const orders = c?.orders || [];
-
-  const ordersHtml = orders.length
-    ? orders.map(o => `
-        <div class="order-row">
-          <div>
-            <div class="order-code">#${o.code}</div>
-            <div class="order-meta">${o.date?.slice(0,10)} · ${o.items_count} позиций</div>
-          </div>
-          <div class="order-total">${rub(o.total)}</div>
-        </div>`).join('')
-    : `<p style="color:#999;font-size:14px">Заказов пока нет</p>`;
-
-  mc.innerHTML = `
-    <div class="profile-page">
-      <div class="profile-header">
-        <div class="profile-avatar">${initials(c)}</div>
-        <div>
-          <div class="profile-name">${escHtml(c?.first_name||'')} ${escHtml(c?.last_name||'')}</div>
-          <div class="profile-email">${escHtml(c?.email||'')}</div>
-        </div>
-      </div>
-
-      <div class="profile-card">
-        <h3>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          Контактные данные
-        </h3>
-        <div class="info-row"><span>Телефон</span><span>${escHtml(c?.phone||'—')}</span></div>
-        <div class="info-row"><span>Email</span><span>${escHtml(c?.email||'—')}</span></div>
-        <div class="info-row"><span>Адрес доставки</span><span>${escHtml(c?.address||'—')}</span></div>
-        <div class="info-row"><span>Дата регистрации</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
-      </div>
-
-      <div class="profile-card">
-        <h3>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-          История заказов (${orders.length})
-        </h3>
-        ${ordersHtml}
-      </div>
-
-      <button class="btn-danger" onclick="doLogout()">Выйти из аккаунта</button>
-    </div>`;
-}
-
-// ── Share modal ───────────────────────────────────────────────────────────────
-async function openShareModal() {
-  const items = Object.values(State.cart);
-  if (!items.length) { toast('Корзина пуста', 'err'); return; }
-
-  $('shareOverlay').classList.add('open');
-
-  const rows = items.map(({product:p, qty}) => `
-    <div class="share-summary-row">
-      <span>${escHtml(p.name.slice(0,35))} ×${qty}</span>
-      <span>${rub(p.price * qty)}</span>
-    </div>`).join('');
-
-  const total = items.reduce((s,{product:p,qty}) => s + p.price*qty, 0);
-  $('shareSummary').innerHTML = rows + `<div class="share-summary-row" style="font-weight:900;border-top:1px solid #eee;padding-top:8px;margin-top:4px"><span>Итого</span><span>${rub(total)}</span></div>`;
-  $('shareUrlSpan').textContent = 'Генерация...';
-
-  try {
-    const payload = {
-      items: items.map(({product:p,qty}) => ({ id:p.id, name:p.name, sku:p.sku, price:p.price, quantity:qty })),
-      comment: $('cartComment')?.value || '',
-      customer_id: State.user?.customer?.id || null,
-    };
-    const data = await API.shareCart(payload);
-    $('shareUrlSpan').textContent = `${location.origin}/api/cart/${data.code}`;
-  } catch(e) {
-    $('shareUrlSpan').textContent = 'Ошибка генерации';
-  }
-}
-
-function closeShareModal() { $('shareOverlay').classList.remove('open'); }
-
-function copyShareLink() {
-  const url = $('shareUrlSpan').textContent;
-  navigator.clipboard.writeText(url)
-    .then(() => toast('Ссылка скопирована!'))
-    .catch(() => toast('Скопируйте вручную', 'info'));
-}
-
-function shareWhatsApp() {
-  const items = Object.values(State.cart);
-  if (!items.length) return;
-
-  const c = State.user?.customer;
-  const clientName = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : 'Гость';
-  const phone      = c?.phone   ? c.phone   : '';
-  const address    = c?.address ? c.address : '';
-  const comment    = $('cartComment')?.value?.trim() || '';
-
-  let msg = `🧸 *Заказ Happy Toys*\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `👤 *Клиент:* ${clientName}\n`;
-  if (phone)   msg += `📞 *Телефон:* ${phone}\n`;
-  if (address) msg += `📍 *Адрес:* ${address}\n`;
-  msg += `━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `*Состав заказа:*\n`;
-
-  let total = 0, totalQty = 0;
-  items.forEach(({ product: p, qty }) => {
-    const sub = p.price * qty;
-    total += sub;
-    totalQty += qty;
-    msg += `• ${p.name}\n  SKU: ${p.sku}  |  ${qty} шт × ${rub(p.price)} = *${rub(sub)}*\n`;
-  });
-
-  msg += `━━━━━━━━━━━━━━━━━━━\n`;
-  msg += `💰 *Итого: ${rub(total)}* (${totalQty} шт)\n`;
-  if (comment) msg += `💬 *Комментарий:* ${comment}\n`;
-
-  const shareUrl = $('shareUrlSpan')?.textContent || '';
-  if (shareUrl && shareUrl !== 'Генерация...' && shareUrl !== 'Ошибка генерации') {
-    msg += `\n🔗 Ссылка на заказ:\n${shareUrl}`;
-  }
-
-  window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-}
-
-// ── Admin page ────────────────────────────────────────────────────────────────
-async function renderAdmin() {
-  const mc = $('mainContent');
-
-  if (!State.user || State.user.role !== 'admin') {
-    mc.innerHTML = `
-      <div style="padding:40px 20px;text-align:center">
-        <p style="margin-bottom:16px;color:#999">Только для администратора</p>
-        <button class="btn-primary" onclick="openAuth()" style="display:inline-flex">Войти</button>
-      </div>`;
-    return;
-  }
-
-  mc.innerHTML = `<div class="admin-page">
-    <div class="admin-stats" id="adminStats">${[1,2,3,4,5].map(() => `<div class="stat-card skeleton" style="height:80px"></div>`).join('')}</div>
-    <div id="adminBody"></div>
-  </div>`;
-
-  try {
-    const [stats, carts, customers] = await Promise.all([API.adminStats(), API.adminCarts(), API.adminCustomers()]);
-    $('adminStats').innerHTML = `
-      <div class="stat-card"><div class="stat-label">Товаров</div><div class="stat-val">${stats.total_products}</div></div>
-      <div class="stat-card"><div class="stat-label">Мало</div><div class="stat-val" style="color:var(--yellow)">${stats.low_stock}</div></div>
-      <div class="stat-card"><div class="stat-label">Нет</div><div class="stat-val" style="color:var(--red)">${stats.out_of_stock}</div></div>
-      <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
-      <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
-
-    $('adminBody').innerHTML = renderAddProductForm() + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []);
-  } catch(e) {
-    $('adminBody').innerHTML = `<p style="color:#999">Ошибка загрузки</p>`;
-  }
-}
-
-function renderAddProductForm() {
-  const CATS = ['Куклы','Конструкторы','Машинки','Настольные игры','Мягкие игрушки','Развивающие','Пазлы','Творчество'];
-  const BRANDS = ['LEGO','Barbie','Hot Wheels','Hasbro','Mattel','Playmobil','Fisher-Price','Ravensburger','Schleich','Funko'];
-  return `
-  <div class="admin-section">
-    <h3>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      Добавить товар
-    </h3>
-
-    <div class="img-upload-area" id="imgUploadArea" onclick="$('imgFile').click()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-      <p>Нажмите чтобы загрузить фото<br><small>или вставьте URL ниже</small></p>
-      <input type="file" id="imgFile" accept="image/*" onchange="previewUpload(this)">
-    </div>
-
-    <div class="form-grid full">
-      <div class="field"><label>URL изображения (если есть)</label><input id="fimg" type="url" placeholder="https://..."></div>
-    </div>
-
-    <div class="form-grid">
-      <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
-      <div class="field"><label>SKU *</label><input id="fsku" type="text" placeholder="HT-0201"></div>
-    </div>
-    <div class="form-grid">
-      <div class="field"><label>Цена (₽) *</label><input id="fprice" type="number" step="0.01" placeholder="999.99"></div>
-      <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
-    </div>
-    <div class="form-grid">
-      <div class="field"><label>Категория</label><select id="fcat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select></div>
-      <div class="field"><label>Бренд</label><select id="fbrand">${BRANDS.map(b=>`<option>${b}</option>`).join('')}</select></div>
-    </div>
-    <div class="form-grid full">
-      <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
-    </div>
-    <button class="btn-primary" onclick="submitProduct()">Добавить товар</button>
-  </div>`;
-}
-
-async function previewUpload(input) {
-  const file = input.files[0];
-  if (!file) return;
-
-  const area = $('imgUploadArea');
-  area.innerHTML = `<div class="skeleton" style="width:100%;height:160px"></div>`;
-
-  try {
-    const data = await API.uploadImage(file);
-    $('fimg').value = data.url;
-    area.classList.add('has-img');
-    area.innerHTML = `<img src="${data.url}" alt="preview">`;
-  } catch(e) {
-    // Fallback: use local FileReader
-    const reader = new FileReader();
-    reader.onload = ev => {
-      $('fimg').value = ev.target.result;
-      area.classList.add('has-img');
-      area.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
-    };
-    reader.readAsDataURL(file);
-  }
-}
-
-async function submitProduct() {
-  const body = {
-    name:      $('fn')?.value?.trim(),
-    sku:       $('fsku')?.value?.trim(),
-    price:     parseFloat($('fprice')?.value || 0),
-    stock_qty: parseInt($('fqty')?.value || 0),
-    category:  $('fcat')?.value,
-    brand:     $('fbrand')?.value,
-    image:     $('fimg')?.value || '',
-    description: $('fdesc')?.value || '',
-    stock: 'ok', min_order: 1, age_min: 3,
-  };
-  if (!body.name || !body.sku || !body.price) { toast('Заполните обязательные поля', 'err'); return; }
-  try {
-    await API.post('/api/products', body);
-    toast('Товар добавлен!');
-    renderAdmin();
-  } catch(e) {
-    toast('Ошибка при добавлении', 'err');
-  }
-}
-
-function renderCustomersTable(customers) {
-  if (!customers.length) return `<div class="admin-section"><h3>Клиенты</h3><p style="color:#999;font-size:14px">Нет зарегистрированных клиентов</p></div>`;
-
-  const rows = customers.map(c => `
-    <tr>
-      <td><div class="c-name">${escHtml(c.first_name)} ${escHtml(c.last_name)}</div><div class="c-email">${escHtml(c.email)}</div></td>
-      <td>${escHtml(c.phone||'—')}</td>
-      <td>${escHtml(c.address||'—')}</td>
-      <td class="c-orders">${(c.orders||[]).length}</td>
-      <td>${c.created_at?.slice(0,10)||'—'}</td>
-    </tr>`).join('');
-
-  return `
-  <div class="admin-section">
-    <h3>
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-      Клиенты (${customers.length})
-    </h3>
-    <div style="overflow-x:auto">
-      <table class="customers-table">
-        <thead><tr><th>Имя</th><th>Телефон</th><th>Адрес</th><th>Заказов</th><th>Дата</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-  </div>`;
-}
-
-function renderAdminCarts(carts) {
-  if (!carts.length) return `<div class="admin-section"><h3>Корзины</h3><p style="color:#999;font-size:14px">Нет корзин</p></div>`;
-  return `
-  <div class="admin-section">
-    <h3>Последние корзины (${carts.length})</h3>
-    <div class="cart-rows">
-      ${carts.map(c => `
-        <div class="cart-row">
-          <div class="cart-row-info">
-            <div class="cart-row-name">${escHtml(c.store_name||'Клиент')} — ${c.items?.length||0} позиций</div>
-            <div class="cart-row-meta">${c.code} · ${c.created_at?.slice(0,10)}</div>
-          </div>
-          <div class="cart-row-total">${rub(c.total)}</div>
-        </div>`).join('')}
-    </div>
-  </div>`;
-}
-
-// ── Search ────────────────────────────────────────────────────────────────────
-let _searchTimer;
-const _searchCache = Object.create(null);  // query → items[]
-function onSearch(val) {
-  clearTimeout(_searchTimer);
-  const q = val.trim();
-  if (q.length < 2) { $('searchDrop')?.classList.remove('open'); return; }
-
-  // Hit in-memory cache instantly
-  if (_searchCache[q]) { _renderSearchDrop(_searchCache[q]); return; }
-
-  _searchTimer = setTimeout(async () => {
-    try {
-      const data = await API.search(q);
-      _searchCache[q] = data.items;          // cache result
-      _renderSearchDrop(data.items);
-    } catch(e) {}
-  }, 120);
-}
-
-function _renderSearchDrop(items) {
-  const drop = $('searchDrop');
-  if (!drop) return;
-  if (!items.length) { drop.classList.remove('open'); return; }
-  drop.innerHTML = items.map(p => `
-    <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async">
-      <div>
-        <div class="search-result-name">${escHtml(p.name)}</div>
-        <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
-      </div>
-      <span class="search-result-price">${rub(p.price)}</span>
-    </div>`).join('');
-  drop.classList.add('open');
-}
-
-function closeSearch() {
-  $('searchDrop')?.classList.remove('open');
-}
-
-// ── Navigation ────────────────────────────────────────────────────────────────
-function navigate(page) {
-  State.page = page;
-  State.pageNum = 1;
-
-  document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
-  const btn = $(`bn-${page}`);
-  if (btn) btn.classList.add('active');
-
-  const mc = $('mainContent');
-  if (!mc) return;
-
-  if (page === 'home')    renderHome();
-  if (page === 'catalog') renderCatalog();
-  if (page === 'profile') renderProfile();
-  if (page === 'admin')   renderAdmin();
-}
-
-// ── Events ────────────────────────────────────────────────────────────────────
-document.addEventListener('click', e => {
-  if (e.target.id === 'productOverlay') closeProductModal();
-  if (e.target.id === 'shareOverlay')   closeShareModal();
-  if (e.target.id === 'authOverlay')    closeAuth();
-  if (!e.target.closest('#topSearch') && !e.target.closest('#searchDrop')) closeSearch();
-});
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeProductModal(); closeShareModal(); closeAuth(); closeSearch(); }
-});
-
-// ── Boot ──────────────────────────────────────────────────────────────────────
-// Пассивные touch-события — ускоряет скролл на мобиле
-document.addEventListener('touchstart', () => {}, { passive: true });
-document.addEventListener('touchmove',  () => {}, { passive: true });
-
-document.addEventListener('DOMContentLoaded', () => {
-  // Make sure cart drawer is closed on load
-  const drawer = $('cartDrawer');
-  const backdrop = $('cartBackdrop');
-  if (drawer) drawer.classList.remove('open');
-  if (backdrop) backdrop.classList.remove('show');
-  State.cartOpen = false;
-
-  updateCartBadge();
-  navigate('home');
-});
+.cart-drawer, .overlay, .product-card { will-change: transform; }
