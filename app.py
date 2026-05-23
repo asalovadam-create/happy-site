@@ -22,12 +22,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 class CacheHeaders(BaseHTTPMiddleware):
     async def dispatch(self, req, call_next):
         resp = await call_next(req)
-        path = req.url.path
-        if path.startswith('/static/'):
+        p = req.url.path
+        if p.startswith('/static/'):
             resp.headers['Cache-Control'] = 'public, max-age=86400, immutable'
-        elif path in ('/api/categories', '/api/brands'):
+        elif p in ('/api/categories', '/api/brands'):
             resp.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=600'
-        elif path.startswith('/api/products'):
+        elif p.startswith('/api/products'):
             resp.headers['Cache-Control'] = 'public, max-age=30, stale-while-revalidate=60'
         return resp
 app.add_middleware(CacheHeaders)
@@ -107,7 +107,7 @@ def c_set(k, v, ttl=30):
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 def make_token(sub, role="customer"):
-    return jwt.encode({"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(hours=24)}, JWT_SECRET, algorithm="HS256")
+    return jwt.encode({"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(days=30)}, JWT_SECRET, algorithm="HS256")
 
 def require_admin(creds: HTTPAuthorizationCredentials = Depends(security)):
     if not creds:
@@ -335,9 +335,158 @@ async def share_cart(b: ShareIn):
     return cart_data
 
 @app.get("/api/cart/{code}")
-async def get_cart(code: str):
+async def get_cart(code: str, request: Request):
     if code not in _carts: raise HTTPException(404, "Cart not found")
-    return _carts[code]
+    cart = _carts[code]
+
+    accept = request.headers.get("accept", "")
+    if "text/html" not in accept:
+        return cart
+
+    items     = cart.get("items", [])
+    total     = cart.get("total", 0)
+    comment   = cart.get("comment", "") or ""
+    created   = (cart.get("created_at") or "")[:10]
+    code_val  = cart.get("code", code)
+    cid       = cart.get("customer_id")
+    cname = cphone = caddr = ""
+    if cid and cid in _customers:
+        cu    = _customers[cid]
+        cname = (cu.get("first_name","") + " " + cu.get("last_name","")).strip()
+        cphone = cu.get("phone","") or ""
+        caddr  = cu.get("address","") or ""
+    if not cname:
+        cname = cart.get("store_name","") or ""
+
+    rows_html = ""
+    for it in items:
+        img   = it.get("image","") or ""
+        name  = it.get("name","")
+        sku   = it.get("sku","")
+        price = float(it.get("price",0))
+        qty   = int(it.get("quantity",1))
+        sub   = price * qty
+        img_tag = f'<img src="{img}" onerror="this.style.display=\'none\'">' if img else '<div class="no-img">&#129528;</div>'
+        rows_html += f"""
+        <div class="item-card">
+          <div class="item-img">{img_tag}</div>
+          <div class="item-info">
+            <div class="item-name">{name}</div>
+            <div class="item-sku">SKU: {sku}</div>
+            <div class="item-price-row">
+              <span class="item-qty">{qty} шт &times; ₽{price:.2f}</span>
+              <span class="item-sub">₽{sub:.2f}</span>
+            </div>
+          </div>
+        </div>"""
+
+    client_html = ""
+    if cname:
+        phone_line = f'<div class="client-detail">&#128222; {cphone}</div>' if cphone else ""
+        addr_line  = f'<div class="client-detail">&#128205; {caddr}</div>' if caddr else ""
+        client_html = f"""<div class="client-block">
+          <div class="client-name">&#128100; {cname}</div>
+          {phone_line}{addr_line}
+        </div>"""
+
+    comment_html = f'<div class="comment-block">&#128172; {comment}</div>' if comment else ""
+
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#FF6B35">
+  <title>Заказ {code_val} — Happy Toys</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
+  <style>
+    *{{margin:0;padding:0;box-sizing:border-box}}
+    body{{font-family:'Nunito',Arial,sans-serif;background:#f5f7ff;color:#1a1a2e;min-height:100vh}}
+    .topbar{{background:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;
+             box-shadow:0 2px 12px rgba(0,0,0,.08);position:sticky;top:0;z-index:10}}
+    .logo-icon{{width:40px;height:40px;background:#FF6B35;border-radius:11px;
+               display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}}
+    .logo-text{{font-size:20px;font-weight:900;color:#FF6B35}}
+    .logo-sub{{font-size:11px;color:#aaa}}
+    .back-btn{{margin-left:auto;background:#fff;border:2px solid #FF6B35;color:#FF6B35;
+              border-radius:10px;padding:8px 16px;font-weight:700;font-size:13px;
+              cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:6px;white-space:nowrap}}
+    .back-btn:hover{{background:#FF6B35;color:#fff}}
+    .container{{max-width:640px;margin:0 auto;padding:20px 16px 48px}}
+    .order-header{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;
+                  box-shadow:0 2px 12px rgba(0,0,0,.06)}}
+    .order-code{{font-size:12px;color:#aaa;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}}
+    .order-title{{font-size:22px;font-weight:900;color:#1a1a2e;margin-bottom:4px}}
+    .order-date{{font-size:13px;color:#aaa}}
+    .client-block{{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;
+                  border-radius:14px;padding:16px 20px;margin-bottom:16px}}
+    .client-name{{font-size:16px;font-weight:900;margin-bottom:6px}}
+    .client-detail{{font-size:13px;opacity:.9;margin-top:3px}}
+    .section-title{{font-size:12px;font-weight:700;color:#aaa;text-transform:uppercase;
+                   letter-spacing:.6px;margin-bottom:12px;padding:0 4px}}
+    .items-section{{margin-bottom:16px}}
+    .item-card{{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;
+               display:flex;gap:14px;align-items:center;
+               box-shadow:0 2px 8px rgba(0,0,0,.05)}}
+    .item-img{{width:64px;height:64px;flex-shrink:0;border-radius:10px;overflow:hidden;
+              background:#f5f5f5;display:flex;align-items:center;justify-content:center}}
+    .item-img img{{width:100%;height:100%;object-fit:contain}}
+    .no-img{{font-size:28px}}
+    .item-info{{flex:1;min-width:0}}
+    .item-name{{font-size:14px;font-weight:700;margin-bottom:3px;
+               white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    .item-sku{{font-size:11px;color:#bbb;margin-bottom:8px}}
+    .item-price-row{{display:flex;justify-content:space-between;align-items:center}}
+    .item-qty{{font-size:13px;color:#888}}
+    .item-sub{{font-size:15px;font-weight:900;color:#FF6B35}}
+    .total-card{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;
+               box-shadow:0 2px 12px rgba(0,0,0,.06)}}
+    .total-row{{display:flex;justify-content:space-between;font-size:14px;
+               padding:8px 0;border-bottom:1px solid #f5f5f5;color:#888}}
+    .total-row.big{{border-bottom:none;font-size:20px;font-weight:900;color:#FF6B35;
+                   padding-top:14px;margin-top:4px}}
+    .total-row.big span:last-child{{color:#FF6B35}}
+    .comment-block{{background:#fffbf0;border:1px solid #ffe0b2;border-radius:14px;
+                   padding:14px 16px;font-size:14px;color:#555;margin-bottom:16px;line-height:1.5}}
+    .cta{{background:#FF6B35;color:#fff;border-radius:14px;padding:16px;text-align:center;
+          text-decoration:none;display:block;font-weight:900;font-size:16px;
+          box-shadow:0 4px 16px rgba(255,107,53,.35);transition:background .15s}}
+    .cta:hover{{background:#e55a27}}
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="logo-icon">&#129528;</div>
+    <div>
+      <div class="logo-text">Happy Toys</div>
+      <div class="logo-sub">Оптовый каталог</div>
+    </div>
+    <a class="back-btn" href="/">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      На сайт
+    </a>
+  </div>
+  <div class="container">
+    <div class="order-header">
+      <div class="order-code">Заказ #{code_val}</div>
+      <div class="order-title">Корзина покупателя</div>
+      <div class="order-date">Создан {created}</div>
+    </div>
+    {client_html}
+    <div class="section-title">Товары ({len(items)} позиций)</div>
+    <div class="items-section">{rows_html}</div>
+    <div class="total-card">
+      <div class="total-row"><span>Позиций</span><span>{len(items)}</span></div>
+      <div class="total-row big"><span>Итого</span><span>₽{total:.2f}</span></div>
+    </div>
+    {comment_html}
+    <a class="cta" href="/">&#129528; Открыть каталог Happy Toys</a>
+  </div>
+</body>
+</html>"""
+    from fastapi.responses import HTMLResponse as _HR
+    return _HR(content=html)
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 @app.get("/api/admin/stats")
