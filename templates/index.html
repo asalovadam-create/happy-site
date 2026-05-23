@@ -6,20 +6,20 @@
   <meta name="description" content="Happy Toys — Оптовый каталог игрушек">
   <meta name="theme-color" content="#ffffff">
   <title>Happy Toys — Wholesale</title>
-  <!-- PWA / Mobile -->
+  <!-- iOS PWA -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Happy Toys">
-  <meta name="mobile-web-app-capable" content="yes">
+  <!-- Запрет авто-zoom input iOS -->
   <meta name="format-detection" content="telephone=no">
+  <!-- Android PWA manifest -->
   <link rel="manifest" href="/static/manifest.json">
-  <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <!-- Preconnect for faster image loads -->
-  <link rel="preconnect" href="https://images.unsplash.com">
+  <!-- Preconnect для быстрой загрузки картинок Unsplash -->
+  <link rel="preconnect" href="https://images.unsplash.com" crossorigin>
   <link rel="dns-prefetch" href="https://images.unsplash.com">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&family=Nunito+Sans:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -183,6 +183,6 @@
 
 </div>
 
-<script src="/static/app.js" defer></script>
+<script src="/static/app.js"></script>
 </body>
 </html>
