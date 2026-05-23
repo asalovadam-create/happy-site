@@ -21,13 +21,13 @@ const State = {
   adminToken: null,
 };
 
-// ── Client-side cache ────────────────────────────────────────────────────────
-const _jsCache = {};
-async function cachedCategories() {
-  if (_jsCache.cats) return _jsCache.cats;
-  const data = await API.categories();
-  _jsCache.cats = data;
-  return data;
+// ── Category cache (avoid double-fetch on home+catalog) ───────────────────────
+let _catCache = null, _catCacheTs = 0;
+async function getCategories() {
+  if (_catCache && Date.now() - _catCacheTs < 60000) return _catCache;
+  try { _catCache = await API.categories(); _catCacheTs = Date.now(); }
+  catch(e) { _catCache = []; }
+  return _catCache;
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -237,8 +237,11 @@ function renderSkeletons(n = 8) {
 }
 
 // ── Load products ─────────────────────────────────────────────────────────────
+let _loadCtrl = null;  // AbortController
 async function loadProducts() {
-  if (State.loading) return;
+  // Отмена предыдущего запроса
+  if (_loadCtrl) _loadCtrl.abort();
+  _loadCtrl = new AbortController();
   State.loading = true;
   const grid = $('productsGrid');
   if (grid) grid.innerHTML = renderSkeletons(8);
@@ -325,13 +328,11 @@ function clearFilters() {
 // ── Home page ─────────────────────────────────────────────────────────────────
 async function renderHome() {
   let cats = [];
-  try { cats = await cachedCategories(); } catch(e){}
+  try { cats = await getCategories(); } catch(e){}
 
   const catPills = cats.map(c =>
     `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');setCategory('${escHtml(c.name)}')">${escHtml(c.name)} <small>${c.count}</small></button>`
   ).join('');
-
-  const productsPromise = API.products({ category: State.category, search: State.search, stock: State.stock, sort: State.sort });
 
   $('mainContent').innerHTML = `
     <div class="home-hero">
@@ -381,7 +382,7 @@ async function renderHome() {
 // ── Catalog page ──────────────────────────────────────────────────────────────
 async function renderCatalog() {
   let cats = [];
-  try { cats = await cachedCategories(); } catch(e){}
+  try { cats = await getCategories(); } catch(e){}
 
   const catPills = [
     `<button class="cat-pill ${!State.category ? 'active' : ''}" data-cat="" onclick="setCategory(null)">Все</button>`,
@@ -658,33 +659,34 @@ function shareWhatsApp() {
   if (!items.length) return;
 
   const c = State.user?.customer;
-  const name = c ? `${c.first_name} ${c.last_name}`.trim() : 'Покупатель';
-  const phone = c?.phone ? ` | Тел: ${c.phone}` : '';
-  const comment = $('cartComment')?.value?.trim();
+  const clientName = c ? `${c.first_name || ''} ${c.last_name || ''}`.trim() : 'Гость';
+  const phone      = c?.phone   ? c.phone   : '';
+  const address    = c?.address ? c.address : '';
+  const comment    = $('cartComment')?.value?.trim() || '';
 
   let msg = `🧸 *Заказ Happy Toys*\n`;
-  msg += `👤 ${name}${phone}\n`;
-  msg += `────────────────\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `👤 *Клиент:* ${clientName}\n`;
+  if (phone)   msg += `📞 *Телефон:* ${phone}\n`;
+  if (address) msg += `📍 *Адрес:* ${address}\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `*Состав заказа:*\n`;
 
-  let total = 0;
-  let totalQty = 0;
-  items.forEach(({product:p, qty}) => {
+  let total = 0, totalQty = 0;
+  items.forEach(({ product: p, qty }) => {
     const sub = p.price * qty;
     total += sub;
     totalQty += qty;
-    msg += `• ${p.name}\n`;
-    msg += `  SKU: ${p.sku} | ${qty} шт × ₽${p.price.toFixed(2)} = ₽${sub.toFixed(2)}\n`;
+    msg += `• ${p.name}\n  SKU: ${p.sku}  |  ${qty} шт × ${rub(p.price)} = *${rub(sub)}*\n`;
   });
 
-  msg += `────────────────\n`;
-  msg += `📦 Позиций: ${items.length} | Товаров: ${totalQty} шт\n`;
-  msg += `💰 Итого: ₽${total.toFixed(2)}\n`;
+  msg += `━━━━━━━━━━━━━━━━━━━\n`;
+  msg += `💰 *Итого: ${rub(total)}* (${totalQty} шт)\n`;
+  if (comment) msg += `💬 *Комментарий:* ${comment}\n`;
 
-  if (comment) msg += `\n💬 ${comment}\n`;
-
-  const url = $('shareUrlSpan')?.textContent;
-  if (url && url !== 'Генерация...' && url !== 'Ошибка генерации') {
-    msg += `\n🔗 ${url}`;
+  const shareUrl = $('shareUrlSpan')?.textContent || '';
+  if (shareUrl && shareUrl !== 'Генерация...' && shareUrl !== 'Ошибка генерации') {
+    msg += `\n🔗 Ссылка на заказ:\n${shareUrl}`;
   }
 
   window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
@@ -855,27 +857,38 @@ function renderAdminCarts(carts) {
 
 // ── Search ────────────────────────────────────────────────────────────────────
 let _searchTimer;
+const _searchCache = Object.create(null);  // query → items[]
 function onSearch(val) {
   clearTimeout(_searchTimer);
   const q = val.trim();
-  if (!q) { $('searchDrop')?.classList.remove('open'); return; }
+  if (q.length < 2) { $('searchDrop')?.classList.remove('open'); return; }
+
+  // Hit in-memory cache instantly
+  if (_searchCache[q]) { _renderSearchDrop(_searchCache[q]); return; }
+
   _searchTimer = setTimeout(async () => {
     try {
       const data = await API.search(q);
-      const drop = $('searchDrop');
-      if (!data.items.length) { drop.classList.remove('open'); return; }
-      drop.innerHTML = data.items.map(p => `
-        <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
-          <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-          <div>
-            <div class="search-result-name">${escHtml(p.name)}</div>
-            <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
-          </div>
-          <span class="search-result-price">${rub(p.price)}</span>
-        </div>`).join('');
-      drop.classList.add('open');
-    } catch(e){}
-  }, 50);
+      _searchCache[q] = data.items;          // cache result
+      _renderSearchDrop(data.items);
+    } catch(e) {}
+  }, 120);
+}
+
+function _renderSearchDrop(items) {
+  const drop = $('searchDrop');
+  if (!drop) return;
+  if (!items.length) { drop.classList.remove('open'); return; }
+  drop.innerHTML = items.map(p => `
+    <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
+      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async">
+      <div>
+        <div class="search-result-name">${escHtml(p.name)}</div>
+        <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
+      </div>
+      <span class="search-result-price">${rub(p.price)}</span>
+    </div>`).join('');
+  drop.classList.add('open');
 }
 
 function closeSearch() {
@@ -913,6 +926,10 @@ document.addEventListener('keydown', e => {
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+// Пассивные touch-события — ускоряет скролл на мобиле
+document.addEventListener('touchstart', () => {}, { passive: true });
+document.addEventListener('touchmove',  () => {}, { passive: true });
+
 document.addEventListener('DOMContentLoaded', () => {
   // Make sure cart drawer is closed on load
   const drawer = $('cartDrawer');
