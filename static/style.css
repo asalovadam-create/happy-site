@@ -905,23 +905,8 @@ body {
   margin-bottom: 10px;
 }
 .img-upload-area:hover { border-color: var(--accent); background: #fff5f0; }
-.img-upload-area.has-img {
-  border-style: solid;
-  border-color: var(--accent);
-  padding: 0;
-  aspect-ratio: 1;
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f8f8f8;
-}
-.img-upload-area img {
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
+.img-upload-area.has-img { border-style: solid; border-color: var(--accent); padding: 0; overflow: hidden; }
+/* img-upload-area img — see bottom */
 .img-upload-area svg { width: 40px; height: 40px; color: var(--text3); margin-bottom: 8px; }
 .img-upload-area p { font-size: 13px; color: var(--text3); }
 .img-upload-area input { display: none; }
@@ -1055,16 +1040,53 @@ body {
 }
 .btn-danger:hover { background: #fff0f0; }
 
-/* ════════════════════════════════════════════════════════════════
-   iOS & Android optimizations
-   ════════════════════════════════════════════════════════════════ */
+/* ── Cart bottom buttons ─────────────────────────────────────────────────── */
+.cart-bottom-btns {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.cart-bottom-btns .btn-primary { flex: 1; min-width: 0; }
+.btn-pdf-cart {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 16px;
+  background: #fff;
+  color: var(--accent);
+  border: 2.5px solid var(--accent);
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+  transition: background .15s, color .15s;
+}
+.btn-pdf-cart:hover  { background: var(--accent); color: #fff; }
+.btn-pdf-cart:active { transform: scale(0.95); }
 
-/* touch-action: manipulation — убирает задержку 300ms на тапы */
-button, a, input, select, textarea, label {
-  touch-action: manipulation;
+/* ── img upload fix — квадрат без растяжки ──────────────────────────────── */
+.img-upload-area.has-img {
+  border-style: solid;
+  border-color: var(--accent);
+  padding: 0;
+  overflow: hidden;
+  background: #f8f8f8;
+  aspect-ratio: 1;
+}
+.img-upload-area img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
 }
 
-/* iOS Safari — поддержка safe-area для bottom nav */
+/* ── iOS / Android ───────────────────────────────────────────────────────── */
+button, a, input, select, textarea, label { touch-action: manipulation; }
+
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .bottom-nav {
     padding-bottom: env(safe-area-inset-bottom);
@@ -1077,40 +1099,17 @@ button, a, input, select, textarea, label {
     padding-bottom: calc(16px + env(safe-area-inset-bottom));
   }
 }
-
-/* iOS PWA — topbar учитывает статус-бар */
 @media (display-mode: standalone) {
-  .topbar {
-    padding-top: env(safe-area-inset-top, 0px);
-    height: calc(var(--topbar-h) + env(safe-area-inset-top, 0px));
-    position: sticky;
-    top: 0;
-  }
+  .topbar { padding-top: env(safe-area-inset-top, 0px); }
 }
-
-/* Momentum scroll для длинных списков на iOS */
-.cart-drawer-list,
-.cat-scroll,
-.filters-row,
-.similar-scroll {
+.cart-drawer-list, .cat-scroll, .filters-row, .similar-scroll {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
 }
-
-/* На мобиле — убрать hover-эффект карточек, заменить на active */
 @media (hover: none) and (pointer: coarse) {
-  .product-card:hover          { transform: none; box-shadow: var(--shadow); }
-  .product-card:active         { transform: scale(0.97); transition: transform .1s; }
-  .card-add:hover              { transform: none; background: var(--accent); }
-  .card-add:active             { transform: scale(0.9); }
-  .btn-primary:hover           { background: var(--accent); }
-  .btn-primary:active          { transform: scale(0.97); }
-  .cat-pill:hover              { background: #fff; border-color: var(--border); color: var(--text2); }
-  .cat-pill:active             { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .product-card:hover  { transform: none; box-shadow: var(--shadow); }
+  .product-card:active { transform: scale(0.97); transition: transform .1s; }
+  .card-add:active     { transform: scale(0.9); }
+  .btn-primary:active  { transform: scale(0.97); }
 }
-
-/* will-change для анимированных элементов */
-.cart-drawer   { will-change: transform; }
-.overlay       { will-change: opacity; }
-.product-card  { will-change: transform; }
-.toast         { will-change: transform; }
+.cart-drawer, .overlay, .product-card { will-change: transform; }
