@@ -371,19 +371,22 @@ async function renderHome() {
 
   $('mainContent').innerHTML = `
     <div class="home-hero">
+      <div class="hero-wholesale-row">
+        <span class="wholesale-badge">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+          Только для оптовых покупателей
+        </span>
+      </div>
       <div class="home-hero-top">
         <img class="home-hero-logo" src="/static/logo.png"
              onerror="this.onerror=null;this.style.display='none'"
-             alt="Happy Toys">
-        <div>
-          <div class="wholesale-badge">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-            Только для оптовых покупателей
-          </div>
-          <h1 class="hero-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span> <span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></h1>
+             alt="Happy Toys"
+             style="background:transparent;border-radius:0">
+        <div class="hero-title-block">
+          <h1 class="hero-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span>&nbsp;<span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></h1>
+          <p class="hero-tagline">Лучшие игрушки для вашего магазина</p>
         </div>
       </div>
-      <p>Лучшие игрушки ведущих брендов для вашего магазина. Минимальный заказ — от 1 шт.</p>
       <div class="hero-stats">
         <div class="hero-stat"><strong>200+</strong><span>Товаров</span></div>
         <div class="hero-stat"><strong>10</strong><span>Брендов</span></div>
