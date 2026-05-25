@@ -29,7 +29,7 @@
 
     <!-- Logo inside modal -->
     <div class="auth-logo">
-      <img src="/static/logo.png" width="52" height="52" style="object-fit:contain;border-radius:8px"
+      <img src="/static/logo.png" width="52" height="52" style="object-fit:contain;border-radius:0;background:transparent"
            onerror="this.style.display='none'"
            alt="Happy Toys Logo">
       <span class="brand-name-colored auth-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span> <span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></span>
@@ -158,7 +158,7 @@
       <!-- Logo: replace src with your image path e.g. /static/logo.png -->
       <img class="brand-logo" src="/static/logo.png"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"
-           alt="Happy Toys Logo">
+           alt="Happy Toys Logo" style="background:transparent;border-radius:0">
       <!-- Fallback SVG castle shown if image not found -->
       <svg class="brand-logo" style="display:none" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
         <ellipse cx="28" cy="44" rx="22" ry="7" fill="#e0e8f0"/>
@@ -185,7 +185,7 @@
 
     <div class="topbar-search">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input id="topSearch" type="search" placeholder="Поиск по названию, SKU, бренду..." oninput="onSearch(this.value)" autocomplete="off" aria-label="Поиск товаров">
+      <input id="topSearch" type="search" placeholder="Поиск товаров..." oninput="onSearch(this.value)" autocomplete="off" aria-label="Поиск товаров">
       <button class="search-clear" id="searchClearBtn" onclick="clearSearch()" style="display:none" aria-label="Очистить поиск">✕</button>
       <div class="search-drop" id="searchDrop"></div>
     </div>
