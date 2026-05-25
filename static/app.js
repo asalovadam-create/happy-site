@@ -334,7 +334,30 @@ function clearFilters() {
   State.pageNum  = 1;
   const si = $('topSearch');
   if (si) si.value = '';
+  const btn = $('searchClearBtn');
+  if (btn) btn.style.display = 'none';
   loadProducts();
+}
+
+// ── Confirm dialog ─────────────────────────────────────────────────────────────
+function showConfirm(title, msg, onOk) {
+  $('confirmTitle').textContent = title;
+  $('confirmMsg').textContent = msg;
+  $('confirmOkBtn').onclick = () => { closeConfirm(); onOk(); };
+  $('confirmOverlay').classList.add('open');
+}
+function closeConfirm() {
+  $('confirmOverlay').classList.remove('open');
+}
+
+function clearCartConfirm() {
+  if (!Object.keys(State.cart).length) return;
+  showConfirm('Очистить корзину?', 'Все добавленные товары будут удалены.', () => {
+    State.cart = {};
+    renderCart();
+    updateCartBadge();
+    toast('Корзина очищена');
+  });
 }
 
 // ── Home page ─────────────────────────────────────────────────────────────────
@@ -348,8 +371,33 @@ async function renderHome() {
 
   $('mainContent').innerHTML = `
     <div class="home-hero">
-      <h1>Happy Toys<br>Оптовый каталог</h1>
-      <p>Лучшие игрушки для вашего магазина</p>
+      <div class="home-hero-top">
+        <svg class="home-hero-logo" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="44" rx="22" ry="7" fill="rgba(255,255,255,0.7)"/>
+          <ellipse cx="12" cy="42" rx="9" ry="5.5" fill="rgba(255,255,255,0.6)"/>
+          <ellipse cx="44" cy="42" rx="9" ry="5.5" fill="rgba(255,255,255,0.6)"/>
+          <rect x="14" y="26" width="28" height="20" rx="2" fill="rgba(255,255,255,0.9)"/>
+          <rect x="22" y="34" width="12" height="12" rx="3" fill="#3B82F6"/>
+          <rect x="14" y="20" width="5" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
+          <rect x="21" y="20" width="4" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
+          <rect x="31" y="20" width="4" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
+          <rect x="37" y="20" width="5" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
+          <rect x="21" y="15" width="14" height="15" rx="2" fill="rgba(255,255,255,0.95)"/>
+          <polygon points="28,2 34,15 22,15" fill="#FFD54F"/>
+          <polygon points="11,13 15,25 7,25" fill="rgba(255,255,255,0.8)"/>
+          <polygon points="45,13 49,25 41,25" fill="rgba(255,255,255,0.8)"/>
+          <rect x="25" y="19" width="6" height="7" rx="2" fill="#3B82F6"/>
+          <rect x="8" y="42" width="40" height="3" rx="1.5" fill="rgba(255,255,255,0.5)"/>
+        </svg>
+        <div>
+          <div class="wholesale-badge">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+            Только для оптовых покупателей
+          </div>
+          <h1>Happy Toys</h1>
+        </div>
+      </div>
+      <p>Лучшие игрушки ведущих брендов для вашего магазина. Минимальный заказ — от 1 шт.</p>
       <div class="hero-stats">
         <div class="hero-stat"><strong>200+</strong><span>Товаров</span></div>
         <div class="hero-stat"><strong>10</strong><span>Брендов</span></div>
@@ -457,8 +505,12 @@ async function openProduct(id) {
       <div class="product-modal-body">
         <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
         <div class="product-modal-name">${escHtml(p.name)}</div>
-        <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Мин. заказ: ${p.min_order} шт · Возраст: ${p.age_min}+</div>
+        <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Возраст: ${p.age_min}+</div>
         <div class="product-modal-price">${rub(p.price)} <small>/ шт</small></div>
+        <div class="product-modal-wholesale">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+          <div><strong>Оптовые условия:</strong> мин. заказ ${p.min_order} шт · цена за единицу · счёт по запросу</div>
+        </div>
         <div class="product-modal-desc">${escHtml(p.description)}</div>
 
         <div class="product-modal-add">
@@ -699,8 +751,8 @@ function downloadCartPDF() {
 .ibr span:first-child{color:#888}.ibr span:last-child{font-weight:700}
 table{width:100%;border-collapse:collapse;margin-bottom:24px}
 thead tr{background:#FF6B35;color:#fff}thead th{padding:11px 13px;font-size:12px;text-transform:uppercase;font-weight:700;text-align:left}
-thead th.tr2{text-align:right}tbody tr{border-bottom:1px solid #f0f0f0}tbody tr:nth-child(even){background:#fafafa}
-.ti{width:64px;padding:8px}.ti img{width:52px;height:52px;object-fit:contain;border-radius:8px;background:#f5f5f5;display:block}
+thead th.tr2{text-align:right}tbody tr{border-bottom:1px solid #f0f0f0}tbody tr:nth-child(even){background:#fafafa}tbody td{vertical-align:middle}
+.ti{width:120px;padding:10px}.ti img{width:100px;height:100px;object-fit:contain;border-radius:10px;background:#f5f5f5;display:block}
 .tn{padding:12px 13px}.pn{font-weight:700;font-size:14px;margin-bottom:3px}.ps{font-size:11px;color:#aaa}
 .tr2{text-align:right;padding:12px 13px;font-size:13px;white-space:nowrap}
 .bold{font-weight:900;color:#FF6B35;font-size:15px}
@@ -731,7 +783,7 @@ thead th.tr2{text-align:right}tbody tr{border-bottom:1px solid #f0f0f0}tbody tr:
     <div class="ibr"><span>Дата</span><span>${date}</span></div>
   </div>
 </div>
-<table><thead><tr><th></th><th>Товар</th><th class="tr2">Цена</th><th class="tr2">Кол-во</th><th class="tr2">Сумма</th></tr></thead>
+<table><thead><tr><th style="width:120px"></th><th>Товар</th><th class="tr2">Цена</th><th class="tr2">Кол-во</th><th class="tr2">Сумма</th></tr></thead>
 <tbody>${rows}</tbody></table>
 <div class="totbox"><div class="tot">
   <div class="tr3"><span>Позиций</span><span>${items.length}</span></div>
@@ -977,6 +1029,8 @@ function renderAdminCarts(carts) {
 let _searchTimer;
 function onSearch(val) {
   clearTimeout(_searchTimer);
+  const btn = $('searchClearBtn');
+  if (btn) btn.style.display = val.length > 0 ? 'flex' : 'none';
   const q = val.trim();
   if (!q) { $('searchDrop')?.classList.remove('open'); return; }
   _searchTimer = setTimeout(async () => {
@@ -984,10 +1038,15 @@ function onSearch(val) {
       const data = await API.search(q);
       const drop = $('searchDrop');
       if (!data.items.length) { drop.classList.remove('open'); return; }
+      if (!data.items.length) {
+        drop.innerHTML = '<div class="search-drop-empty">Ничего не найдено по запросу «' + escHtml(q) + '»</div>';
+        drop.classList.add('open');
+        return;
+      }
       drop.innerHTML = data.items.map(p => `
         <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
           <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
-          <div>
+          <div style="flex:1;min-width:0">
             <div class="search-result-name">${escHtml(p.name)}</div>
             <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
           </div>
@@ -1000,6 +1059,19 @@ function onSearch(val) {
 
 function closeSearch() {
   $('searchDrop')?.classList.remove('open');
+}
+
+function clearSearch() {
+  const si = $('topSearch');
+  const btn = $('searchClearBtn');
+  if (si) si.value = '';
+  if (btn) btn.style.display = 'none';
+  closeSearch();
+  if (State.page === 'home' || State.page === 'catalog') {
+    State.search = '';
+    State.pageNum = 1;
+    loadProducts();
+  }
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -1023,11 +1095,12 @@ document.addEventListener('click', e => {
   if (e.target.id === 'productOverlay') closeProductModal();
   if (e.target.id === 'shareOverlay')   closeShareModal();
   if (e.target.id === 'authOverlay')    closeAuth();
+  if (e.target.id === 'confirmOverlay') closeConfirm();
   if (!e.target.closest('#topSearch') && !e.target.closest('#searchDrop')) closeSearch();
 });
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeProductModal(); closeShareModal(); closeAuth(); closeSearch(); }
+  if (e.key === 'Escape') { closeProductModal(); closeShareModal(); closeAuth(); closeSearch(); closeConfirm(); }
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
