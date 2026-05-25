@@ -372,29 +372,15 @@ async function renderHome() {
   $('mainContent').innerHTML = `
     <div class="home-hero">
       <div class="home-hero-top">
-        <svg class="home-hero-logo" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <ellipse cx="28" cy="44" rx="22" ry="7" fill="rgba(255,255,255,0.7)"/>
-          <ellipse cx="12" cy="42" rx="9" ry="5.5" fill="rgba(255,255,255,0.6)"/>
-          <ellipse cx="44" cy="42" rx="9" ry="5.5" fill="rgba(255,255,255,0.6)"/>
-          <rect x="14" y="26" width="28" height="20" rx="2" fill="rgba(255,255,255,0.9)"/>
-          <rect x="22" y="34" width="12" height="12" rx="3" fill="#3B82F6"/>
-          <rect x="14" y="20" width="5" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
-          <rect x="21" y="20" width="4" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
-          <rect x="31" y="20" width="4" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
-          <rect x="37" y="20" width="5" height="7" rx="1" fill="rgba(255,255,255,0.85)"/>
-          <rect x="21" y="15" width="14" height="15" rx="2" fill="rgba(255,255,255,0.95)"/>
-          <polygon points="28,2 34,15 22,15" fill="#FFD54F"/>
-          <polygon points="11,13 15,25 7,25" fill="rgba(255,255,255,0.8)"/>
-          <polygon points="45,13 49,25 41,25" fill="rgba(255,255,255,0.8)"/>
-          <rect x="25" y="19" width="6" height="7" rx="2" fill="#3B82F6"/>
-          <rect x="8" y="42" width="40" height="3" rx="1.5" fill="rgba(255,255,255,0.5)"/>
-        </svg>
+        <img class="home-hero-logo" src="/static/logo.png"
+             onerror="this.onerror=null;this.style.display='none'"
+             alt="Happy Toys">
         <div>
           <div class="wholesale-badge">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
             Только для оптовых покупателей
           </div>
-          <h1>Happy Toys</h1>
+          <h1 class="hero-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span> <span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></h1>
         </div>
       </div>
       <p>Лучшие игрушки ведущих брендов для вашего магазина. Минимальный заказ — от 1 шт.</p>
