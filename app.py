@@ -78,7 +78,7 @@ def _seed():
         db[i] = {
             "id": i, "is_active": True,
             "name": NAMES[(i-1) % len(NAMES)] + (f" #{i}" if i > len(NAMES) else ""),
-            "sku": f"HT-{i:04d}",
+            "sku": f"{10000 + i}",
             "price": round(random.uniform(3.5, 149.99), 2),
             "brand": BRANDS[(i-1) % len(BRANDS)],
             "category": CATEGORIES[(i-1) % len(CATEGORIES)],
