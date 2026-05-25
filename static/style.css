@@ -1478,6 +1478,164 @@ body {
 }
 .btn-danger:hover { background: #fff0f0; }
 
+/* ── Catalog page ────────────────────────────────────────────────────────── */
+.catalog-page {
+  padding-bottom: 24px;
+}
+
+.catalog-header {
+  padding: 20px 18px 14px;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.catalog-title {
+  font-family: 'Nunito', sans-serif;
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--text1);
+}
+
+.catalog-subtitle {
+  font-size: 13px;
+  color: var(--text3);
+  font-weight: 600;
+}
+
+/* ── Category grid ───────────────────────────────────────────────────────── */
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 0 12px;
+}
+
+/* Tablet: 3 columns */
+@media (min-width: 600px) {
+  .cat-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    padding: 0 16px;
+  }
+}
+
+/* Desktop: 4 columns */
+@media (min-width: 900px) {
+  .cat-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    padding: 0 20px;
+  }
+}
+
+@media (min-width: 1200px) {
+  .cat-grid {
+    grid-template-columns: repeat(5, 1fr);
+  }
+}
+
+/* ── Category card ───────────────────────────────────────────────────────── */
+.cat-card {
+  background: var(--cat-bg, #fff8f5);
+  border-radius: 18px;
+  padding: 0;
+  cursor: pointer;
+  transition: transform .2s, box-shadow .2s;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+  border: 1.5px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow: hidden;
+  position: relative;
+  aspect-ratio: 1;
+  justify-content: center;
+  gap: 10px;
+}
+
+.cat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  border-color: var(--cat-color, var(--accent));
+}
+
+.cat-card:active {
+  transform: scale(0.96);
+}
+
+.cat-card-all {
+  --cat-color: #FF6B35;
+  --cat-bg: linear-gradient(135deg, #FF6B35, #FFB347);
+  background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
+  color: white;
+}
+
+.cat-card-all .cat-card-name { color: white; }
+.cat-card-all .cat-card-count { color: rgba(255,255,255,0.8); }
+.cat-card-all .cat-card-arrow { color: rgba(255,255,255,0.7); }
+
+.cat-card-icon {
+  font-size: 48px;
+  line-height: 1;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.12));
+  transition: transform .25s;
+}
+
+/* Bigger on tablet */
+@media (min-width: 600px) {
+  .cat-card-icon { font-size: 60px; }
+}
+
+.cat-card:hover .cat-card-icon {
+  transform: scale(1.12) rotate(-4deg);
+}
+
+.cat-card-info {
+  text-align: center;
+  padding: 0 10px;
+}
+
+.cat-card-name {
+  font-family: 'Nunito', sans-serif;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--text1);
+  line-height: 1.25;
+  margin-bottom: 3px;
+}
+
+@media (min-width: 600px) {
+  .cat-card-name { font-size: 15px; }
+}
+
+.cat-card-count {
+  font-size: 11px;
+  color: var(--cat-color, var(--text3));
+  font-weight: 700;
+}
+
+@media (min-width: 600px) {
+  .cat-card-count { font-size: 13px; }
+}
+
+.cat-card-arrow {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  width: 16px;
+  height: 16px;
+  color: var(--cat-color, var(--text3));
+  opacity: 0.5;
+}
+
+/* ── Catalog back pill ───────────────────────────────────────────────────── */
+.cat-pill:first-child {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
 /* ── iOS / Android PWA ───────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
 
