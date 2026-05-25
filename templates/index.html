@@ -6,7 +6,6 @@
   <meta name="description" content="Happy Toys — Оптовый каталог игрушек">
   <meta name="theme-color" content="#ffffff">
   <title>Happy Toys — Wholesale</title>
-  <!-- iOS/Android PWA -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Happy Toys">
@@ -15,7 +14,7 @@
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&family=Nunito+Sans:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -27,6 +26,40 @@
 <div class="overlay" id="authOverlay">
   <div class="auth-modal" onclick="event.stopPropagation()">
     <button class="modal-x" onclick="closeAuth()">✕</button>
+
+    <!-- Logo inside modal -->
+    <div class="auth-logo">
+      <svg width="48" height="48" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- clouds -->
+        <ellipse cx="32" cy="50" rx="26" ry="8" fill="white" opacity="0.9"/>
+        <ellipse cx="14" cy="48" rx="10" ry="6" fill="white" opacity="0.85"/>
+        <ellipse cx="50" cy="48" rx="10" ry="6" fill="white" opacity="0.85"/>
+        <!-- castle body -->
+        <rect x="18" y="30" width="28" height="22" rx="2" fill="#FFB347"/>
+        <!-- gate -->
+        <rect x="26" y="40" width="12" height="12" rx="3" fill="#4A90D9"/>
+        <!-- battlements left -->
+        <rect x="18" y="24" width="5" height="8" rx="1" fill="#FF8C00"/>
+        <rect x="25" y="24" width="5" height="8" rx="1" fill="#FF8C00"/>
+        <!-- battlements right -->
+        <rect x="34" y="24" width="5" height="8" rx="1" fill="#FF8C00"/>
+        <rect x="41" y="24" width="5" height="8" rx="1" fill="#FF8C00"/>
+        <!-- center tower -->
+        <rect x="24" y="18" width="16" height="16" rx="2" fill="#FFC34D"/>
+        <!-- center spire -->
+        <polygon points="32,4 38,18 26,18" fill="#E53935"/>
+        <!-- left spire small -->
+        <polygon points="14,16 18,28 10,28" fill="#42A5F5"/>
+        <!-- right spire small -->
+        <polygon points="50,16 54,28 46,28" fill="#42A5F5"/>
+        <!-- window on tower -->
+        <rect x="29" y="22" width="6" height="7" rx="2" fill="#4A90D9"/>
+        <!-- green base stripe -->
+        <rect x="10" y="48" width="44" height="4" rx="2" fill="#66BB6A" opacity="0.7"/>
+      </svg>
+      <span>Happy Toys</span>
+    </div>
+
     <div class="auth-tabs">
       <button id="tabLogin"    class="auth-tab active" onclick="switchTab('login')">Войти</button>
       <button id="tabRegister" class="auth-tab"        onclick="switchTab('register')">Регистрация</button>
@@ -34,21 +67,22 @@
 
     <!-- Login -->
     <div id="formLogin">
-      <div class="field"><label>Email или логин</label><input id="loginEmail" type="text" placeholder="admin или email@mail.ru"></div>
-      <div class="field"><label>Пароль</label><input id="loginPass" type="password" placeholder="••••••••"></div>
+      <div class="field"><label>Email или логин</label><input id="loginEmail" type="text" placeholder="admin или email@mail.ru" autocomplete="username"></div>
+      <div class="field"><label>Пароль</label><input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password"></div>
       <button class="btn-primary full" onclick="doLogin()">Войти</button>
+      <div class="auth-hint">Для демо: логин <strong>admin</strong> / пароль <strong>admin123</strong></div>
     </div>
 
     <!-- Register -->
     <div id="formRegister" style="display:none">
       <div class="fields-row">
-        <div class="field"><label>Имя</label><input id="regFirst" type="text" placeholder="Иван"></div>
-        <div class="field"><label>Фамилия</label><input id="regLast" type="text" placeholder="Иванов"></div>
+        <div class="field"><label>Имя</label><input id="regFirst" type="text" placeholder="Иван" autocomplete="given-name"></div>
+        <div class="field"><label>Фамилия</label><input id="regLast" type="text" placeholder="Иванов" autocomplete="family-name"></div>
       </div>
-      <div class="field"><label>Email</label><input id="regEmail" type="email" placeholder="email@mail.ru"></div>
-      <div class="field"><label>Телефон</label><input id="regPhone" type="tel" placeholder="+7 900 000 00 00"></div>
-      <div class="field"><label>Адрес доставки</label><input id="regAddr" type="text" placeholder="Город, улица, дом"></div>
-      <div class="field"><label>Пароль</label><input id="regPass" type="password" placeholder="минимум 6 символов"></div>
+      <div class="field"><label>Email</label><input id="regEmail" type="email" placeholder="email@mail.ru" autocomplete="email"></div>
+      <div class="field"><label>Телефон</label><input id="regPhone" type="tel" placeholder="+7 900 000 00 00" autocomplete="tel"></div>
+      <div class="field"><label>Адрес доставки</label><input id="regAddr" type="text" placeholder="Город, улица, дом" autocomplete="street-address"></div>
+      <div class="field"><label>Пароль</label><input id="regPass" type="password" placeholder="минимум 6 символов" autocomplete="new-password"></div>
       <button class="btn-primary full" onclick="doRegister()">Зарегистрироваться</button>
     </div>
   </div>
@@ -66,7 +100,7 @@
 <div class="cart-drawer" id="cartDrawer">
   <div class="cart-drawer-head">
     <h2>Корзина <span id="cartHeadCount" class="badge-pill">0</span></h2>
-    <button onclick="toggleCart()">✕</button>
+    <button onclick="toggleCart()" aria-label="Закрыть корзину">✕</button>
   </div>
   <div class="cart-drawer-list" id="cartList">
     <div class="cart-empty">
@@ -77,18 +111,25 @@
         <path d="M2 8h8l4 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
       </svg>
       <p>Корзина пуста</p>
+      <small>Добавьте товары из каталога</small>
     </div>
   </div>
   <div class="cart-drawer-foot" id="cartFoot" style="display:none">
-    <textarea id="cartComment" placeholder="Комментарий к заказу..."></textarea>
+    <textarea id="cartComment" placeholder="Комментарий к заказу (условия доставки, пожелания...)..." rows="2"></textarea>
     <div class="cart-total-row">
       <span>Итого <small id="cartTotalQty"></small></span>
       <strong id="cartTotalVal">₽0.00</strong>
     </div>
-    <button class="btn-primary full" onclick="openShareModal()">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
-      Отправить заказ
-    </button>
+    <div class="cart-actions">
+      <button class="btn-cart-clear" onclick="clearCartConfirm()" title="Очистить корзину">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        Очистить
+      </button>
+      <button class="btn-primary" style="flex:1" onclick="openShareModal()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        Отправить заказ
+      </button>
+    </div>
   </div>
 </div>
 <div class="cart-backdrop" id="cartBackdrop" onclick="toggleCart()"></div>
@@ -97,9 +138,13 @@
 <div class="overlay" id="shareOverlay">
   <div class="modal share-modal" onclick="event.stopPropagation()">
     <button class="modal-x" onclick="closeShareModal()">✕</button>
-    <h2>Поделиться корзиной</h2>
-    <div id="shareSummary"></div>
+    <h2>
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      Отправить заказ
+    </h2>
+    <div id="shareSummary" class="share-summary"></div>
     <div class="share-link-box">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text3)" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg>
       <span id="shareUrlSpan">Генерация...</span>
       <button onclick="copyShareLink()">Копировать</button>
     </div>
@@ -116,29 +161,71 @@
   </div>
 </div>
 
+<!-- Confirm Modal -->
+<div class="overlay" id="confirmOverlay">
+  <div class="modal confirm-modal" onclick="event.stopPropagation()">
+    <div class="confirm-icon">⚠️</div>
+    <h3 id="confirmTitle">Вы уверены?</h3>
+    <p id="confirmMsg"></p>
+    <div class="confirm-btns">
+      <button class="btn-confirm-cancel" onclick="closeConfirm()">Отмена</button>
+      <button class="btn-confirm-ok" id="confirmOkBtn">Подтвердить</button>
+    </div>
+  </div>
+</div>
+
 <!-- App Shell -->
 <div id="app">
 
   <!-- Header -->
   <header class="topbar">
-    <div class="topbar-brand">
-      <svg class="brand-star" viewBox="0 0 32 32" fill="none">
-        <path d="M16 2l3.5 8.5L28 12l-6.5 6 2 9L16 23l-7.5 4 2-9L4 12l8.5-1.5L16 2z" fill="#FF6B35" stroke="#FF6B35" stroke-width="1"/>
+    <div class="topbar-brand" onclick="navigate('home')" role="button" tabindex="0" title="Happy Toys — Главная">
+      <!-- Castle Logo SVG -->
+      <svg class="brand-logo" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- cloud base -->
+        <ellipse cx="28" cy="44" rx="22" ry="7" fill="white"/>
+        <ellipse cx="12" cy="42" rx="9" ry="5.5" fill="white"/>
+        <ellipse cx="44" cy="42" rx="9" ry="5.5" fill="white"/>
+        <!-- castle body -->
+        <rect x="14" y="26" width="28" height="20" rx="2" fill="#FFB347"/>
+        <!-- gate arch -->
+        <rect x="22" y="34" width="12" height="12" rx="3" fill="#3B82F6"/>
+        <!-- battlements -->
+        <rect x="14" y="20" width="5" height="7" rx="1" fill="#FF8C00"/>
+        <rect x="21" y="20" width="4" height="7" rx="1" fill="#FF8C00"/>
+        <rect x="31" y="20" width="4" height="7" rx="1" fill="#FF8C00"/>
+        <rect x="37" y="20" width="5" height="7" rx="1" fill="#FF8C00"/>
+        <!-- center tower -->
+        <rect x="21" y="15" width="14" height="15" rx="2" fill="#FFC34D"/>
+        <!-- center spire (RED) -->
+        <polygon points="28,2 34,15 22,15" fill="#E53935"/>
+        <!-- left spire (BLUE) -->
+        <polygon points="11,13 15,25 7,25" fill="#42A5F5"/>
+        <!-- right spire (BLUE) -->
+        <polygon points="45,13 49,25 41,25" fill="#42A5F5"/>
+        <!-- window -->
+        <rect x="25" y="19" width="6" height="7" rx="2" fill="#3B82F6"/>
+        <!-- green stripe -->
+        <rect x="8" y="42" width="40" height="3" rx="1.5" fill="#66BB6A" opacity="0.8"/>
       </svg>
-      <span>Happy Toys</span>
+      <div class="brand-text">
+        <span class="brand-name">Happy Toys</span>
+        <span class="brand-sub">Оптовый каталог</span>
+      </div>
     </div>
 
     <div class="topbar-search">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input id="topSearch" type="text" placeholder="Поиск товаров..." oninput="onSearch(this.value)" autocomplete="off">
+      <input id="topSearch" type="search" placeholder="Поиск по названию, SKU, бренду..." oninput="onSearch(this.value)" autocomplete="off" aria-label="Поиск товаров">
+      <button class="search-clear" id="searchClearBtn" onclick="clearSearch()" style="display:none" aria-label="Очистить поиск">✕</button>
       <div class="search-drop" id="searchDrop"></div>
     </div>
 
     <div class="topbar-right">
-      <button class="icon-btn" id="authBtn" onclick="openAuth()">
+      <button class="icon-btn" id="authBtn" onclick="openAuth()" aria-label="Аккаунт">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
       </button>
-      <button class="icon-btn cart-btn" onclick="toggleCart()">
+      <button class="icon-btn cart-btn" onclick="toggleCart()" aria-label="Корзина">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
         <span class="cart-badge" id="cartBadge" style="display:none">0</span>
       </button>
@@ -149,7 +236,7 @@
   <main id="mainContent"></main>
 
   <!-- Bottom nav -->
-  <nav class="bottom-nav">
+  <nav class="bottom-nav" role="navigation" aria-label="Основное меню">
     <button id="bn-home" class="bn-btn active" onclick="navigate('home')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
