@@ -366,7 +366,7 @@ async function renderHome() {
   try { cats = await API.categories(); } catch(e){}
 
   const catPills = cats.map(c =>
-    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');setCategory('${escHtml(c.name)}')">${escHtml(c.name)} <small>${c.count}</small></button>`
+    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="selectCatalogCategory('${escHtml(c.name)}');navigate('catalog')">${escHtml(c.name)} <small>${c.count}</small></button>`
   ).join('');
 
   $('mainContent').innerHTML = `
@@ -442,24 +442,95 @@ async function renderHome() {
 }
 
 // ── Catalog page ──────────────────────────────────────────────────────────────
+// ── Category emoji/image map ──────────────────────────────────────────────────
+const CAT_META = {
+  'Куклы':           { emoji: '🪆', color: '#FF6B9D', bg: '#fff0f6' },
+  'Конструкторы':    { emoji: '🧱', color: '#FF6B35', bg: '#fff5f0' },
+  'Машинки':         { emoji: '🚗', color: '#1e88e5', bg: '#f0f7ff' },
+  'Мягкие игрушки':  { emoji: '🧸', color: '#b08040', bg: '#fdf6ec' },
+  'Настольные игры': { emoji: '🎲', color: '#7c3aed', bg: '#f5f0ff' },
+  'Развивающие':     { emoji: '🎨', color: '#2ECC71', bg: '#f0fdf4' },
+  'Спорт':           { emoji: '⚽', color: '#e53935', bg: '#fff5f5' },
+  'Транспорт':       { emoji: '✈️', color: '#0891b2', bg: '#f0fbff' },
+  'Роботы':          { emoji: '🤖', color: '#6366f1', bg: '#f0f0ff' },
+  'Наборы':          { emoji: '🎁', color: '#d97706', bg: '#fffbeb' },
+};
+function catMeta(name) {
+  return CAT_META[name] || { emoji: '🧩', color: '#FF6B35', bg: '#fff8f5' };
+}
+
 async function renderCatalog() {
   let cats = [];
   try { cats = await API.categories(); } catch(e){}
 
+  // If a category is already selected — show products view
+  if (State.category) {
+    renderCatalogProducts(cats);
+    return;
+  }
+
+  // ── Category grid view ────────────────────────────────────────────────────
+  const catCards = cats.map(c => {
+    const m = catMeta(c.name);
+    return `
+      <div class="cat-card" onclick="selectCatalogCategory('${escHtml(c.name)}')" style="--cat-color:${m.color};--cat-bg:${m.bg}">
+        <div class="cat-card-icon">${m.emoji}</div>
+        <div class="cat-card-info">
+          <div class="cat-card-name">${escHtml(c.name)}</div>
+          <div class="cat-card-count">${c.count} товаров</div>
+        </div>
+        <svg class="cat-card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+      </div>`;
+  }).join('');
+
+  // All-products card
+  const allCard = `
+    <div class="cat-card cat-card-all" onclick="selectCatalogCategory(null)">
+      <div class="cat-card-icon">🛍️</div>
+      <div class="cat-card-info">
+        <div class="cat-card-name">Все товары</div>
+        <div class="cat-card-count">${cats.reduce((s,c)=>s+c.count,0)} позиций</div>
+      </div>
+      <svg class="cat-card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+    </div>`;
+
+  $('mainContent').innerHTML = `
+    <div class="catalog-page">
+      <div class="catalog-header">
+        <h2 class="catalog-title">Каталог</h2>
+        <span class="catalog-subtitle">Выберите категорию</span>
+      </div>
+      <div class="cat-grid">
+        ${allCard}
+        ${catCards}
+      </div>
+    </div>
+  `;
+}
+
+function selectCatalogCategory(name) {
+  State.category = name;
+  State.pageNum  = 1;
+  State.stock    = null;
+  State.sort     = 'default';
+  // Get cats and render products
+  API.categories().then(cats => renderCatalogProducts(cats)).catch(() => renderCatalogProducts([]));
+}
+
+function renderCatalogProducts(cats) {
   const catPills = [
-    `<button class="cat-pill ${!State.category ? 'active' : ''}" data-cat="" onclick="setCategory(null)">Все</button>`,
+    `<button class="cat-pill ${!State.category ? 'active' : ''}" onclick="State.category=null;State.pageNum=1;renderCatalog()">← Все категории</button>`,
     ...cats.map(c =>
-      `<button class="cat-pill ${State.category===c.name ? 'active' : ''}" data-cat="${escHtml(c.name)}" onclick="setCategory('${escHtml(c.name)}')">${escHtml(c.name)}</button>`
+      `<button class="cat-pill ${State.category===c.name ? 'active' : ''}" onclick="State.category='${escHtml(c.name)}';State.pageNum=1;loadProducts()">${escHtml(c.name)}</button>`
     )
   ].join('');
 
   $('mainContent').innerHTML = `
-    <div class="cat-scroll" style="padding-top:14px">${catPills}</div>
-
+    <div class="cat-scroll" style="padding-top:12px">${catPills}</div>
     <div class="filters-row">
-      <button class="filter-chip active" data-stock="" onclick="setStock(null)">Все</button>
-      <button class="filter-chip" data-stock="ok" onclick="setStock('ok')">В наличии</button>
-      <button class="filter-chip" data-stock="low" onclick="setStock('low')">Мало</button>
+      <button class="filter-chip ${!State.stock?'active':''}" onclick="setStock(null)">Все</button>
+      <button class="filter-chip ${State.stock==='ok'?'active':''}" onclick="setStock('ok')">В наличии</button>
+      <button class="filter-chip ${State.stock==='low'?'active':''}" onclick="setStock('low')">Мало</button>
       <select class="sort-chip" onchange="setSort(this.value)">
         <option value="default">Сортировка</option>
         <option value="price-asc">Цена ↑</option>
@@ -467,16 +538,13 @@ async function renderCatalog() {
         <option value="name">А-Я</option>
       </select>
     </div>
-
     <div class="results-info">
       <span id="productCount">Загрузка...</span>
-      <span class="reset-link" onclick="clearFilters()">Сбросить фильтры</span>
+      <span class="reset-link" onclick="clearFilters();renderCatalog()">Сбросить</span>
     </div>
-
     <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
     <div id="pagination" class="pagination"></div>
   `;
-
   loadProducts();
 }
 
