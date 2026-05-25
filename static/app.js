@@ -378,10 +378,23 @@ async function renderHome() {
         </span>
       </div>
       <div class="home-hero-top">
-        <img class="home-hero-logo" src="/static/logo.png"
-             onerror="this.onerror=null;this.style.display='none'"
-             alt="Happy Toys"
-             style="background:transparent;border-radius:0">
+        <svg class="home-hero-logo" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="46" rx="22" ry="7" fill="rgba(255,255,255,0.55)"/>
+          <ellipse cx="11" cy="44" rx="9" ry="5.5" fill="rgba(255,255,255,0.45)"/>
+          <ellipse cx="45" cy="44" rx="9" ry="5.5" fill="rgba(255,255,255,0.45)"/>
+          <rect x="14" y="26" width="28" height="20" rx="2" fill="rgba(255,255,255,0.92)"/>
+          <rect x="22" y="35" width="12" height="11" rx="3" fill="#1e88e5"/>
+          <rect x="14" y="20" width="5" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="21" y="20" width="4" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="31" y="20" width="4" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="37" y="20" width="5" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="20" y="14" width="16" height="15" rx="2" fill="rgba(255,255,255,0.95)"/>
+          <polygon points="28,1 35,14 21,14" fill="#e53935"/>
+          <polygon points="10,12 14,25 6,25" fill="#42A5F5"/>
+          <polygon points="46,12 50,25 42,25" fill="#42A5F5"/>
+          <rect x="24" y="18" width="8" height="8" rx="2" fill="#1e88e5"/>
+          <rect x="7" y="43" width="42" height="3" rx="1.5" fill="#66BB6A" opacity="0.9"/>
+        </svg>
         <div class="hero-title-block">
           <h1 class="hero-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span>&nbsp;<span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></h1>
           <p class="hero-tagline">Лучшие игрушки для вашего магазина</p>
