@@ -13,7 +13,7 @@
   --text2:     #555;
   --text3:     #999;
   --border:    #E8E8E8;
-  --topbar-h:  64px;
+  --topbar-h:  60px;
   --bottomnav-h: 64px;
   --radius:    14px;
   --shadow:    0 2px 12px rgba(0,0,0,0.08);
@@ -68,13 +68,13 @@ body {
 }
 
 .brand-logo {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   flex-shrink: 0;
-  filter: drop-shadow(0 2px 4px rgba(255,107,53,0.25));
   transition: transform .2s;
   object-fit: contain;
-  border-radius: 8px;
+  border-radius: 0;
+  background: transparent;
 }
 .topbar-brand:hover .brand-logo { transform: scale(1.05); }
 
@@ -101,15 +101,15 @@ body {
   line-height: 1;
 }
 .auth-brand-name { font-size: 22px; }
-.bc-1 { color: #1a3a6e; }   /* H — тёмно-синий */
-.bc-2 { color: #f5c518; }   /* a — жёлтый */
-.bc-3 { color: #e53935; }   /* p — красный */
-.bc-4 { color: #42a5f5; }   /* p — голубой */
-.bc-5 { color: #f5c518; }   /* y — жёлтый */
-.bc-6 { color: #42a5f5; }   /* T — голубой */
-.bc-7 { color: #1a3a6e; }   /* o — тёмно-синий */
-.bc-8 { color: #f5c518; }   /* y — жёлтый */
-.bc-9 { color: #e53935; }   /* s — красный */
+.bc-1 { color: #1a3a6e !important; }   /* H — тёмно-синий */
+.bc-2 { color: #e6a800 !important; }   /* a — жёлтый */
+.bc-3 { color: #e53935 !important; }   /* p — красный */
+.bc-4 { color: #1e88e5 !important; }   /* p — голубой */
+.bc-5 { color: #e6a800 !important; }   /* y — жёлтый */
+.bc-6 { color: #1e88e5 !important; }   /* T — голубой */
+.bc-7 { color: #1a3a6e !important; }   /* o — тёмно-синий */
+.bc-8 { color: #e6a800 !important; }   /* y — жёлтый */
+.bc-9 { color: #e53935 !important; }   /* s — красный */
 
 .brand-sub {
   font-size: 10px;
@@ -139,7 +139,7 @@ body {
 
 .topbar-search input {
   width: 100%;
-  padding: 9px 36px 9px 36px;
+  padding: 8px 32px 8px 34px;
   background: var(--bg);
   border: 1.5px solid var(--border);
   border-radius: 24px;
@@ -148,6 +148,7 @@ body {
   outline: none;
   transition: border-color .2s, box-shadow .2s;
 }
+.topbar-search input::placeholder { color: var(--text3); font-size: 13px; }
 .topbar-search input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(255,107,53,0.1);
@@ -311,7 +312,7 @@ body {
 /* ── Home Page Hero ──────────────────────────────────────────────────────── */
 .home-hero {
   background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
-  padding: 24px 20px 28px;
+  padding: 20px 18px 22px;
   color: #fff;
   position: relative;
   overflow: hidden;
@@ -343,11 +344,12 @@ body {
 }
 
 .home-hero-logo {
-  width: 72px; height: 72px;
+  width: 70px; height: 70px;
   flex-shrink: 0;
-  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.25));
   object-fit: contain;
-  border-radius: 12px;
+  border-radius: 0;
+  background: transparent;
+  filter: drop-shadow(0 3px 8px rgba(0,0,0,0.3));
 }
 
 .home-hero h1 {
@@ -358,30 +360,23 @@ body {
 }
 .hero-brand-name {
   font-family: 'Nunito', sans-serif;
-  font-size: 28px;
+  font-size: 32px;
   font-weight: 900;
-  line-height: 1.15;
-  /* bright letters on dark gradient bg — add white shadow for readability */
-  text-shadow: 0 1px 3px rgba(0,0,0,0.18);
+  line-height: 1.1;
+  text-shadow: 0 2px 6px rgba(0,0,0,0.25);
 }
-.hero-brand-name .bc-1 { color: #fff; }
-.hero-brand-name .bc-2 { color: #FFE066; }
-.hero-brand-name .bc-3 { color: #FFB3B3; }
-.hero-brand-name .bc-4 { color: #B3DCFF; }
-.hero-brand-name .bc-5 { color: #FFE066; }
-.hero-brand-name .bc-6 { color: #B3DCFF; }
-.hero-brand-name .bc-7 { color: #fff; }
-.hero-brand-name .bc-8 { color: #FFE066; }
-.hero-brand-name .bc-9 { color: #FFB3B3; }
+/* On orange/gradient bg — use white + light tints that pop */
+.hero-brand-name .bc-1 { color: #fff !important; }
+.hero-brand-name .bc-2 { color: #FFF176 !important; }
+.hero-brand-name .bc-3 { color: #FFCDD2 !important; }
+.hero-brand-name .bc-4 { color: #B3E5FC !important; }
+.hero-brand-name .bc-5 { color: #FFF176 !important; }
+.hero-brand-name .bc-6 { color: #B3E5FC !important; }
+.hero-brand-name .bc-7 { color: #fff !important; }
+.hero-brand-name .bc-8 { color: #FFF176 !important; }
+.hero-brand-name .bc-9 { color: #FFCDD2 !important; }
 
-.home-hero p {
-  font-size: 13px;
-  opacity: .88;
-  position: relative;
-  z-index: 1;
-  margin-bottom: 16px;
-  line-height: 1.5;
-}
+
 
 .hero-stats {
   display: flex;
@@ -408,15 +403,44 @@ body {
 
 .hero-stat span { font-size: 11px; opacity: .85; }
 
+/* ── Hero layout tweaks ──────────────────────────────────────────────────── */
+.hero-wholesale-row {
+  margin-bottom: 12px;
+  position: relative;
+  z-index: 1;
+}
+
+.hero-title-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.hero-tagline {
+  font-size: 13px;
+  color: rgba(255,255,255,0.88);
+  margin-top: 4px;
+  line-height: 1.4;
+}
+
+/* Keep .home-hero p for other paragraphs */
+.home-hero > p {
+  font-size: 13px;
+  opacity: .88;
+  position: relative;
+  z-index: 1;
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
 /* Wholesale badge */
 .wholesale-badge {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  background: rgba(255,255,255,0.25);
-  border: 1px solid rgba(255,255,255,0.4);
+  background: rgba(255,255,255,0.28);
+  border: 1.5px solid rgba(255,255,255,0.5);
   border-radius: 20px;
-  padding: 4px 12px;
+  padding: 5px 12px;
   font-size: 11px;
   font-weight: 700;
   margin-bottom: 12px;
