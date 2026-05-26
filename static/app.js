@@ -366,7 +366,7 @@ async function renderHome() {
   try { cats = await API.categories(); } catch(e){}
 
   const catPills = cats.map(c =>
-    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="selectCatalogCategory('${escHtml(c.name)}');navigate('catalog')">${escHtml(c.name)} <small>${c.count}</small></button>`
+    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');selectCatalogCategory('${escHtml(c.name)}');">${escHtml(c.name)} <small>${c.count}</small></button>`
   ).join('');
 
   $('mainContent').innerHTML = `
@@ -454,6 +454,14 @@ const CAT_META = {
   'Транспорт':       { emoji: '✈️', color: '#0891b2', bg: '#f0fbff' },
   'Роботы':          { emoji: '🤖', color: '#6366f1', bg: '#f0f0ff' },
   'Наборы':          { emoji: '🎁', color: '#d97706', bg: '#fffbeb' },
+  'Пазлы':           { emoji: '🧩', color: '#059669', bg: '#f0fdf8' },
+  'Творчество':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff' },
+  'Музыкальные':     { emoji: '🎵', color: '#f59e0b', bg: '#fffbeb' },
+  'Интерактивные':   { emoji: '💡', color: '#3b82f6', bg: '#eff6ff' },
+  'Спорт и активность': { emoji: '🏃', color: '#e53935', bg: '#fff5f5' },
+  'Для малышей':     { emoji: '👶', color: '#ec4899', bg: '#fdf2f8' },
+  'Железные дороги': { emoji: '🚂', color: '#78716c', bg: '#f9f7f5' },
+  'Аксессуары':      { emoji: '🎀', color: '#f472b6', bg: '#fff0f8' },
 };
 function catMeta(name) {
   return CAT_META[name] || { emoji: '🧩', color: '#FF6B35', bg: '#fff8f5' };
@@ -474,24 +482,18 @@ async function renderCatalog() {
     const m = catMeta(c.name);
     return `
       <div class="cat-card" onclick="selectCatalogCategory('${escHtml(c.name)}')" style="--cat-color:${m.color};--cat-bg:${m.bg}">
+        <div class="cat-card-name">${escHtml(c.name)}</div>
+        <div class="cat-card-count">${c.count} товаров</div>
         <div class="cat-card-icon">${m.emoji}</div>
-        <div class="cat-card-info">
-          <div class="cat-card-name">${escHtml(c.name)}</div>
-          <div class="cat-card-count">${c.count} товаров</div>
-        </div>
-        <svg class="cat-card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
       </div>`;
   }).join('');
 
-  // All-products card
+  const totalCount = cats.reduce((s,c) => s + c.count, 0);
   const allCard = `
     <div class="cat-card cat-card-all" onclick="selectCatalogCategory(null)">
+      <div class="cat-card-name">Все товары</div>
+      <div class="cat-card-count" style="color:rgba(255,255,255,0.75)">${totalCount} позиций</div>
       <div class="cat-card-icon">🛍️</div>
-      <div class="cat-card-info">
-        <div class="cat-card-name">Все товары</div>
-        <div class="cat-card-count">${cats.reduce((s,c)=>s+c.count,0)} позиций</div>
-      </div>
-      <svg class="cat-card-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
     </div>`;
 
   $('mainContent').innerHTML = `
@@ -1155,7 +1157,7 @@ function navigate(page) {
 
   if (!$('mainContent')) return;
   if (page === 'home')    renderHome();
-  if (page === 'catalog') renderCatalog();
+  if (page === 'catalog') { State.category = null; State.search = ''; renderCatalog(); }
   if (page === 'profile') renderProfile();
   if (page === 'admin')   renderAdmin();
 }
