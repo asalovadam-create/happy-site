@@ -23,12 +23,15 @@ class CacheHeaders(BaseHTTPMiddleware):
     async def dispatch(self, req, call_next):
         resp = await call_next(req)
         p = req.url.path
-        if p.startswith('/static/'):
-            resp.headers['Cache-Control'] = 'public, max-age=86400, immutable'
-        elif p in ('/api/categories', '/api/brands'):
-            resp.headers['Cache-Control'] = 'public, max-age=300, stale-while-revalidate=600'
-        elif p.startswith('/api/products'):
-            resp.headers['Cache-Control'] = 'public, max-age=30, stale-while-revalidate=60'
+        if p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
+            # JS/CSS — never cache so updates apply immediately
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            resp.headers['Pragma'] = 'no-cache'
+            resp.headers['Expires'] = '0'
+        elif p.startswith('/static/'):
+            resp.headers['Cache-Control'] = 'public, max-age=86400'
+        elif p.startswith('/api/'):
+            resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return resp
 app.add_middleware(CacheHeaders)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
