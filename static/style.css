@@ -1480,14 +1480,16 @@ body {
 
 /* ── Catalog page ────────────────────────────────────────────────────────── */
 .catalog-page {
-  padding-bottom: 24px;
+  padding-bottom: 32px;
+  background: var(--bg);
+  min-height: 100%;
 }
 
 .catalog-header {
-  padding: 20px 18px 14px;
+  padding: 18px 16px 12px;
   display: flex;
   align-items: baseline;
-  gap: 12px;
+  gap: 10px;
 }
 
 .catalog-title {
@@ -1506,128 +1508,114 @@ body {
 /* ── Category grid ───────────────────────────────────────────────────────── */
 .cat-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-  padding: 0 12px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 0 10px;
 }
 
-/* Tablet: 3 columns */
+/* Large phone landscape */
+@media (min-width: 480px) {
+  .cat-grid { grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 0 12px; }
+}
+
+/* iPad portrait — 3 big columns */
 @media (min-width: 600px) {
-  .cat-grid {
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    padding: 0 16px;
-  }
+  .cat-grid { grid-template-columns: repeat(3, 1fr); gap: 14px; padding: 0 16px; }
 }
 
-/* Desktop: 4 columns */
+/* iPad landscape / small desktop — 4 columns */
 @media (min-width: 900px) {
-  .cat-grid {
-    grid-template-columns: repeat(4, 1fr);
-    gap: 16px;
-    padding: 0 20px;
-  }
+  .cat-grid { grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 0 20px; }
 }
 
-@media (min-width: 1200px) {
-  .cat-grid {
-    grid-template-columns: repeat(5, 1fr);
-  }
+/* Desktop — 5 columns */
+@media (min-width: 1100px) {
+  .cat-grid { grid-template-columns: repeat(5, 1fr); gap: 18px; padding: 0 24px; }
 }
 
-/* ── Category card ───────────────────────────────────────────────────────── */
+/* ── Category card — Sima-Land style ─────────────────────────────────────── */
 .cat-card {
-  background: var(--cat-bg, #fff8f5);
-  border-radius: 18px;
-  padding: 0;
+  background: #fff;
+  border-radius: 16px;
   cursor: pointer;
   transition: transform .2s, box-shadow .2s;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.07);
   border: 1.5px solid transparent;
   display: flex;
   flex-direction: column;
-  align-items: center;
   overflow: hidden;
   position: relative;
-  aspect-ratio: 1;
-  justify-content: center;
-  gap: 10px;
+  /* No fixed aspect ratio — name on top, emoji fills bottom */
 }
 
 .cat-card:hover {
   transform: translateY(-4px);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  box-shadow: 0 10px 28px rgba(0,0,0,0.13);
   border-color: var(--cat-color, var(--accent));
 }
 
-.cat-card:active {
-  transform: scale(0.96);
-}
+.cat-card:active { transform: scale(0.96); }
 
-.cat-card-all {
-  --cat-color: #FF6B35;
-  --cat-bg: linear-gradient(135deg, #FF6B35, #FFB347);
-  background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
-  color: white;
-}
-
-.cat-card-all .cat-card-name { color: white; }
-.cat-card-all .cat-card-count { color: rgba(255,255,255,0.8); }
-.cat-card-all .cat-card-arrow { color: rgba(255,255,255,0.7); }
-
-.cat-card-icon {
-  font-size: 48px;
-  line-height: 1;
-  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.12));
-  transition: transform .25s;
-}
-
-/* Bigger on tablet */
-@media (min-width: 600px) {
-  .cat-card-icon { font-size: 60px; }
-}
-
-.cat-card:hover .cat-card-icon {
-  transform: scale(1.12) rotate(-4deg);
-}
-
-.cat-card-info {
-  text-align: center;
-  padding: 0 10px;
-}
-
+/* Name label — top left, like Sima-Land */
 .cat-card-name {
   font-family: 'Nunito', sans-serif;
   font-size: 13px;
   font-weight: 800;
   color: var(--text1);
   line-height: 1.25;
-  margin-bottom: 3px;
+  padding: 12px 12px 0 12px;
+  z-index: 1;
 }
 
-@media (min-width: 600px) {
-  .cat-card-name { font-size: 15px; }
-}
+@media (min-width: 600px) { .cat-card-name { font-size: 16px; padding: 14px 14px 0 14px; } }
+@media (min-width: 900px)  { .cat-card-name { font-size: 15px; } }
 
+/* Count under name */
 .cat-card-count {
   font-size: 11px;
-  color: var(--cat-color, var(--text3));
-  font-weight: 700;
+  font-weight: 600;
+  color: var(--text3);
+  padding: 3px 12px 8px 12px;
 }
 
-@media (min-width: 600px) {
-  .cat-card-count { font-size: 13px; }
+@media (min-width: 600px) { .cat-card-count { font-size: 13px; padding: 4px 14px 10px 14px; } }
+
+/* Big emoji — bottom right, fills the card */
+.cat-card-icon {
+  font-size: 56px;
+  line-height: 1;
+  display: block;
+  text-align: right;
+  padding: 4px 10px 10px 10px;
+  margin-top: auto;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,0.1));
+  transition: transform .25s;
 }
 
-.cat-card-arrow {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
-  width: 16px;
-  height: 16px;
-  color: var(--cat-color, var(--text3));
-  opacity: 0.5;
+@media (min-width: 600px) { .cat-card-icon { font-size: 80px; } }
+@media (min-width: 900px)  { .cat-card-icon { font-size: 70px; } }
+@media (min-width: 1100px) { .cat-card-icon { font-size: 80px; } }
+
+.cat-card:hover .cat-card-icon { transform: scale(1.1) rotate(-5deg); }
+
+/* cat-card-info wrapper not needed anymore but keep for compat */
+.cat-card-info { display: contents; }
+
+/* "All products" card — gradient */
+.cat-card-all {
+  --cat-color: #FF6B35;
+  background: linear-gradient(145deg, #FF6B35 0%, #FFB347 100%);
 }
+.cat-card-all .cat-card-name  { color: #fff; }
+.cat-card-all .cat-card-count { color: rgba(255,255,255,0.75); }
+
+/* Background tint per category */
+.cat-card:not(.cat-card-all) {
+  background: var(--cat-bg, #fff);
+}
+
+/* Arrow removed — cleaner look like Sima-Land */
+.cat-card-arrow { display: none; }
 
 /* ── Catalog back pill ───────────────────────────────────────────────────── */
 .cat-pill:first-child {
