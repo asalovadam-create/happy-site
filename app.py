@@ -34,6 +34,48 @@ class CacheHeaders(BaseHTTPMiddleware):
             resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return resp
 app.add_middleware(CacheHeaders)
+
+class VisitorTracker(BaseHTTPMiddleware):
+    async def dispatch(self, req, call_next):
+        resp = await call_next(req)
+        # Track only page visits (not API/static)
+        if req.method == "GET" and not req.url.path.startswith(("/api/", "/static/", "/docs")):
+            ua = req.headers.get("user-agent", "")
+            ip = req.headers.get("x-forwarded-for", req.client.host if req.client else "unknown")
+            ip = ip.split(",")[0].strip()
+            # Parse device type from UA
+            if "iPhone" in ua or "Android" in ua and "Mobile" in ua:
+                device = "📱 Mobile"
+            elif "iPad" in ua or "Tablet" in ua:
+                device = "📲 Tablet"
+            elif "Mac" in ua or "Windows" in ua or "Linux" in ua:
+                device = "💻 Desktop"
+            else:
+                device = "❓ Unknown"
+            # Parse browser
+            if "Chrome" in ua and "Safari" in ua and "Edg" not in ua:
+                browser = "Chrome"
+            elif "Safari" in ua and "Chrome" not in ua:
+                browser = "Safari"
+            elif "Firefox" in ua:
+                browser = "Firefox"
+            elif "Edg" in ua:
+                browser = "Edge"
+            else:
+                browser = "Other"
+            _visitors.insert(0, {
+                "ip": ip,
+                "device": device,
+                "browser": browser,
+                "ua": ua[:120],
+                "path": req.url.path,
+                "time": datetime.utcnow().isoformat(),
+            })
+            if len(_visitors) > 500:
+                _visitors.pop()
+        return resp
+app.add_middleware(VisitorTracker)
+
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -176,6 +218,9 @@ _products = _seed()
 _carts    = {}
 _users_admin = {ADMIN_USER: hashlib.sha256(ADMIN_PASS.encode()).hexdigest()}
 _customers   = {}
+_visitors: list = []   # [{ip, ua, device, time, page}]
+_custom_brands: list = list({"LEGO","Barbie","Hot Wheels","Hasbro","Mattel",
+                              "Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"})
 _cache: dict = {}
 _cache_exp: dict = {}
 
@@ -235,6 +280,12 @@ class CatalogCategoryIn(BaseModel):
 
 class CatalogSubcategoryIn(BaseModel):
     category: str; name: str
+
+class BrandIn(BaseModel):
+    name: str
+
+class SubcategoryImageIn(BaseModel):
+    category: str; subcategory: str; image_url: str
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
@@ -374,10 +425,11 @@ async def categories():
 async def subcategories(cat: str):
     if cat not in _catalog: raise HTTPException(404, "Category not found")
     result = []
-    for sub in _catalog[cat].keys():
+    for sub, meta in _catalog[cat].items():
         count = sum(1 for p in _products.values()
                     if p["category"]==cat and p.get("subcategory")==sub and p["is_active"])
-        result.append({"name": sub, "count": count})
+        img = meta.get("image", "") if isinstance(meta, dict) else ""
+        result.append({"name": sub, "count": count, "image": img})
     return result
 
 # ── Admin: manage catalog structure ──────────────────────────────────────────
@@ -415,7 +467,24 @@ async def del_subcategory(cat: str, sub: str, _=Depends(require_admin)):
 # ── Brands ────────────────────────────────────────────────────────────────────
 @app.get("/api/brands")
 async def brands():
-    return [{"name": b, "count": sum(1 for p in _products.values() if p["brand"]==b and p["is_active"])} for b in BRANDS]
+    all_brands = sorted(set(_custom_brands) | {p["brand"] for p in _products.values() if p["is_active"]})
+    return [{"name": b, "count": sum(1 for p in _products.values() if p["brand"]==b and p["is_active"])} for b in all_brands]
+
+@app.post("/api/admin/brands")
+async def add_brand(b: BrandIn, _=Depends(require_admin)):
+    name = b.name.strip()
+    if not name: raise HTTPException(400, "Name required")
+    if name not in _custom_brands:
+        _custom_brands.insert(0, name)
+        if len(_custom_brands) > 100: _custom_brands.pop()
+    _cache.clear()
+    return {"name": name, "brands": _custom_brands[:20]}
+
+@app.delete("/api/admin/brands/{name}")
+async def del_brand(name: str, _=Depends(require_admin)):
+    if name in _custom_brands: _custom_brands.remove(name)
+    _cache.clear()
+    return {"deleted": name}
 
 # ── Cart / Share ──────────────────────────────────────────────────────────────
 @app.post("/api/cart/share")
@@ -535,6 +604,8 @@ async def get_cart(code: str, request: Request):
 @app.get("/api/admin/stats")
 async def stats(_=Depends(require_admin)):
     active = [p for p in _products.values() if p["is_active"]]
+    today = datetime.utcnow().date().isoformat()
+    today_visits = sum(1 for v in _visitors if v["time"][:10] == today)
     return {
         "total_products": len(active),
         "low_stock": sum(1 for p in active if p["stock"]=="low"),
@@ -542,6 +613,8 @@ async def stats(_=Depends(require_admin)):
         "total_carts": len(_carts),
         "total_customers": len(_customers),
         "total_categories": len(_catalog),
+        "total_visitors": len(_visitors),
+        "today_visits": today_visits,
     }
 
 @app.get("/api/admin/carts")
@@ -558,6 +631,20 @@ async def admin_customer(uid: str, _=Depends(require_admin)):
     c = _safe_customer(_customers[uid])
     c["cart_details"] = [_carts[o["code"]] for o in c.get("orders",[]) if o["code"] in _carts]
     return c
+
+@app.get("/api/admin/visitors")
+async def admin_visitors(_=Depends(require_admin)):
+    return {"visitors": _visitors[:200]}
+
+@app.post("/api/admin/subcategory-image")
+async def set_subcat_image(b: SubcategoryImageIn, _=Depends(require_admin)):
+    """Store a custom image URL for a subcategory (for future use)""\"
+    if b.category not in _catalog: raise HTTPException(404, "Category not found")
+    if b.subcategory not in _catalog[b.category]: raise HTTPException(404, "Subcategory not found")
+    # Store image URL in the subcategory list (use first element as metadata)
+    _catalog[b.category][b.subcategory] = {"image": b.image_url}
+    _cache.clear()
+    return {"ok": True, "category": b.category, "subcategory": b.subcategory, "image": b.image_url}
 
 @app.get("/api/admin/catalog")
 async def admin_catalog(_=Depends(require_admin)):
