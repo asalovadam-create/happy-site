@@ -1,6 +1,7 @@
 """
 Happy Toys — Wholesale Catalog
 FastAPI backend · JWT auth · user registration · image upload · in-memory DB
+Two-level catalog: Category → Subcategory → Products
 """
 
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
@@ -10,12 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
 import jwt, hashlib, random, string, time, os, base64, uuid
 
-app = FastAPI(title="Happy Toys API", version="2.0.0", docs_url="/api/docs")
+app = FastAPI(title="Happy Toys API", version="3.0.0", docs_url="/api/docs")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -24,7 +25,6 @@ class CacheHeaders(BaseHTTPMiddleware):
         resp = await call_next(req)
         p = req.url.path
         if p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
-            # JS/CSS — never cache so updates apply immediately
             resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             resp.headers['Pragma'] = 'no-cache'
             resp.headers['Expires'] = '0'
@@ -38,14 +38,88 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# ── Config ───────────────────────────────────────────────────────────────────
-JWT_SECRET  = os.getenv("JWT_SECRET",  "happytoys-secret-2025")
-ADMIN_USER  = os.getenv("ADMIN_USER",  "admin")
-ADMIN_PASS  = os.getenv("ADMIN_PASS",  "admin123")
-security    = HTTPBearer(auto_error=False)
+JWT_SECRET = os.getenv("JWT_SECRET", "happytoys-secret-2025")
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
+security   = HTTPBearer(auto_error=False)
 
-# ── Seed data ────────────────────────────────────────────────────────────────
-CATEGORIES = ["Куклы","Конструкторы","Машинки","Настольные игры","Мягкие игрушки","Развивающие","Пазлы","Творчество"]
+# ── Two-level catalog structure ───────────────────────────────────────────────
+# Format: { category_name: { subcategory_name: [] } }
+_catalog: dict = {
+    "Машинки": {
+        "Легковые автомобили": [],
+        "Грузовики и спецтехника": [],
+        "Гоночные машины": [],
+        "Радиоуправляемые": [],
+        "Треки и наборы": [],
+    },
+    "Куклы": {
+        "Модные куклы": [],
+        "Пупсы и малыши": [],
+        "Принцессы": [],
+        "Аксессуары для кукол": [],
+    },
+    "Конструкторы": {
+        "Классические конструкторы": [],
+        "LEGO серии": [],
+        "Магнитные конструкторы": [],
+        "Деревянные конструкторы": [],
+        "Мягкие конструкторы": [],
+    },
+    "Мягкие игрушки": {
+        "Медведи и мишки": [],
+        "Единороги": [],
+        "Животные": [],
+        "Персонажи мультфильмов": [],
+        "Подушки-игрушки": [],
+    },
+    "Настольные игры": {
+        "Классические игры": [],
+        "Стратегии": [],
+        "Карточные игры": [],
+        "Игры для детей": [],
+    },
+    "Развивающие": {
+        "Сортеры и пазлы": [],
+        "Обучающие наборы": [],
+        "Музыкальные игрушки": [],
+        "Для малышей 0-3 года": [],
+    },
+    "Пазлы": {
+        "Детские пазлы": [],
+        "Пазлы 100-500 деталей": [],
+        "Пазлы 500-1000 деталей": [],
+        "3D пазлы": [],
+    },
+    "Творчество": {
+        "Наборы для рисования": [],
+        "Лепка и пластилин": [],
+        "Бисер и украшения": [],
+        "Наборы для шитья": [],
+        "Слаймы": [],
+    },
+    "Канцелярия": {
+        "Ручки и карандаши": [],
+        "Тетради и блокноты": [],
+        "Пеналы и сумки": [],
+        "Фломастеры и маркеры": [],
+        "Точилки и ластики": [],
+    },
+    "Спорт и активность": {
+        "Мячи": [],
+        "Велосипеды и самокаты": [],
+        "Скакалки и обручи": [],
+        "Батуты": [],
+    },
+    "Для малышей": {
+        "Погремушки": [],
+        "Прорезыватели": [],
+        "Мобили и ночники": [],
+        "Развивающие коврики": [],
+    },
+}
+
+CATEGORIES = list(_catalog.keys())
 BRANDS     = ["LEGO","Barbie","Hot Wheels","Hasbro","Mattel","Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"]
 NAMES = [
     "Кукла Барби Модница Делюкс","Конструктор City 500 дет.","Машинка Турбо X",
@@ -75,16 +149,19 @@ DESC = "Высококачественная игрушка. Соответст�
 
 def _seed():
     db = {}
+    all_subs = [(cat, sub) for cat, subs in _catalog.items() for sub in subs.keys()]
     for i in range(1, 201):
         sv = random.random()
         stock = "ok" if sv > 0.6 else ("low" if sv > 0.25 else "out")
+        cat, sub = all_subs[(i-1) % len(all_subs)]
         db[i] = {
             "id": i, "is_active": True,
             "name": NAMES[(i-1) % len(NAMES)] + (f" #{i}" if i > len(NAMES) else ""),
             "sku": f"{10000 + i}",
             "price": round(random.uniform(3.5, 149.99), 2),
             "brand": BRANDS[(i-1) % len(BRANDS)],
-            "category": CATEGORIES[(i-1) % len(CATEGORIES)],
+            "category": cat,
+            "subcategory": sub,
             "image": IMGS[(i-1) % len(IMGS)],
             "stock": stock,
             "stock_qty": random.randint(1, 500) if stock != "out" else 0,
@@ -98,59 +175,47 @@ def _seed():
 _products = _seed()
 _carts    = {}
 _users_admin = {ADMIN_USER: hashlib.sha256(ADMIN_PASS.encode()).hexdigest()}
-_customers   = {}   # uid -> customer dict
+_customers   = {}
 _cache: dict = {}
 _cache_exp: dict = {}
 
 def c_get(k):
     return _cache[k] if k in _cache and time.time() < _cache_exp.get(k, 0) else None
-
 def c_set(k, v, ttl=30):
     _cache[k] = v; _cache_exp[k] = time.time() + ttl
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
+# ── Auth helpers ──────────────────────────────────────────────────────────────
 def make_token(sub, role="customer"):
     return jwt.encode({"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(days=30)}, JWT_SECRET, algorithm="HS256")
 
 def require_admin(creds: HTTPAuthorizationCredentials = Depends(security)):
-    if not creds:
-        raise HTTPException(401, "Token required")
+    if not creds: raise HTTPException(401, "Token required")
     try:
         payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
-        if payload.get("role") != "admin":
-            raise HTTPException(403, "Admin only")
+        if payload.get("role") != "admin": raise HTTPException(403, "Admin only")
         return payload
-    except jwt.PyJWTError:
-        raise HTTPException(401, "Invalid token")
+    except jwt.PyJWTError: raise HTTPException(401, "Invalid token")
 
 def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
-    if not creds:
-        return None
-    try:
-        return jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
-    except:
-        return None
+    if not creds: return None
+    try: return jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
+    except: return None
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     username: str; password: str
 
 class RegisterIn(BaseModel):
-    first_name: str
-    last_name: str
-    email: str
-    phone: str
-    password: str
-    address: Optional[str] = ""
+    first_name: str; last_name: str; email: str
+    phone: str; password: str; address: Optional[str] = ""
 
 class CustomerUpdate(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    phone: Optional[str] = None
-    address: Optional[str] = None
+    first_name: Optional[str]=None; last_name: Optional[str]=None
+    phone: Optional[str]=None; address: Optional[str]=None
 
 class ProductIn(BaseModel):
-    name: str; sku: str; price: float; brand: str; category: str
+    name: str; sku: str; price: float; brand: str
+    category: str; subcategory: Optional[str] = ""
     image: str = ""; stock: str = "ok"; stock_qty: int = 0
     description: str = ""; min_order: int = 1; age_min: int = 3
 
@@ -158,12 +223,18 @@ class ProductPatch(BaseModel):
     name: Optional[str]=None; price: Optional[float]=None
     stock: Optional[str]=None; stock_qty: Optional[int]=None
     description: Optional[str]=None; is_active: Optional[bool]=None
-    image: Optional[str]=None
+    image: Optional[str]=None; category: Optional[str]=None
+    subcategory: Optional[str]=None
 
 class ShareIn(BaseModel):
-    items: List[dict]
-    comment: str = ""; store_name: str = ""; contact: str = ""
-    customer_id: Optional[str] = None
+    items: List[dict]; comment: str = ""; store_name: str = ""
+    contact: str = ""; customer_id: Optional[str] = None
+
+class CatalogCategoryIn(BaseModel):
+    name: str
+
+class CatalogSubcategoryIn(BaseModel):
+    category: str; name: str
 
 # ── Routes ────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
@@ -176,7 +247,6 @@ async def login(b: LoginIn):
     h = hashlib.sha256(b.password.encode()).hexdigest()
     if _users_admin.get(b.username) == h:
         return {"token": make_token(b.username, "admin"), "username": b.username, "role": "admin"}
-    # Check customers by email
     for uid, c in _customers.items():
         if c["email"] == b.username and c["password_hash"] == h:
             return {"token": make_token(uid, "customer"), "customer": _safe_customer(c), "role": "customer"}
@@ -184,68 +254,57 @@ async def login(b: LoginIn):
 
 @app.post("/api/auth/register", status_code=201)
 async def register(b: RegisterIn):
-    # Check email unique
     for c in _customers.values():
-        if c["email"] == b.email:
-            raise HTTPException(400, "Email already registered")
+        if c["email"] == b.email: raise HTTPException(400, "Email already registered")
     uid = str(uuid.uuid4())
     _customers[uid] = {
-        "id": uid,
-        "first_name": b.first_name,
-        "last_name": b.last_name,
-        "email": b.email,
-        "phone": b.phone,
-        "address": b.address,
+        "id": uid, "first_name": b.first_name, "last_name": b.last_name,
+        "email": b.email, "phone": b.phone, "address": b.address,
         "password_hash": hashlib.sha256(b.password.encode()).hexdigest(),
-        "created_at": datetime.utcnow().isoformat(),
-        "orders": [],
+        "created_at": datetime.utcnow().isoformat(), "orders": [],
     }
-    token = make_token(uid, "customer")
-    return {"token": token, "customer": _safe_customer(_customers[uid]), "role": "customer"}
+    return {"token": make_token(uid, "customer"), "customer": _safe_customer(_customers[uid]), "role": "customer"}
 
 def _safe_customer(c):
     return {k: v for k, v in c.items() if k != "password_hash"}
 
 @app.get("/api/auth/me")
 async def me(payload=Depends(get_current_user)):
-    if not payload:
-        raise HTTPException(401)
-    if payload.get("role") == "admin":
-        return {"role": "admin", "username": payload["sub"]}
+    if not payload: raise HTTPException(401)
+    if payload.get("role") == "admin": return {"role": "admin", "username": payload["sub"]}
     uid = payload["sub"]
-    if uid not in _customers:
-        raise HTTPException(404)
+    if uid not in _customers: raise HTTPException(404)
     return {"role": "customer", "customer": _safe_customer(_customers[uid])}
 
 # ── Products ──────────────────────────────────────────────────────────────────
 @app.get("/api/products")
 async def products(
     page: int = 1, per_page: int = 40,
-    category: Optional[str] = None, brand: Optional[str] = None,
-    search: Optional[str] = None, stock: Optional[str] = None,
-    sort: str = "default",
+    category: Optional[str] = None, subcategory: Optional[str] = None,
+    brand: Optional[str] = None, search: Optional[str] = None,
+    stock: Optional[str] = None, sort: str = "default",
 ):
-    ck = f"p:{page}:{per_page}:{category}:{brand}:{search}:{stock}:{sort}"
+    ck = f"p:{page}:{per_page}:{category}:{subcategory}:{brand}:{search}:{stock}:{sort}"
     cached = c_get(ck)
     if cached: return cached
-
     items = [p for p in _products.values() if p["is_active"]]
-    if category: items = [p for p in items if p["category"] == category]
-    if brand:    items = [p for p in items if p["brand"] == brand]
-    if stock:    items = [p for p in items if p["stock"] == stock]
+    if category:    items = [p for p in items if p["category"] == category]
+    if subcategory: items = [p for p in items if p.get("subcategory") == subcategory]
+    if brand:       items = [p for p in items if p["brand"] == brand]
+    if stock:       items = [p for p in items if p["stock"] == stock]
     if search:
         q = search.lower()
         items = [p for p in items if q in p["name"].lower() or q in p["sku"].lower()
-                 or q in p["brand"].lower() or q in p["category"].lower()]
+                 or q in p["brand"].lower() or q in p["category"].lower()
+                 or q in p.get("subcategory","").lower()]
     if sort == "price-asc":  items.sort(key=lambda x: x["price"])
     if sort == "price-desc": items.sort(key=lambda x: x["price"], reverse=True)
     if sort == "name":       items.sort(key=lambda x: x["name"])
-
     total = len(items)
     s = (page-1)*per_page
     result = {"items": items[s:s+per_page], "total": total, "page": page,
               "per_page": per_page, "pages": (total+per_page-1)//per_page}
-    c_set(ck, result, 60)
+    c_set(ck, result, 30)
     return result
 
 @app.get("/api/products/search")
@@ -274,7 +333,7 @@ async def get_product(pid: int):
 
 @app.post("/api/products", status_code=201)
 async def create_product(b: ProductIn, _=Depends(require_admin)):
-    nid = max(_products)+1
+    nid = max(_products)+1 if _products else 1
     _products[nid] = {"id": nid, "is_active": True, "tags": [], "age_min": b.age_min,
                        "created_at": datetime.utcnow().isoformat(), **b.dict()}
     _cache.clear(); return _products[nid]
@@ -287,31 +346,73 @@ async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
 
 @app.delete("/api/products/{pid}", status_code=204)
 async def delete_product(pid: int, _=Depends(require_admin)):
-    if pid not in _products: raise HTTPException(404, "Not found")
+    if pid not in _products: raise HTTPException(404)
     _products[pid]["is_active"] = False; _cache.clear()
 
-# ── Image upload ──────────────────────────────────────────────────────────────
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
-    """Upload image and return base64 data URL (stored in memory)"""
     content = await file.read()
-    if len(content) > 10 * 1024 * 1024:  # 10MB limit
-        raise HTTPException(400, "File too large (max 10MB)")
-    
+    if len(content) > 10*1024*1024: raise HTTPException(400, "File too large (max 10MB)")
     media_type = file.content_type or "image/jpeg"
     b64 = base64.b64encode(content).decode()
-    data_url = f"data:{media_type};base64,{b64}"
-    return {"url": data_url, "filename": file.filename}
+    return {"url": f"data:{media_type};base64,{b64}", "filename": file.filename}
 
-# ── Categories / Brands ───────────────────────────────────────────────────────
+# ── Catalog structure API ─────────────────────────────────────────────────────
 @app.get("/api/categories")
 async def categories():
     cached = c_get("__cats__")
     if cached: return cached
-    result = [{"name": c, "count": sum(1 for p in _products.values() if p["category"]==c and p["is_active"])} for c in CATEGORIES]
-    c_set("__cats__", result, 300)
+    result = []
+    for cat in CATEGORIES:
+        subs = list(_catalog.get(cat, {}).keys())
+        count = sum(1 for p in _products.values() if p["category"]==cat and p["is_active"])
+        result.append({"name": cat, "count": count, "subcategories": subs})
+    c_set("__cats__", result, 60)
     return result
 
+@app.get("/api/categories/{cat}/subcategories")
+async def subcategories(cat: str):
+    if cat not in _catalog: raise HTTPException(404, "Category not found")
+    result = []
+    for sub in _catalog[cat].keys():
+        count = sum(1 for p in _products.values()
+                    if p["category"]==cat and p.get("subcategory")==sub and p["is_active"])
+        result.append({"name": sub, "count": count})
+    return result
+
+# ── Admin: manage catalog structure ──────────────────────────────────────────
+@app.post("/api/admin/categories")
+async def add_category(b: CatalogCategoryIn, _=Depends(require_admin)):
+    if b.name in _catalog: raise HTTPException(400, "Category already exists")
+    _catalog[b.name] = {}
+    CATEGORIES.append(b.name)
+    _cache.clear()
+    return {"name": b.name, "subcategories": []}
+
+@app.delete("/api/admin/categories/{name}")
+async def del_category(name: str, _=Depends(require_admin)):
+    if name not in _catalog: raise HTTPException(404)
+    del _catalog[name]
+    if name in CATEGORIES: CATEGORIES.remove(name)
+    _cache.clear()
+    return {"deleted": name}
+
+@app.post("/api/admin/subcategories")
+async def add_subcategory(b: CatalogSubcategoryIn, _=Depends(require_admin)):
+    if b.category not in _catalog: raise HTTPException(404, "Category not found")
+    if b.name in _catalog[b.category]: raise HTTPException(400, "Subcategory already exists")
+    _catalog[b.category][b.name] = []
+    _cache.clear()
+    return {"category": b.category, "name": b.name}
+
+@app.delete("/api/admin/subcategories/{cat}/{sub}")
+async def del_subcategory(cat: str, sub: str, _=Depends(require_admin)):
+    if cat not in _catalog or sub not in _catalog[cat]: raise HTTPException(404)
+    del _catalog[cat][sub]
+    _cache.clear()
+    return {"deleted": sub}
+
+# ── Brands ────────────────────────────────────────────────────────────────────
 @app.get("/api/brands")
 async def brands():
     return [{"name": b, "count": sum(1 for p in _products.values() if p["brand"]==b and p["is_active"])} for b in BRANDS]
@@ -328,12 +429,10 @@ async def share_cart(b: ShareIn):
         "customer_id": b.customer_id,
     }
     _carts[code] = cart_data
-    # Link order to customer
     if b.customer_id and b.customer_id in _customers:
         _customers[b.customer_id]["orders"].append({
             "code": code, "total": round(total,2),
-            "items_count": len(b.items),
-            "date": datetime.utcnow().isoformat(),
+            "items_count": len(b.items), "date": datetime.utcnow().isoformat(),
         })
     return cart_data
 
@@ -341,34 +440,26 @@ async def share_cart(b: ShareIn):
 async def get_cart(code: str, request: Request):
     if code not in _carts: raise HTTPException(404, "Cart not found")
     cart = _carts[code]
-
     accept = request.headers.get("accept", "")
-    if "text/html" not in accept:
-        return cart
-
-    items     = cart.get("items", [])
-    total     = cart.get("total", 0)
-    comment   = cart.get("comment", "") or ""
-    created   = (cart.get("created_at") or "")[:10]
-    code_val  = cart.get("code", code)
-    cid       = cart.get("customer_id")
+    if "text/html" not in accept: return cart
+    items   = cart.get("items", [])
+    total   = cart.get("total", 0)
+    comment = cart.get("comment", "") or ""
+    created = (cart.get("created_at") or "")[:10]
+    code_val = cart.get("code", code)
+    cid = cart.get("customer_id")
     cname = cphone = caddr = ""
     if cid and cid in _customers:
-        cu    = _customers[cid]
+        cu = _customers[cid]
         cname = (cu.get("first_name","") + " " + cu.get("last_name","")).strip()
         cphone = cu.get("phone","") or ""
         caddr  = cu.get("address","") or ""
-    if not cname:
-        cname = cart.get("store_name","") or ""
-
+    if not cname: cname = cart.get("store_name","") or ""
     rows_html = ""
     for it in items:
-        img   = it.get("image","") or ""
-        name  = it.get("name","")
-        sku   = it.get("sku","")
-        price = float(it.get("price",0))
-        qty   = int(it.get("quantity",1))
-        sub   = price * qty
+        img = it.get("image","") or ""
+        name = it.get("name",""); sku = it.get("sku","")
+        price = float(it.get("price",0)); qty = int(it.get("quantity",1)); sub = price*qty
         img_tag = f'<img src="{img}" onerror="this.style.display=\'none\'">' if img else '<div class="no-img">&#129528;</div>'
         rows_html += f"""
         <div class="item-card">
@@ -377,98 +468,49 @@ async def get_cart(code: str, request: Request):
             <div class="item-name">{name}</div>
             <div class="item-sku">SKU: {sku}</div>
             <div class="item-price-row">
-              <span class="item-qty">{qty} шт &times; ₽{price:.2f}</span>
-              <span class="item-sub">₽{sub:.2f}</span>
+              <span class="item-qty">{qty} шт &times; &#8381;{price:.2f}</span>
+              <span class="item-sub">&#8381;{sub:.2f}</span>
             </div>
           </div>
         </div>"""
-
     client_html = ""
     if cname:
         phone_line = f'<div class="client-detail">&#128222; {cphone}</div>' if cphone else ""
         addr_line  = f'<div class="client-detail">&#128205; {caddr}</div>' if caddr else ""
-        client_html = f"""<div class="client-block">
-          <div class="client-name">&#128100; {cname}</div>
-          {phone_line}{addr_line}
-        </div>"""
-
+        client_html = f'<div class="client-block"><div class="client-name">&#128100; {cname}</div>{phone_line}{addr_line}</div>'
     comment_html = f'<div class="comment-block">&#128172; {comment}</div>' if comment else ""
-
-    html = f"""<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#FF6B35">
+    html = f"""<!DOCTYPE html><html lang="ru"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Заказ {code_val} — Happy Toys</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
   <style>
     *{{margin:0;padding:0;box-sizing:border-box}}
     body{{font-family:'Nunito',Arial,sans-serif;background:#f5f7ff;color:#1a1a2e;min-height:100vh}}
-    .topbar{{background:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;
-             box-shadow:0 2px 12px rgba(0,0,0,.08);position:sticky;top:0;z-index:10}}
-    .logo-icon{{width:40px;height:40px;background:#FF6B35;border-radius:11px;
-               display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}}
-    .logo-text{{font-size:20px;font-weight:900;color:#FF6B35}}
-    .logo-sub{{font-size:11px;color:#aaa}}
-    .back-btn{{margin-left:auto;background:#fff;border:2px solid #FF6B35;color:#FF6B35;
-              border-radius:10px;padding:8px 16px;font-weight:700;font-size:13px;
-              cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:6px;white-space:nowrap}}
-    .back-btn:hover{{background:#FF6B35;color:#fff}}
+    .topbar{{background:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
+    .logo-text{{font-size:20px;font-weight:900;color:#FF6B35}}.logo-sub{{font-size:11px;color:#aaa}}
+    .back-btn{{margin-left:auto;background:#fff;border:2px solid #FF6B35;color:#FF6B35;border-radius:10px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer;text-decoration:none}}
     .container{{max-width:640px;margin:0 auto;padding:20px 16px 48px}}
-    .order-header{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;
-                  box-shadow:0 2px 12px rgba(0,0,0,.06)}}
-    .order-code{{font-size:12px;color:#aaa;margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}}
-    .order-title{{font-size:22px;font-weight:900;color:#1a1a2e;margin-bottom:4px}}
-    .order-date{{font-size:13px;color:#aaa}}
-    .client-block{{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;
-                  border-radius:14px;padding:16px 20px;margin-bottom:16px}}
-    .client-name{{font-size:16px;font-weight:900;margin-bottom:6px}}
-    .client-detail{{font-size:13px;opacity:.9;margin-top:3px}}
-    .section-title{{font-size:12px;font-weight:700;color:#aaa;text-transform:uppercase;
-                   letter-spacing:.6px;margin-bottom:12px;padding:0 4px}}
+    .order-header{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;box-shadow:0 2px 12px rgba(0,0,0,.06)}}
+    .order-code{{font-size:12px;color:#aaa;margin-bottom:4px;text-transform:uppercase}}.order-title{{font-size:22px;font-weight:900}}.order-date{{font-size:13px;color:#aaa}}
+    .client-block{{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;border-radius:14px;padding:16px 20px;margin-bottom:16px}}
+    .client-name{{font-size:16px;font-weight:900;margin-bottom:6px}}.client-detail{{font-size:13px;opacity:.9;margin-top:3px}}
+    .section-title{{font-size:12px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px;padding:0 4px}}
     .items-section{{margin-bottom:16px}}
-    .item-card{{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;
-               display:flex;gap:14px;align-items:center;
-               box-shadow:0 2px 8px rgba(0,0,0,.05)}}
-    .item-img{{width:64px;height:64px;flex-shrink:0;border-radius:10px;overflow:hidden;
-              background:#f5f5f5;display:flex;align-items:center;justify-content:center}}
-    .item-img img{{width:100%;height:100%;object-fit:contain}}
-    .no-img{{font-size:28px}}
-    .item-info{{flex:1;min-width:0}}
-    .item-name{{font-size:14px;font-weight:700;margin-bottom:3px;
-               white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}
+    .item-card{{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;gap:14px;align-items:center;box-shadow:0 2px 8px rgba(0,0,0,.05)}}
+    .item-img{{width:80px;height:80px;flex-shrink:0;border-radius:10px;overflow:hidden;background:#f5f5f5;display:flex;align-items:center;justify-content:center}}
+    .item-img img{{width:100%;height:100%;object-fit:contain}}.no-img{{font-size:28px}}
+    .item-info{{flex:1;min-width:0}}.item-name{{font-size:14px;font-weight:700;margin-bottom:3px}}
     .item-sku{{font-size:11px;color:#bbb;margin-bottom:8px}}
-    .item-price-row{{display:flex;justify-content:space-between;align-items:center}}
-    .item-qty{{font-size:13px;color:#888}}
-    .item-sub{{font-size:15px;font-weight:900;color:#FF6B35}}
-    .total-card{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;
-               box-shadow:0 2px 12px rgba(0,0,0,.06)}}
-    .total-row{{display:flex;justify-content:space-between;font-size:14px;
-               padding:8px 0;border-bottom:1px solid #f5f5f5;color:#888}}
-    .total-row.big{{border-bottom:none;font-size:20px;font-weight:900;color:#FF6B35;
-                   padding-top:14px;margin-top:4px}}
-    .total-row.big span:last-child{{color:#FF6B35}}
-    .comment-block{{background:#fffbf0;border:1px solid #ffe0b2;border-radius:14px;
-                   padding:14px 16px;font-size:14px;color:#555;margin-bottom:16px;line-height:1.5}}
-    .cta{{background:#FF6B35;color:#fff;border-radius:14px;padding:16px;text-align:center;
-          text-decoration:none;display:block;font-weight:900;font-size:16px;
-          box-shadow:0 4px 16px rgba(255,107,53,.35);transition:background .15s}}
-    .cta:hover{{background:#e55a27}}
-  </style>
-</head>
-<body>
+    .item-price-row{{display:flex;justify-content:space-between}}.item-qty{{font-size:13px;color:#888}}.item-sub{{font-size:15px;font-weight:900;color:#FF6B35}}
+    .total-card{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;box-shadow:0 2px 12px rgba(0,0,0,.06)}}
+    .total-row{{display:flex;justify-content:space-between;font-size:14px;padding:8px 0;border-bottom:1px solid #f5f5f5;color:#888}}
+    .total-row.big{{border-bottom:none;font-size:20px;font-weight:900;color:#FF6B35;padding-top:14px}}
+    .comment-block{{background:#fffbf0;border:1px solid #ffe0b2;border-radius:14px;padding:14px 16px;font-size:14px;color:#555;margin-bottom:16px}}
+    .cta{{background:#FF6B35;color:#fff;border-radius:14px;padding:16px;text-align:center;text-decoration:none;display:block;font-weight:900;font-size:16px}}
+  </style></head><body>
   <div class="topbar">
-    <div class="logo-icon">&#129528;</div>
-    <div>
-      <div class="logo-text">Happy Toys</div>
-      <div class="logo-sub">Оптовый каталог</div>
-    </div>
-    <a class="back-btn" href="/">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      На сайт
-    </a>
+    <div><div class="logo-text">Happy Toys</div><div class="logo-sub">Оптовый каталог</div></div>
+    <a class="back-btn" href="/">На сайт</a>
   </div>
   <div class="container">
     <div class="order-header">
@@ -481,13 +523,11 @@ async def get_cart(code: str, request: Request):
     <div class="items-section">{rows_html}</div>
     <div class="total-card">
       <div class="total-row"><span>Позиций</span><span>{len(items)}</span></div>
-      <div class="total-row big"><span>Итого</span><span>₽{total:.2f}</span></div>
+      <div class="total-row big"><span>Итого</span><span>&#8381;{total:.2f}</span></div>
     </div>
     {comment_html}
-    <a class="cta" href="/">&#129528; Открыть каталог Happy Toys</a>
-  </div>
-</body>
-</html>"""
+    <a class="cta" href="/">Открыть каталог Happy Toys</a>
+  </div></body></html>"""
     from fastapi.responses import HTMLResponse as _HR
     return _HR(content=html)
 
@@ -501,6 +541,7 @@ async def stats(_=Depends(require_admin)):
         "out_of_stock": sum(1 for p in active if p["stock"]=="out"),
         "total_carts": len(_carts),
         "total_customers": len(_customers),
+        "total_categories": len(_catalog),
     }
 
 @app.get("/api/admin/carts")
@@ -515,9 +556,20 @@ async def admin_customers(_=Depends(require_admin)):
 async def admin_customer(uid: str, _=Depends(require_admin)):
     if uid not in _customers: raise HTTPException(404)
     c = _safe_customer(_customers[uid])
-    # attach cart details
     c["cart_details"] = [_carts[o["code"]] for o in c.get("orders",[]) if o["code"] in _carts]
     return c
+
+@app.get("/api/admin/catalog")
+async def admin_catalog(_=Depends(require_admin)):
+    result = []
+    for cat, subs in _catalog.items():
+        sub_list = []
+        for sub in subs.keys():
+            count = sum(1 for p in _products.values() if p["category"]==cat and p.get("subcategory")==sub and p["is_active"])
+            sub_list.append({"name": sub, "count": count})
+        cat_count = sum(1 for p in _products.values() if p["category"]==cat and p["is_active"])
+        result.append({"name": cat, "count": cat_count, "subcategories": sub_list})
+    return result
 
 @app.get("/api/health")
 async def health():
