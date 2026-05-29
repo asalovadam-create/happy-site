@@ -11,6 +11,7 @@ const State = {
   pageNum:    1,
   perPage:    40,
   category:   null,
+  subcategory: null,
   search:     '',
   stock:      null,
   sort:       'default',
@@ -78,6 +79,12 @@ const API = {
   search(q)       { return this.get(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`); },
   product(id)     { return this.get(`/api/products/${id}`); },
   categories()    { return this.get('/api/categories'); },
+  subcategories(cat) { return this.get(`/api/categories/${encodeURIComponent(cat)}/subcategories`); },
+  adminCatalog()  { return this.get('/api/admin/catalog', State.user?.token); },
+  addCategory(name) { return this.post('/api/admin/categories', {name}, State.user?.token); },
+  delCategory(name) { return this.del(`/api/admin/categories/${encodeURIComponent(name)}`, State.user?.token); },
+  addSubcategory(category, name) { return this.post('/api/admin/subcategories', {category, name}, State.user?.token); },
+  delSubcategory(cat, sub) { return this.del(`/api/admin/subcategories/${encodeURIComponent(cat)}/${encodeURIComponent(sub)}`, State.user?.token); },
   shareCart(p)    { return this.post('/api/cart/share', p); },
   login(u, p)     { return this.post('/api/auth/login', { username: u, password: p }); },
   register(body)  { return this.post('/api/auth/register', body); },
@@ -327,8 +334,9 @@ function setSort(v) {
 }
 
 function clearFilters() {
-  State.category = null;
-  State.stock    = null;
+  State.category    = null;
+  State.subcategory  = null;
+  State.stock       = null;
   State.sort     = 'default';
   State.search   = '';
   State.pageNum  = 1;
@@ -510,25 +518,88 @@ async function renderCatalog() {
   `;
 }
 
-function selectCatalogCategory(name) {
-  State.category = name;
-  State.pageNum  = 1;
-  State.stock    = null;
-  State.sort     = 'default';
-  // Get cats and render products
-  API.categories().then(cats => renderCatalogProducts(cats)).catch(() => renderCatalogProducts([]));
-}
+// ── Level 2: show subcategories of a category ────────────────────────────────
+async function selectCatalogCategory(name) {
+  State.category    = name;
+  State.subcategory = null;
+  State.pageNum     = 1;
+  State.stock       = null;
+  State.sort        = 'default';
 
-function renderCatalogProducts(cats) {
-  const catPills = [
-    `<button class="cat-pill ${!State.category ? 'active' : ''}" onclick="State.category=null;State.pageNum=1;renderCatalog()">← Все категории</button>`,
-    ...cats.map(c =>
-      `<button class="cat-pill ${State.category===c.name ? 'active' : ''}" onclick="State.category='${escHtml(c.name)}';State.pageNum=1;loadProducts()">${escHtml(c.name)}</button>`
-    )
-  ].join('');
+  if (!name) {
+    // "All products" — skip subcategories, show products directly
+    renderCatalogProducts();
+    return;
+  }
+
+  // Load subcategories
+  let subs = [];
+  try { subs = await API.subcategories(name); } catch(e){}
+
+  if (!subs.length) {
+    renderCatalogProducts();
+    return;
+  }
+
+  const m = catMeta(name);
+  const subCards = subs.map(s => `
+    <div class="subcat-card" onclick="selectSubcategory('${escHtml(s.name)}')">
+      <div class="subcat-card-name">${escHtml(s.name)}</div>
+      <div class="subcat-card-count">${s.count} товаров</div>
+      <svg class="subcat-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+    </div>`).join('');
 
   $('mainContent').innerHTML = `
-    <div class="cat-scroll" style="padding-top:12px">${catPills}</div>
+    <div class="catalog-page">
+      <div class="catalog-breadcrumb">
+        <button class="breadcrumb-btn" onclick="navigate('catalog')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          Каталог
+        </button>
+        <span class="breadcrumb-sep">›</span>
+        <span class="breadcrumb-current">${escHtml(name)}</span>
+      </div>
+      <div class="subcat-header" style="background:${m.bg};border-left:4px solid ${m.color}">
+        <span class="subcat-header-icon">${m.emoji}</span>
+        <div>
+          <div class="subcat-header-title">${escHtml(name)}</div>
+          <div class="subcat-header-sub">Выберите подраздел</div>
+        </div>
+      </div>
+      <div class="subcat-grid">${subCards}</div>
+      <div class="subcat-all-btn-wrap">
+        <button class="subcat-all-btn" onclick="selectSubcategory(null)">
+          Показать все товары категории «${escHtml(name)}»
+        </button>
+      </div>
+    </div>`;
+}
+
+// ── Level 3: select subcategory → show products ───────────────────────────────
+function selectSubcategory(sub) {
+  State.subcategory = sub;
+  State.pageNum     = 1;
+  renderCatalogProducts();
+}
+
+// ── Products list within catalog ──────────────────────────────────────────────
+function renderCatalogProducts() {
+  const catName = State.category || '';
+  const subName = State.subcategory || '';
+
+  const breadcrumb = `
+    <div class="catalog-breadcrumb">
+      <button class="breadcrumb-btn" onclick="navigate('catalog')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        Каталог
+      </button>
+      ${catName ? `<span class="breadcrumb-sep">›</span>
+      <button class="breadcrumb-btn" onclick="State.subcategory=null;selectCatalogCategory('${escHtml(catName)}')">${escHtml(catName)}</button>` : ''}
+      ${subName ? `<span class="breadcrumb-sep">›</span><span class="breadcrumb-current">${escHtml(subName)}</span>` : ''}
+    </div>`;
+
+  $('mainContent').innerHTML = `
+    ${breadcrumb}
     <div class="filters-row">
       <button class="filter-chip ${!State.stock?'active':''}" onclick="setStock(null)">Все</button>
       <button class="filter-chip ${State.stock==='ok'?'active':''}" onclick="setStock('ok')">В наличии</button>
@@ -542,7 +613,7 @@ function renderCatalogProducts(cats) {
     </div>
     <div class="results-info">
       <span id="productCount">Загрузка...</span>
-      <span class="reset-link" onclick="clearFilters();renderCatalog()">Сбросить</span>
+      <span class="reset-link" onclick="navigate('catalog')">← В каталог</span>
     </div>
     <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
     <div id="pagination" class="pagination"></div>
@@ -935,6 +1006,54 @@ function shareWhatsApp() {
 }
 
 // ── Admin page ────────────────────────────────────────────────────────────────
+// ── Admin: load subcats for form dropdown ────────────────────────────────────
+async function loadSubcatsAdmin(catName) {
+  const sel = $('fsubcat');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Загрузка...</option>';
+  try {
+    const subs = await API.subcategories(catName);
+    sel.innerHTML = '<option value="">— без подраздела —</option>' +
+      subs.map(s => `<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`).join('');
+  } catch(e) {
+    sel.innerHTML = '<option value="">— без подраздела —</option>';
+  }
+}
+
+async function adminAddCategory() {
+  const name = prompt('Название новой категории:');
+  if (!name?.trim()) return;
+  try {
+    await API.addCategory(name.trim());
+    toast('Категория добавлена!');
+    renderAdmin();
+  } catch(e) { toast(e.detail || 'Ошибка', 'err'); }
+}
+
+async function adminDelCategory(name) {
+  showConfirm('Удалить категорию?', `«${name}» будет удалена.`, async () => {
+    try { await API.delCategory(name); toast('Удалено'); renderAdmin(); }
+    catch(e) { toast('Ошибка', 'err'); }
+  });
+}
+
+async function adminAddSubcategory(cat) {
+  const name = prompt(`Название подраздела в «${cat}»:`);
+  if (!name?.trim()) return;
+  try {
+    await API.addSubcategory(cat, name.trim());
+    toast('Подраздел добавлен!');
+    renderAdmin();
+  } catch(e) { toast(e.detail || 'Ошибка', 'err'); }
+}
+
+async function adminDelSubcategory(cat, sub) {
+  showConfirm('Удалить подраздел?', `«${sub}» будет удалён.`, async () => {
+    try { await API.delSubcategory(cat, sub); toast('Удалено'); renderAdmin(); }
+    catch(e) { toast('Ошибка', 'err'); }
+  });
+}
+
 async function renderAdmin() {
   const mc = $('mainContent');
 
@@ -961,15 +1080,23 @@ async function renderAdmin() {
       <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
       <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
 
-    $('adminBody').innerHTML = renderAddProductForm() + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []);
+    const formHtml    = await renderAddProductForm();
+    const catalogHtml = await renderCatalogManager();
+    $('adminBody').innerHTML = formHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []);
+    // Pre-load subcats for first category
+    const firstCat = $('fcat');
+    if (firstCat?.value) loadSubcatsAdmin(firstCat.value);
   } catch(e) {
     $('adminBody').innerHTML = `<p style="color:#999">Ошибка загрузки</p>`;
   }
 }
 
-function renderAddProductForm() {
-  const CATS = ['Куклы','Конструкторы','Машинки','Настольные игры','Мягкие игрушки','Развивающие','Пазлы','Творчество'];
-  const BRANDS = ['LEGO','Barbie','Hot Wheels','Hasbro','Mattel','Playmobil','Fisher-Price','Ravensburger','Schleich','Funko'];
+async function renderAddProductForm() {
+  let cats = []; let brands = [];
+  try { cats = await API.categories(); } catch(e){}
+  try { brands = await API.get('/api/brands'); } catch(e){}
+  const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
+  const brandOpts = brands.map(b=>`<option>${escHtml(b.name)}</option>`).join('');
   return `
   <div class="admin-section">
     <h3>
@@ -984,25 +1111,73 @@ function renderAddProductForm() {
     </div>
 
     <div class="form-grid full">
-      <div class="field"><label>URL изображения (если есть)</label><input id="fimg" type="url" placeholder="https://..."></div>
+      <div class="field"><label>URL изображения</label><input id="fimg" type="url" placeholder="https://..."></div>
     </div>
-
     <div class="form-grid">
       <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
-      <div class="field"><label>SKU *</label><input id="fsku" type="text" placeholder="HT-0201"></div>
+      <div class="field"><label>Артикул *</label><input id="fsku" type="text" placeholder="10201"></div>
     </div>
     <div class="form-grid">
       <div class="field"><label>Цена (₽) *</label><input id="fprice" type="number" step="0.01" placeholder="999.99"></div>
       <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
     </div>
     <div class="form-grid">
-      <div class="field"><label>Категория</label><select id="fcat">${CATS.map(c=>`<option>${c}</option>`).join('')}</select></div>
-      <div class="field"><label>Бренд</label><select id="fbrand">${BRANDS.map(b=>`<option>${b}</option>`).join('')}</select></div>
+      <div class="field">
+        <label>Категория *</label>
+        <select id="fcat" onchange="loadSubcatsAdmin(this.value)">${catOpts}</select>
+      </div>
+      <div class="field">
+        <label>Подраздел</label>
+        <select id="fsubcat"><option value="">— выберите категорию —</option></select>
+      </div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Бренд</label><select id="fbrand">${brandOpts}</select></div>
+      <div class="field"><label>Мин. заказ (шт)</label><input id="fminorder" type="number" value="1" min="1"></div>
     </div>
     <div class="form-grid full">
       <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
     </div>
-    <button class="btn-primary" onclick="submitProduct()">Добавить товар</button>
+    <button class="btn-primary" onclick="submitProduct()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Добавить товар
+    </button>
+  </div>`;
+}
+
+async function renderCatalogManager() {
+  let catalog = [];
+  try { catalog = await API.adminCatalog(); } catch(e){}
+
+  const rows = catalog.map(cat => {
+    const subRows = cat.subcategories.map(sub => `
+      <div class="subcat-manage-row">
+        <span>${escHtml(sub.name)}</span>
+        <span class="subcat-count">${sub.count} тов.</span>
+        <button class="btn-icon-del" onclick="adminDelSubcategory('${escHtml(cat.name)}','${escHtml(sub.name)}')" title="Удалить">✕</button>
+      </div>`).join('');
+    return `
+      <div class="cat-manage-card">
+        <div class="cat-manage-head">
+          <span class="cat-manage-name">${escHtml(cat.name)}</span>
+          <span class="cat-manage-cnt">${cat.count} тов.</span>
+          <button class="btn-add-sub" onclick="adminAddSubcategory('${escHtml(cat.name)}')">+ Подраздел</button>
+          <button class="btn-icon-del" onclick="adminDelCategory('${escHtml(cat.name)}')" title="Удалить">✕</button>
+        </div>
+        <div class="subcat-manage-list">${subRows || '<span style="color:#bbb;font-size:12px">Нет подразделов</span>'}</div>
+      </div>`;
+  }).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Управление каталогом
+    </h3>
+    <button class="btn-primary" style="margin-bottom:16px;padding:10px 18px;font-size:13px" onclick="adminAddCategory()">
+      + Добавить категорию
+    </button>
+    <div class="catalog-manage-grid">${rows}</div>
   </div>`;
 }
 
@@ -1032,15 +1207,17 @@ async function previewUpload(input) {
 
 async function submitProduct() {
   const body = {
-    name:      $('fn')?.value?.trim(),
-    sku:       $('fsku')?.value?.trim(),
-    price:     parseFloat($('fprice')?.value || 0),
-    stock_qty: parseInt($('fqty')?.value || 0),
-    category:  $('fcat')?.value,
-    brand:     $('fbrand')?.value,
-    image:     $('fimg')?.value || '',
+    name:        $('fn')?.value?.trim(),
+    sku:         $('fsku')?.value?.trim(),
+    price:       parseFloat($('fprice')?.value || 0),
+    stock_qty:   parseInt($('fqty')?.value || 0),
+    category:    $('fcat')?.value,
+    subcategory: $('fsubcat')?.value || '',
+    brand:       $('fbrand')?.value,
+    image:       $('fimg')?.value || '',
     description: $('fdesc')?.value || '',
-    stock: 'ok', min_order: 1, age_min: 3,
+    min_order:   parseInt($('fminorder')?.value || 1),
+    stock: 'ok', age_min: 3,
   };
   if (!body.name || !body.sku || !body.price) { toast('Заполните обязательные поля', 'err'); return; }
   try {
