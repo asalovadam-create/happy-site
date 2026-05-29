@@ -1624,6 +1624,198 @@ body {
   border-color: var(--accent);
 }
 
+
+/* ── Breadcrumb ──────────────────────────────────────────────────────────── */
+.catalog-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 16px 10px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.breadcrumb-btn {
+  display: flex; align-items: center; gap: 5px;
+  background: none; border: none; color: var(--accent);
+  font-size: 13px; font-weight: 700; cursor: pointer;
+  padding: 4px 0; font-family: inherit;
+  transition: opacity .15s;
+}
+.breadcrumb-btn:hover { opacity: .7; }
+.breadcrumb-sep { color: var(--text3); font-size: 16px; }
+.breadcrumb-current { font-weight: 700; color: var(--text1); font-size: 13px; }
+
+/* ── Subcategory header banner ───────────────────────────────────────────── */
+.subcat-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 0 12px 16px;
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: #fff8f5;
+}
+.subcat-header-icon { font-size: 40px; line-height: 1; flex-shrink: 0; }
+.subcat-header-title {
+  font-family: 'Nunito', sans-serif;
+  font-size: 20px; font-weight: 900; color: var(--text1);
+}
+.subcat-header-sub { font-size: 13px; color: var(--text3); margin-top: 3px; }
+
+/* ── Subcategory list grid ───────────────────────────────────────────────── */
+.subcat-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 12px;
+  background: #fff;
+  border-radius: 18px;
+  margin: 0 12px;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.07);
+  overflow: hidden;
+}
+
+@media (min-width: 600px) {
+  .subcat-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0;
+    border-radius: 18px;
+  }
+}
+@media (min-width: 900px) {
+  .subcat-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.subcat-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 18px;
+  cursor: pointer;
+  transition: background .15s;
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+.subcat-card:last-child { border-bottom: none; }
+.subcat-card:hover { background: #fff8f5; }
+.subcat-card:active { background: #fff0e8; }
+
+@media (min-width: 600px) {
+  .subcat-card { border-right: 1px solid var(--border); }
+  .subcat-card:nth-child(2n) { border-right: none; }
+}
+@media (min-width: 900px) {
+  .subcat-card:nth-child(2n) { border-right: 1px solid var(--border); }
+  .subcat-card:nth-child(3n) { border-right: none; }
+}
+
+.subcat-card-name {
+  font-family: 'Nunito', sans-serif;
+  font-size: 15px; font-weight: 800; color: var(--text1);
+  flex: 1;
+}
+.subcat-card-count {
+  font-size: 12px; color: var(--text3); font-weight: 600;
+  flex-shrink: 0;
+}
+.subcat-arrow {
+  width: 18px; height: 18px;
+  color: var(--text3); flex-shrink: 0;
+}
+
+.subcat-all-btn-wrap {
+  padding: 14px 12px;
+  text-align: center;
+}
+.subcat-all-btn {
+  width: 100%; padding: 13px;
+  border: 2px solid var(--accent);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--accent);
+  font-family: 'Nunito', sans-serif;
+  font-size: 14px; font-weight: 800;
+  cursor: pointer;
+  transition: all .2s;
+}
+.subcat-all-btn:hover { background: var(--accent); color: #fff; }
+
+/* ── Catalog manager (admin) ─────────────────────────────────────────────── */
+.catalog-manage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+@media (min-width: 600px) { .catalog-manage-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 900px)  { .catalog-manage-grid { grid-template-columns: repeat(4, 1fr); } }
+
+.cat-manage-card {
+  background: var(--bg);
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1.5px solid var(--border);
+}
+.cat-manage-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.cat-manage-name {
+  font-weight: 800; font-size: 13px; color: var(--text1); flex: 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cat-manage-cnt { font-size: 11px; color: var(--text3); font-weight: 600; flex-shrink: 0; }
+
+.btn-add-sub {
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 8px;
+  padding: 4px 8px; font-size: 11px; font-weight: 700;
+  cursor: pointer; white-space: nowrap; font-family: inherit;
+  flex-shrink: 0;
+  transition: background .15s;
+}
+.btn-add-sub:hover { background: #e05a25; }
+
+.btn-icon-del {
+  background: none; border: none;
+  color: #ccc; font-size: 13px; cursor: pointer;
+  width: 22px; height: 22px;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0; transition: background .15s, color .15s;
+}
+.btn-icon-del:hover { background: #ffeaea; color: var(--red); }
+
+.subcat-manage-list {
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.subcat-manage-row {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text2); font-weight: 600;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.subcat-manage-row:last-child { border-bottom: none; }
+.subcat-manage-row span:first-child { flex: 1; }
+.subcat-count { color: var(--text3); font-size: 11px; flex-shrink: 0; }
+
+/* ── PWA icon nav fix ────────────────────────────────────────────────────── */
+@media (display-mode: standalone) {
+  .bottom-nav {
+    padding-bottom: max(env(safe-area-inset-bottom), 8px);
+    height: calc(64px + max(env(safe-area-inset-bottom), 8px));
+  }
+  .bn-btn svg { width: 26px; height: 26px; }
+  .bn-btn span { font-size: 11px; }
+}
+
 /* ── iOS / Android PWA ───────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
 
