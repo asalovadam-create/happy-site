@@ -542,35 +542,49 @@ async function selectCatalogCategory(name) {
   }
 
   const m = catMeta(name);
-  const subCards = subs.map(s => `
-    <div class="subcat-card" onclick="selectSubcategory('${escHtml(s.name)}')">
-      <div class="subcat-card-name">${escHtml(s.name)}</div>
-      <div class="subcat-card-count">${s.count} товаров</div>
-      <svg class="subcat-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
-    </div>`).join('');
+  const m = catMeta(name);
+
+  const subItems = subs.map((s, i) => {
+    const imgHtml = s.image
+      ? `<img src="${escHtml(s.image)}" alt="${escHtml(s.name)}" class="sl-subcat-img">`
+      : `<div class="sl-subcat-emoji">${m.emoji}</div>`;
+    return `
+      <div class="sl-subcat-row" onclick="selectSubcategory('${escHtml(s.name)}')">
+        <div class="sl-subcat-icon-wrap">${imgHtml}</div>
+        <span class="sl-subcat-name">${escHtml(s.name)}</span>
+        <span class="sl-subcat-cnt">${s.count > 0 ? s.count.toLocaleString('ru') : ''}</span>
+        <svg class="sl-subcat-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+      </div>`;
+  }).join('');
+
+  const totalInCat = subs.reduce((a, s) => a + s.count, 0);
 
   $('mainContent').innerHTML = `
-    <div class="catalog-page">
+    <div class="sl-cat-page">
       <div class="catalog-breadcrumb">
         <button class="breadcrumb-btn" onclick="navigate('catalog')">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
           Каталог
         </button>
         <span class="breadcrumb-sep">›</span>
         <span class="breadcrumb-current">${escHtml(name)}</span>
       </div>
-      <div class="subcat-header" style="background:${m.bg};border-left:4px solid ${m.color}">
-        <span class="subcat-header-icon">${m.emoji}</span>
-        <div>
-          <div class="subcat-header-title">${escHtml(name)}</div>
-          <div class="subcat-header-sub">Выберите подраздел</div>
-        </div>
+
+      <div class="sl-cat-title">
+        <span class="sl-cat-emoji">${m.emoji}</span>
+        ${escHtml(name)}
       </div>
-      <div class="subcat-grid">${subCards}</div>
-      <div class="subcat-all-btn-wrap">
-        <button class="subcat-all-btn" onclick="selectSubcategory(null)">
-          Показать все товары категории «${escHtml(name)}»
-        </button>
+
+      <div class="sl-subcat-list">
+        <div class="sl-subcat-row sl-subcat-all" onclick="selectSubcategory(null)">
+          <div class="sl-subcat-icon-wrap sl-all-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          </div>
+          <span class="sl-subcat-name">Все товары категории</span>
+          <span class="sl-subcat-cnt">${totalInCat > 0 ? totalInCat.toLocaleString('ru') : ''}</span>
+          <svg class="sl-subcat-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        </div>
+        ${subItems}
       </div>
     </div>`;
 }
@@ -1080,9 +1094,12 @@ async function renderAdmin() {
       <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
       <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
 
+    let visitors = [];
+    try { const vd = await API.get('/api/admin/visitors', State.user?.token); visitors = vd.visitors || []; } catch(e){}
     const formHtml    = await renderAddProductForm();
     const catalogHtml = await renderCatalogManager();
-    $('adminBody').innerHTML = formHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []);
+    const visitorsHtml = renderVisitorsTable(visitors);
+    $('adminBody').innerHTML = formHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []) + visitorsHtml;
     // Pre-load subcats for first category
     const firstCat = $('fcat');
     if (firstCat?.value) loadSubcatsAdmin(firstCat.value);
@@ -1132,7 +1149,17 @@ async function renderAddProductForm() {
       </div>
     </div>
     <div class="form-grid">
-      <div class="field"><label>Бренд</label><select id="fbrand">${brandOpts}</select></div>
+      <div class="field">
+        <label>Бренд</label>
+        <div class="brand-input-wrap" style="position:relative">
+          <input id="fbrand" type="text" placeholder="Введите или выберите бренд..."
+                 list="fbrand-list"
+                 oninput="filterBrandList(this.value)"
+                 autocomplete="off">
+          <datalist id="fbrand-list">${brandOptsDatalist.replace(/ value="">/g,' value="').replace(/value="<option/g,'<option')}</datalist>
+        </div>
+        <div class="brand-chips" id="brandChips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
+      </div>
       <div class="field"><label>Мин. заказ (шт)</label><input id="fminorder" type="number" value="1" min="1"></div>
     </div>
     <div class="form-grid full">
@@ -1205,6 +1232,15 @@ async function previewUpload(input) {
   }
 }
 
+function filterBrandList(val) {
+  // Just highlights — datalist handles filtering natively
+}
+
+async function saveBrandIfNew(name) {
+  if (!name?.trim()) return;
+  try { await API.post('/api/admin/brands', {name: name.trim()}, State.user?.token); } catch(e){}
+}
+
 async function submitProduct() {
   const body = {
     name:        $('fn')?.value?.trim(),
@@ -1222,6 +1258,7 @@ async function submitProduct() {
   if (!body.name || !body.sku || !body.price) { toast('Заполните обязательные поля', 'err'); return; }
   try {
     await API.post('/api/products', body);
+    await saveBrandIfNew(body.brand);
     toast('Товар добавлен!');
     renderAdmin();
   } catch(e) {
@@ -1250,6 +1287,41 @@ function renderCustomersTable(customers) {
     <div style="overflow-x:auto">
       <table class="customers-table">
         <thead><tr><th>Имя</th><th>Телефон</th><th>Адрес</th><th>Заказов</th><th>Дата</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderVisitorsTable(visitors) {
+  if (!visitors.length) return `
+    <div class="admin-section">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+        Посетители
+      </h3>
+      <p style="color:#999;font-size:14px">Нет данных</p>
+    </div>`;
+
+  const rows = visitors.slice(0, 100).map(v => {
+    const t = v.time?.replace('T',' ').slice(0,16) || '—';
+    return `<tr>
+      <td><span class="visitor-ip">${escHtml(v.ip)}</span></td>
+      <td>${escHtml(v.device)}</td>
+      <td>${escHtml(v.browser)}</td>
+      <td style="color:var(--text3);font-size:11px">${escHtml(t)}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      Посетители <span class="orders-count-badge">${visitors.length}</span>
+    </h3>
+    <div style="overflow-x:auto">
+      <table class="customers-table">
+        <thead><tr><th>IP</th><th>Устройство</th><th>Браузер</th><th>Время (UTC)</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>
