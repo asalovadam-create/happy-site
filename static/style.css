@@ -1816,6 +1816,201 @@ body {
   .bn-btn span { font-size: 11px; }
 }
 
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SIMA-LAND STYLE SUBCATEGORY LIST
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.sl-cat-page {
+  background: #fff;
+  min-height: calc(100vh - 130px);
+}
+
+.sl-cat-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--text1);
+  padding: 4px 16px 16px;
+}
+.sl-cat-emoji { font-size: 26px; }
+
+/* ── The list — pure Sima-Land ───────────────────────────────────────────── */
+.sl-subcat-list {
+  background: #fff;
+}
+
+.sl-subcat-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #f0f0f0;
+  cursor: pointer;
+  transition: background .12s;
+  min-height: 68px;
+  text-decoration: none;
+}
+.sl-subcat-row:last-child { border-bottom: none; }
+.sl-subcat-row:hover, .sl-subcat-row:active { background: #fafafa; }
+
+/* Round icon/image container */
+.sl-subcat-icon-wrap {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #f3f3f3;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.sl-subcat-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.sl-subcat-emoji {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.sl-all-icon {
+  background: #f0f7ff;
+  color: var(--accent);
+}
+
+.sl-subcat-name {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text1);
+  line-height: 1.3;
+}
+
+.sl-subcat-cnt {
+  font-size: 15px;
+  color: #bbb;
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 32px;
+  text-align: right;
+}
+
+.sl-subcat-arrow {
+  width: 18px;
+  height: 18px;
+  color: #ccc;
+  flex-shrink: 0;
+}
+
+/* "All products" row — slightly different */
+.sl-subcat-all .sl-subcat-name {
+  font-weight: 700;
+  color: var(--text1);
+}
+
+/* Tablet: wider padding */
+@media (min-width: 600px) {
+  .sl-subcat-row { padding: 16px 24px; min-height: 76px; }
+  .sl-subcat-icon-wrap { width: 60px; height: 60px; }
+  .sl-subcat-name { font-size: 17px; }
+  .sl-subcat-emoji { font-size: 30px; }
+  .sl-cat-title { font-size: 26px; padding: 8px 24px 18px; }
+}
+
+@media (min-width: 900px) {
+  .sl-subcat-list {
+    max-width: 700px;
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   BRAND AUTOCOMPLETE
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.brand-input-wrap input {
+  width: 100%;
+}
+
+.brand-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.brand-chip {
+  padding: 5px 12px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  cursor: pointer;
+  transition: all .15s;
+  font-family: inherit;
+}
+.brand-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: #fff5f0;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   VISITORS TABLE
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.visitor-ip {
+  font-family: monospace;
+  font-size: 13px;
+  background: #f5f5f5;
+  padding: 2px 7px;
+  border-radius: 6px;
+  color: var(--text2);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PWA BOTTOM NAV — BIGGER ICONS ON HOME SCREEN
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+@media (display-mode: standalone) {
+  :root { --bottomnav-h: 76px; }
+
+  .bottom-nav {
+    height: calc(76px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .bn-btn {
+    gap: 5px;
+    padding-bottom: 4px;
+  }
+
+  .bn-btn svg {
+    width: 28px !important;
+    height: 28px !important;
+  }
+
+  .bn-btn span {
+    font-size: 12px !important;
+  }
+}
+
+/* Also bigger for all touch devices in standalone */
+@media (max-width: 600px) {
+  .bn-btn svg { width: 24px; height: 24px; }
+  .bn-btn span { font-size: 11px; }
+}
+
+
 /* ── iOS / Android PWA ───────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
 
