@@ -8,14 +8,11 @@ const STATIC_CACHE = 'happytoys-static-v3';
 const API_CACHE    = 'happytoys-api-v1';
 
 // Файлы для предварительного кэширования (app shell)
+// Only cache the core app shell — no icons (they may not exist yet)
 const PRECACHE = [
   '/',
   '/static/style.css',
   '/static/app.js',
-  '/static/manifest.json',
-  '/static/icon.png',
-  '/static/icon-192.png',
-  '/static/icon-512.png',
 ];
 
 // ── Install ───────────────────────────────────────────────────────────────────
