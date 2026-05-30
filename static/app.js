@@ -290,8 +290,13 @@ async function loadProducts() {
 
     renderPagination(data.page, data.pages);
   } catch (e) {
-    console.error(e);
-    if (grid) grid.innerHTML = `<div class="empty-state"><h3>Ошибка загрузки</h3></div>`;
+    console.error('loadProducts error:', e);
+    toast('Ошибка: ' + (e.message || e), 'err');
+    if (grid) grid.innerHTML = `<div class="empty-state">
+      <h3>Ошибка загрузки</h3>
+      <p style="font-size:12px;color:#aaa;margin-top:8px">${e.message || String(e)}</p>
+      <button class="btn-primary" style="margin-top:16px;padding:10px 20px;font-size:13px" onclick="loadProducts()">Повторить</button>
+    </div>`;
   } finally {
     State.loading = false;
   }
@@ -448,7 +453,13 @@ async function renderHome() {
     <div id="pagination" class="pagination"></div>
   `;
 
-  loadProducts();
+  loadProducts().catch(e => {
+    console.error('renderHome loadProducts error:', e);
+    const grid = $('productsGrid');
+    if (grid) grid.innerHTML = `<div class="empty-state"><h3>${e.message || 'Ошибка'}</h3>
+      <button class="btn-primary" style="margin-top:12px;padding:10px 20px;font-size:13px" onclick="loadProducts()">Повторить</button>
+    </div>`;
+  });
 }
 
 // ── Catalog page ──────────────────────────────────────────────────────────────
@@ -1189,7 +1200,8 @@ async function renderAddProductForm() {
   try { cats = await API.categories(); } catch(e){}
   try { brands = await API.get('/api/brands'); } catch(e){}
   const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
-  const brandOpts = brands.map(b=>`<option>${escHtml(b.name)}</option>`).join('');
+  const brandOpts = brands.map(b=>`<option value="${escHtml(b.name)}">${escHtml(b.name)}</option>`).join('');
+  const brandOptsDatalist = brands.map(b=>`<option value="${escHtml(b.name)}"></option>`).join('');
   return `
   <div class="admin-section">
     <h3>
@@ -1232,7 +1244,7 @@ async function renderAddProductForm() {
                  list="fbrand-list"
                  oninput="filterBrandList(this.value)"
                  autocomplete="off">
-          <datalist id="fbrand-list">${brandOptsDatalist.replace(/ value="">/g,' value="').replace(/value="<option/g,'<option')}</datalist>
+          <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
         </div>
         <div class="brand-chips" id="brandChips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
       </div>
