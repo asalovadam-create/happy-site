@@ -882,50 +882,111 @@ function downloadCartPDF() {
   const address = c?.address || '—';
   const comment = $('cartComment')?.value?.trim() || '';
   const date    = new Date().toLocaleDateString('ru-RU');
+  const siteUrl = window.location.origin;
   let total = 0, qty2 = 0;
   const rows = items.map(({product:p, qty}) => {
     const sub = p.price * qty; total += sub; qty2 += qty;
     return `<tr>
       <td class="ti"><img src="${p.image}" onerror="this.style.display='none'"></td>
-      <td class="tn"><div class="pn">${escHtml(p.name)}</div><div class="ps">SKU: ${escHtml(p.sku)}</div></td>
+      <td class="tn"><div class="pn">${escHtml(p.name)}</div><div class="ps">Арт: ${escHtml(p.sku)}</div><div class="ps">Мин: ${p.min_order||1} шт</div></td>
       <td class="tr2">${rub(p.price)}</td>
       <td class="tr2">${qty} шт</td>
       <td class="tr2 bold">${rub(sub)}</td>
     </tr>`;
   }).join('');
-  const html = `<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"><title>Заказ — Happy Toys</title>
+  const html = `<!DOCTYPE html><html lang="ru"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Заказ Happy Toys — ${date}</title>
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Nunito',Arial,sans-serif;color:#1a1a2e;background:#fff;padding:36px}
-.hdr{display:flex;align-items:center;gap:16px;padding-bottom:20px;border-bottom:3px solid #FF6B35;margin-bottom:28px}
-.logo{width:52px;height:52px;background:#FF6B35;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:28px}
-.lt{font-size:22px;font-weight:900;color:#FF6B35}.ls{font-size:12px;color:#aaa}
-.dtitle{margin-left:auto;text-align:right}.dtitle h1{font-size:18px;font-weight:900}.dt{font-size:12px;color:#aaa}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Nunito',Arial,sans-serif;color:#1a1a2e;background:#fff;padding:32px;max-width:900px;margin:0 auto}
+/* ── Back button — visible only on screen, hidden in print ── */
+.back-bar{display:flex;align-items:center;justify-content:space-between;
+  background:#fff;padding:12px 0 20px;border-bottom:1px solid #f0f0f0;margin-bottom:24px}
+.back-btn{display:inline-flex;align-items:center;gap:8px;background:#FF6B35;color:#fff;
+  border:none;border-radius:12px;padding:11px 20px;font-size:14px;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif;text-decoration:none;transition:background .15s}
+.back-btn:hover{background:#e05a25}
+.back-btn svg{flex-shrink:0}
+.print-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;color:#FF6B35;
+  border:2px solid #FF6B35;border-radius:12px;padding:10px 18px;font-size:14px;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif}
+.print-btn:hover{background:#fff5f0}
+/* ── Header ── */
+.hdr{display:flex;align-items:center;gap:16px;padding-bottom:20px;border-bottom:3px solid #FF6B35;margin-bottom:24px}
+.logo-circle{width:52px;height:52px;background:#FF6B35;border-radius:14px;
+  display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0}
+.lt{font-size:22px;font-weight:900;color:#FF6B35;line-height:1}
+.ls{font-size:12px;color:#aaa;margin-top:3px}
+.dtitle{margin-left:auto;text-align:right}
+.dtitle h1{font-size:18px;font-weight:900}
+.dt{font-size:12px;color:#aaa}
+/* ── Info grid ── */
 .ig{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
 .ib{background:#f8f9ff;border-radius:12px;padding:14px 18px}
 .ibt{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:#FF6B35;font-weight:700;margin-bottom:10px}
 .ibr{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px}
-.ibr span:first-child{color:#888}.ibr span:last-child{font-weight:700}
+.ibr span:first-child{color:#888}.ibr span:last-child{font-weight:700;text-align:right;max-width:60%}
+/* ── Table ── */
 table{width:100%;border-collapse:collapse;margin-bottom:24px}
-thead tr{background:#FF6B35;color:#fff}thead th{padding:11px 13px;font-size:12px;text-transform:uppercase;font-weight:700;text-align:left}
-thead th.tr2{text-align:right}tbody tr{border-bottom:1px solid #f0f0f0}tbody tr:nth-child(even){background:#fafafa}tbody td{vertical-align:middle}
-.ti{width:120px;padding:10px}.ti img{width:100px;height:100px;object-fit:contain;border-radius:10px;background:#f5f5f5;display:block}
-.tn{padding:12px 13px}.pn{font-weight:700;font-size:14px;margin-bottom:3px}.ps{font-size:11px;color:#aaa}
-.tr2{text-align:right;padding:12px 13px;font-size:13px;white-space:nowrap}
+thead tr{background:#FF6B35;color:#fff}
+thead th{padding:11px 13px;font-size:12px;text-transform:uppercase;font-weight:700;text-align:left}
+thead th.tr2{text-align:right}
+tbody tr{border-bottom:1px solid #f0f0f0}
+tbody tr:nth-child(even){background:#fafafa}
+tbody td{vertical-align:middle;padding:10px 13px}
+.ti{width:120px!important;padding:10px!important}
+.ti img{width:110px;height:110px;object-fit:contain;border-radius:10px;background:#f5f5f5;display:block}
+.tn{padding:12px 13px}
+.pn{font-weight:700;font-size:14px;margin-bottom:3px}
+.ps{font-size:11px;color:#aaa;margin-top:2px}
+.tr2{text-align:right;white-space:nowrap}
 .bold{font-weight:900;color:#FF6B35;font-size:15px}
+/* ── Total ── */
 .totbox{display:flex;justify-content:flex-end;margin-bottom:20px}
-.tot{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;border-radius:16px;padding:18px 28px;min-width:240px}
+.tot{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;border-radius:16px;padding:18px 28px;min-width:260px}
 .tr3{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;opacity:.9}
 .tr3.big{font-size:20px;font-weight:900;opacity:1;border-top:1px solid rgba(255,255,255,.3);padding-top:10px;margin-top:6px}
-.cmt{background:#fffbf0;border:1px solid #ffe0b2;border-radius:12px;padding:14px 18px;font-size:13px;color:#555;margin-bottom:20px}
+.cmt{background:#fffbf0;border:1px solid #ffe0b2;border-radius:12px;padding:14px 18px;
+  font-size:13px;color:#555;margin-bottom:20px;line-height:1.5}
 .ftr{text-align:center;font-size:11px;color:#ccc;padding-top:16px;border-top:1px solid #eee}
-@media print{body{padding:16px}}
+/* ── Print ── */
+@media print{
+  .back-bar{display:none!important}
+  body{padding:12px}
+  .hdr{padding-bottom:14px;margin-bottom:18px}
+}
+@media(max-width:600px){
+  body{padding:16px}
+  .ig{grid-template-columns:1fr}
+  .back-bar{flex-wrap:wrap;gap:8px}
+}
 </style></head><body>
+
+<div class="back-bar">
+  <a class="back-btn" href="${siteUrl}">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <path d="M19 12H5"/><path d="M12 5l-7 7 7 7"/>
+    </svg>
+    Вернуться в каталог
+  </a>
+  <button class="print-btn" onclick="window.print()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/>
+      <rect x="6" y="14" width="12" height="8"/>
+    </svg>
+    Распечатать / PDF
+  </button>
+</div>
+
 <div class="hdr">
-  <div class="logo">🧸</div>
+  <div class="logo-circle">🧸</div>
   <div><div class="lt">Happy Toys</div><div class="ls">Оптовый каталог</div></div>
   <div class="dtitle"><h1>Заказ</h1><div class="dt">${date}</div></div>
 </div>
+
 <div class="ig">
   <div class="ib">
     <div class="ibt">👤 Клиент</div>
@@ -940,20 +1001,34 @@ thead th.tr2{text-align:right}tbody tr{border-bottom:1px solid #f0f0f0}tbody tr:
     <div class="ibr"><span>Дата</span><span>${date}</span></div>
   </div>
 </div>
-<table><thead><tr><th style="width:120px"></th><th>Товар</th><th class="tr2">Цена</th><th class="tr2">Кол-во</th><th class="tr2">Сумма</th></tr></thead>
-<tbody>${rows}</tbody></table>
+
+<table>
+  <thead><tr>
+    <th style="width:130px"></th>
+    <th>Товар</th>
+    <th class="tr2">Цена/шт</th>
+    <th class="tr2">Кол-во</th>
+    <th class="tr2">Сумма</th>
+  </tr></thead>
+  <tbody>${rows}</tbody>
+</table>
+
 <div class="totbox"><div class="tot">
   <div class="tr3"><span>Позиций</span><span>${items.length}</span></div>
-  <div class="tr3"><span>Штук</span><span>${qty2}</span></div>
+  <div class="tr3"><span>Штук всего</span><span>${qty2}</span></div>
   <div class="tr3 big"><span>Итого</span><span>${rub(total)}</span></div>
 </div></div>
+
 ${comment ? `<div class="cmt">💬 <strong>Комментарий:</strong> ${escHtml(comment)}</div>` : ''}
-<div class="ftr">Happy Toys · ${date}</div>
-<script>window.onload=()=>window.print()<\/script>
+
+<div class="ftr">Happy Toys · Оптовый каталог · ${date} · ${siteUrl}</div>
+
 </body></html>`;
-  const w = window.open('', '_blank');
-  if (!w) { toast('Разрешите всплывающие окна в браузере', 'err'); return; }
-  w.document.write(html); w.document.close();
+
+  // Open in same tab — no popup needed
+  const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+  const url  = URL.createObjectURL(blob);
+  window.location.href = url;
 }
 
 // ── Share modal ───────────────────────────────────────────────────────────────
