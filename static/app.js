@@ -69,9 +69,10 @@ const API = {
 
   products(params = {}) {
     const q = new URLSearchParams({ page: State.pageNum, per_page: State.perPage });
-    if (params.category) q.set('category', params.category);
-    if (params.search)   q.set('search',   params.search);
-    if (params.stock)    q.set('stock',    params.stock);
+    if (params.category)    q.set('category',    params.category);
+    if (params.subcategory) q.set('subcategory', params.subcategory);
+    if (params.search)      q.set('search',      params.search);
+    if (params.stock)       q.set('stock',       params.stock);
     if (params.sort && params.sort !== 'default') q.set('sort', params.sort);
     return this.get(`/api/products?${q}`);
   },
@@ -80,7 +81,7 @@ const API = {
   product(id)     { return this.get(`/api/products/${id}`); },
   categories()    { return this.get('/api/categories'); },
   subcategories(cat) { return this.get(`/api/categories/${encodeURIComponent(cat)}/subcategories`); },
-  adminCatalog()  { return this.get('/api/admin/catalog', State.user?.token); },
+  adminCatalog()  { return this.get('/api/admin/catalog'); },
   addCategory(name) { return this.post('/api/admin/categories', {name}, State.user?.token); },
   delCategory(name) { return this.del(`/api/admin/categories/${encodeURIComponent(name)}`, State.user?.token); },
   addSubcategory(category, name) { return this.post('/api/admin/subcategories', {category, name}, State.user?.token); },
@@ -267,10 +268,11 @@ async function loadProducts() {
 
   try {
     const data = await API.products({
-      category: State.category,
-      search:   State.search,
-      stock:    State.stock,
-      sort:     State.sort,
+      category:    State.category,
+      subcategory: State.subcategory,
+      search:      State.search,
+      stock:       State.stock,
+      sort:        State.sort,
     });
     State.products = data.items;
     State.total    = data.total;
@@ -1169,7 +1171,7 @@ async function renderAdmin() {
       <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
 
     let visitors = [];
-    try { const vd = await API.get('/api/admin/visitors', State.user?.token); visitors = vd.visitors || []; } catch(e){}
+    try { const vd = await API.get('/api/admin/visitors'); visitors = vd.visitors || []; } catch(e){}
     const formHtml    = await renderAddProductForm();
     const catalogHtml = await renderCatalogManager();
     const visitorsHtml = renderVisitorsTable(visitors);
