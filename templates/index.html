@@ -6,13 +6,43 @@
   <meta name="description" content="Happy Toys — Оптовый каталог игрушек">
   <meta name="theme-color" content="#ffffff">
   <title>Happy Toys — Wholesale</title>
+  <!-- ── PWA Core ──────────────────────────────────────────────────── -->
   <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Happy Toys">
+  <meta name="application-name" content="Happy Toys">
   <meta name="format-detection" content="telephone=no">
-  <link rel="manifest" href="/static/manifest.json">
-  <link rel="apple-touch-icon" href="/static/icon-192.png">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="msapplication-TileColor" content="#FF6B35">
+  <meta name="msapplication-TileImage" content="/static/icon-192.png">
+
+  <!-- ── Manifest ───────────────────────────────────────────────────── -->
+  <link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials">
+
+  <!-- ── Apple Touch Icons (iOS home screen) ────────────────────────── -->
+  <!-- PLACE YOUR ICON FILE AT: static/icon.png (1024x1024 recommended) -->
+  <link rel="apple-touch-icon" href="/static/icon.png">
+  <link rel="apple-touch-icon" sizes="120x120" href="/static/icon-120.png">
+  <link rel="apple-touch-icon" sizes="152x152" href="/static/icon-152.png">
+  <link rel="apple-touch-icon" sizes="167x167" href="/static/icon-167.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icon-180.png">
+
+  <!-- ── Favicon ────────────────────────────────────────────────────── -->
+  <link rel="icon" type="image/png" sizes="32x32"  href="/static/icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16"  href="/static/icon-16.png">
+  <link rel="shortcut icon" href="/static/icon.png">
+
+  <!-- ── Apple Splash Screens ───────────────────────────────────────── -->
+  <!-- iPhone 15 Pro Max / 14 Pro Max -->
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3)" href="/static/splash-1290x2796.png">
+  <!-- iPhone 14 / 13 / 12 -->
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3)" href="/static/splash-1170x2532.png">
+  <!-- iPhone SE -->
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2)" href="/static/splash-750x1334.png">
+  <!-- iPad Pro 12.9 -->
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2)" href="/static/splash-2048x2732.png">
+  <!-- iPad Pro 11 -->
+  <link rel="apple-touch-startup-image" media="screen and (device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2)" href="/static/splash-1668x2388.png">
   <link rel="preconnect" href="https://images.unsplash.com" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -250,6 +280,28 @@
 
 </div>
 
-<script src="/static/app.js?v=1779780019"></script>
+  <!-- ── Service Worker (PWA offline) ──────────────────────────────── -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('/static/sw.js', {scope: '/'})
+          .then(reg => console.log('SW registered:', reg.scope))
+          .catch(err => console.log('SW error:', err));
+      });
+    }
+  </script>
+  <script>
+    // Queue system — captures calls before app.js loads, replays after
+    window.__navQueue = [];
+    function navigate(p)   { window.__navQueue.push(['navigate', p]); }
+    function openAuth()    { window.__navQueue.push(['openAuth']); }
+    function toggleCart()  { window.__navQueue.push(['toggleCart']); }
+    function closeAuth()   {}
+    function onSearch()    {}
+    function clearSearch() {}
+    // Will be overridden by real functions in app.js
+    // app.js calls window.__replayNav() at the end of init
+  </script>
+  <script src="/static/app.js?v=1779780019"></script>
 </body>
 </html>
