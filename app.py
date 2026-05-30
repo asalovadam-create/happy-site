@@ -638,7 +638,7 @@ async def admin_visitors(_=Depends(require_admin)):
 
 @app.post("/api/admin/subcategory-image")
 async def set_subcat_image(b: SubcategoryImageIn, _=Depends(require_admin)):
-    """Store a custom image URL for a subcategory (for future use)""\"
+    """Store a custom image URL for a subcategory (for future use)."""
     if b.category not in _catalog: raise HTTPException(404, "Category not found")
     if b.subcategory not in _catalog[b.category]: raise HTTPException(404, "Subcategory not found")
     # Store image URL in the subcategory list (use first element as metadata)
