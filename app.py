@@ -662,6 +662,20 @@ async def admin_catalog(_=Depends(require_admin)):
 async def health():
     return {"status": "ok", "products": len(_products), "ts": datetime.utcnow().isoformat()}
 
+# ── PWA files — serve from root path as fallback ─────────────────────────────
+@app.get("/manifest.json", include_in_schema=False)
+async def manifest_root():
+    from fastapi.responses import FileResponse
+    return FileResponse("static/manifest.json", media_type="application/manifest+json")
+
+@app.get("/sw.js", include_in_schema=False)
+async def sw_root():
+    from fastapi.responses import FileResponse
+    r = FileResponse("static/sw.js", media_type="application/javascript")
+    r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    r.headers["Service-Worker-Allowed"] = "/"
+    return r
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
