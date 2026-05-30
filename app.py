@@ -24,12 +24,22 @@ class CacheHeaders(BaseHTTPMiddleware):
     async def dispatch(self, req, call_next):
         resp = await call_next(req)
         p = req.url.path
-        if p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
+        # Service Worker — needs special scope header
+        if p in ('/sw.js', '/static/sw.js'):
+            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+            resp.headers['Service-Worker-Allowed'] = '/'
+        # Manifest
+        elif p in ('/manifest.json', '/static/manifest.json'):
+            resp.headers['Cache-Control'] = 'no-cache'
+        # JS/CSS — never cache
+        elif p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
             resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             resp.headers['Pragma'] = 'no-cache'
             resp.headers['Expires'] = '0'
+        # Other static files (images, fonts) — cache 1 day
         elif p.startswith('/static/'):
             resp.headers['Cache-Control'] = 'public, max-age=86400'
+        # API — no cache
         elif p.startswith('/api/'):
             resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return resp
@@ -665,8 +675,107 @@ async def health():
 # ── PWA files — serve from root path as fallback ─────────────────────────────
 @app.get("/manifest.json", include_in_schema=False)
 async def manifest_root():
-    from fastapi.responses import FileResponse
-    return FileResponse("static/manifest.json", media_type="application/manifest+json")
+    import json as _json, os as _os
+    from fastapi.responses import Response, FileResponse
+    path = "static/manifest.json"
+    if _os.path.exists(path):
+        r = FileResponse(path, media_type="application/manifest+json")
+        r.headers["Cache-Control"] = "no-cache"
+        r.headers["Service-Worker-Allowed"] = "/"
+        return r
+    # Inline fallback manifest when file not found
+    data = {
+        "name": "Happy Toys — Оптовый каталог",
+        "short_name": "Happy Toys",
+        "description": "Оптовый каталог игрушек",
+        "start_url": "/", "scope": "/",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#FF6B35",
+        "orientation": "portrait-primary",
+        "lang": "ru",
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "any maskable"},
+            {"src": "/static/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "any maskable"}
+        ]
+    }
+    r = Response(
+        content=_json.dumps(data, ensure_ascii=False),
+        media_type="application/manifest+json"
+    )
+    r.headers["Cache-Control"] = "no-cache"
+    return r
+
+SW_INLINE = (
+    "self.addEventListener('install',e=>self.skipWaiting());"
+    "self.addEventListener('activate',e=>self.clients.claim());"
+    "self.addEventListener('fetch',e=>{"
+    "const u=e.request.url;"
+    "if(u.includes('/api/')||u.includes('app.js')||u.includes('style.css')){"
+    "e.respondWith(fetch(e.request));return;}"
+    "e.respondWith(caches.open('ht-v3').then(c=>"
+    "c.match(e.request).then(r=>r||fetch(e.request).then(nr=>{"
+    "if(nr.ok)c.put(e.request,nr.clone());return nr;}))"
+    ").catch(()=>caches.match('/')));});"
+)
+
+def _sw_resp():
+    import os
+    from fastapi.responses import FileResponse, Response as _R
+    path = "static/sw.js"
+    content = open(path).read() if os.path.exists(path) else SW_INLINE
+    r = _R(content=content, media_type="application/javascript")
+    r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    r.headers["Service-Worker-Allowed"] = "/"
+    return r
+
+@app.get("/sw.js", include_in_schema=False)
+async def sw_root(): return _sw_resp()
+
+@app.get("/static/sw.js", include_in_schema=False)
+async def sw_static(): return _sw_resp()
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "products": len(_products), "ts": datetime.utcnow().isoformat()}
+
+# ── PWA files — serve from root path as fallback ─────────────────────────────
+@app.get("/manifest.json", include_in_schema=False)
+async def manifest_root():
+    import json as _json, os as _os
+    from fastapi.responses import Response, FileResponse
+    path = "static/manifest.json"
+    if _os.path.exists(path):
+        r = FileResponse(path, media_type="application/manifest+json")
+        r.headers["Cache-Control"] = "no-cache"
+        r.headers["Service-Worker-Allowed"] = "/"
+        return r
+    # Inline fallback manifest when file not found
+    data = {
+        "name": "Happy Toys — Оптовый каталог",
+        "short_name": "Happy Toys",
+        "description": "Оптовый каталог игрушек",
+        "start_url": "/", "scope": "/",
+        "display": "standalone",
+        "background_color": "#ffffff",
+        "theme_color": "#FF6B35",
+        "orientation": "portrait-primary",
+        "lang": "ru",
+        "icons": [
+            {"src": "/static/icon-192.png", "sizes": "192x192",
+             "type": "image/png", "purpose": "any maskable"},
+            {"src": "/static/icon-512.png", "sizes": "512x512",
+             "type": "image/png", "purpose": "any maskable"}
+        ]
+    }
+    r = Response(
+        content=_json.dumps(data, ensure_ascii=False),
+        media_type="application/manifest+json"
+    )
+    r.headers["Cache-Control"] = "no-cache"
+    return r
 
 @app.get("/sw.js", include_in_schema=False)
 async def sw_root():
