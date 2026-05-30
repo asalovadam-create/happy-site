@@ -542,7 +542,6 @@ async function selectCatalogCategory(name) {
   }
 
   const m = catMeta(name);
-  const m = catMeta(name);
 
   const subItems = subs.map((s, i) => {
     const imgHtml = s.image
@@ -1511,5 +1510,28 @@ document.addEventListener('DOMContentLoaded', () => {
   State.cartOpen = false;
 
   updateCartBadge();
-  loadSession().then(() => navigate(State.user?.role === 'admin' ? 'admin' : 'home'));
+
+  loadSession().then(() => {
+    // Determine start page
+    const params = new URLSearchParams(window.location.search);
+    const startPage = params.get('page') || (State.user?.role === 'admin' ? 'admin' : 'home');
+
+    // Replay any queued navigation calls that happened before app.js loaded
+    const queue = window.__navQueue || [];
+    if (queue.length > 0) {
+      const last = queue[queue.length - 1];
+      if (last[0] === 'navigate') {
+        navigate(last[1]);
+      } else if (last[0] === 'openAuth') {
+        navigate(startPage); openAuth();
+      } else if (last[0] === 'toggleCart') {
+        navigate(startPage); toggleCart();
+      } else {
+        navigate(startPage);
+      }
+    } else {
+      navigate(startPage);
+    }
+    window.__navQueue = []; // clear queue
+  });
 });
