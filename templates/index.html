@@ -17,11 +17,11 @@
   <meta name="msapplication-TileImage" content="/static/icon-192.png">
 
   <!-- ── Manifest ───────────────────────────────────────────────────── -->
-  <link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials">
+  <link rel="manifest" href="/manifest.json">
 
   <!-- ── Apple Touch Icons (iOS home screen) ────────────────────────── -->
   <!-- PLACE YOUR ICON FILE AT: static/icon.png (1024x1024 recommended) -->
-  <link rel="apple-touch-icon" href="/static/icon.png">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="apple-touch-icon" sizes="120x120" href="/static/icon-120.png">
   <link rel="apple-touch-icon" sizes="152x152" href="/static/icon-152.png">
   <link rel="apple-touch-icon" sizes="167x167" href="/static/icon-167.png">
@@ -284,7 +284,7 @@
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/static/sw.js', {scope: '/'})
+        navigator.serviceWorker.register('/sw.js', {scope: '/'})
           .then(reg => console.log('SW registered:', reg.scope))
           .catch(err => console.log('SW error:', err));
       });
