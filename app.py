@@ -103,7 +103,10 @@ class VisitorTracker(BaseHTTPMiddleware):
                 else "Firefox" if "Firefox" in ua \
                 else "Edge" if "Edg" in ua else "Other"
             # Store in DB asynchronously (non-blocking)
-            asyncio.create_task(_save_visitor(ip, device, browser, ua[:120]))
+            try:
+                asyncio.create_task(_save_visitor(ip, device, browser, ua[:120]))
+            except RuntimeError:
+                pass  # No event loop context — skip visitor tracking
         return resp
 
 async def _save_visitor(ip, device, browser, ua):
@@ -130,21 +133,34 @@ async def startup():
     if not DATABASE_URL:
         print("⚠️  DATABASE_URL not set — running in memory-only mode")
         return
+    # Clean up URL — asyncpg doesn't support channel_binding parameter
+    db_url = DATABASE_URL
+    for param in ['channel_binding=require', 'channel_binding=disable']:
+        db_url = db_url.replace('&' + param, '').replace('?' + param + '&', '?').replace('?' + param, '')
+    print(f"🔌 Connecting to DB: {db_url[:50]}...")
     try:
-        import asyncpg
+        import asyncpg, ssl as _ssl
+        # Neon requires SSL — create proper context
+        ssl_ctx = _ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = _ssl.CERT_NONE
+
         _db_pool = await asyncpg.create_pool(
-            DATABASE_URL,
+            db_url,
             min_size=1,
-            max_size=10,
-            command_timeout=30,
-            ssl="require",
+            max_size=5,
+            command_timeout=60,
+            ssl=ssl_ctx,
+            statement_cache_size=0,  # Required for PgBouncer/Neon pooler
         )
+        print("✅ Neon pool created, initializing tables...")
         await _create_tables()
         await _seed_if_empty()
-        print("✅ Neon PostgreSQL connected")
+        print("✅ Neon PostgreSQL connected and ready!")
     except Exception as e:
-        print(f"❌ DB connection failed: {e}")
+        print(f"❌ DB connection failed: {type(e).__name__}: {e}")
         _db_pool = None
+        print("⚠️  Running in LIMITED mode — registration/DB features disabled")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -398,7 +414,7 @@ async def login(b: LoginIn):
 @app.post("/api/auth/register", status_code=201)
 async def register(b: RegisterIn):
     if not _db_pool:
-        raise HTTPException(503, "Database not available")
+        raise HTTPException(503, "База данных недоступна. Попробуйте позже или обратитесь к администратору.")
     existing = await db_fetchrow("SELECT id FROM customers WHERE email=$1", b.email)
     if existing:
         raise HTTPException(400, "Email already registered")
@@ -865,11 +881,33 @@ async def sw_static(): return _sw_response()
 
 @app.get("/api/health")
 async def health():
+    db_ok = False
+    db_error = None
+    if _db_pool:
+        try:
+            await db_fetchrow("SELECT 1")
+            db_ok = True
+        except Exception as e:
+            db_error = str(e)
     return {
         "status": "ok",
-        "db": _db_pool is not None,
+        "db_connected": db_ok,
+        "db_pool": _db_pool is not None,
+        "db_error": db_error,
         "cloudinary": _cloudinary_ok,
         "ts": datetime.utcnow().isoformat()
+    }
+
+@app.get("/api/debug/db")
+async def debug_db():
+    """Check DB connection details — remove in production."""
+    if not DATABASE_URL:
+        return {"error": "DATABASE_URL env var not set"}
+    masked = DATABASE_URL[:30] + "..." if len(DATABASE_URL) > 30 else DATABASE_URL
+    return {
+        "url_set": True,
+        "url_preview": masked,
+        "pool_active": _db_pool is not None,
     }
 
 if __name__ == "__main__":
