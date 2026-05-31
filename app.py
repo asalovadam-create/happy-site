@@ -1,7 +1,7 @@
 """
-Happy Toys — Wholesale Catalog
-FastAPI backend · JWT auth · user registration · image upload · in-memory DB
-Two-level catalog: Category → Subcategory → Products
+Happy Toys — Wholesale Catalog v4
+FastAPI + Neon PostgreSQL + Cloudinary
+All secrets via environment variables only — never hardcoded!
 """
 
 from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
@@ -9,239 +9,316 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response, FileResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime, timedelta
-import jwt, hashlib, random, string, time, os, base64, uuid
+from starlette.middleware.base import BaseHTTPMiddleware
+import jwt, hashlib, random, string, time, os, base64, uuid, json, asyncio
 
-app = FastAPI(title="Happy Toys API", version="3.0.0", docs_url="/api/docs")
+app = FastAPI(title="Happy Toys API", version="4.0.0", docs_url="/api/docs")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-from starlette.middleware.base import BaseHTTPMiddleware
+# ── Environment variables (set in Render Dashboard → Environment) ─────────────
+# NEVER put real values here — only os.getenv() calls!
+DATABASE_URL    = os.getenv("DATABASE_URL")          # Neon PostgreSQL URL
+CLOUDINARY_URL  = os.getenv("CLOUDINARY_URL")        # cloudinary://key:secret@cloud
+JWT_SECRET      = os.getenv("JWT_SECRET", "change-me-in-render-env")
+ADMIN_USER      = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS      = os.getenv("ADMIN_PASS", "admin123")
+
+# ── Cloudinary setup (only if env var is set) ─────────────────────────────────
+_cloudinary_ok = False
+if CLOUDINARY_URL:
+    try:
+        import cloudinary
+        import cloudinary.uploader
+        cloudinary.config(cloudinary_url=CLOUDINARY_URL)
+        _cloudinary_ok = True
+        print("✅ Cloudinary connected")
+    except ImportError:
+        print("⚠️  cloudinary package not installed")
+else:
+    print("⚠️  CLOUDINARY_URL not set — image upload will use base64 fallback")
+
+# ── Neon PostgreSQL setup ─────────────────────────────────────────────────────
+_db_pool = None
+
+async def get_db():
+    """Get database connection from pool."""
+    global _db_pool
+    if _db_pool is None:
+        raise HTTPException(503, "Database not connected")
+    return _db_pool
+
+async def db_fetch(query: str, *args):
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        return await conn.fetch(query, *args)
+
+async def db_fetchrow(query: str, *args):
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(query, *args)
+
+async def db_execute(query: str, *args):
+    pool = await get_db()
+    async with pool.acquire() as conn:
+        return await conn.execute(query, *args)
+
+# ── Middleware ─────────────────────────────────────────────────────────────────
 class CacheHeaders(BaseHTTPMiddleware):
     async def dispatch(self, req, call_next):
         resp = await call_next(req)
         p = req.url.path
-        # Service Worker — needs special scope header
         if p in ('/sw.js', '/static/sw.js'):
             resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             resp.headers['Service-Worker-Allowed'] = '/'
-        # Manifest
         elif p in ('/manifest.json', '/static/manifest.json'):
             resp.headers['Cache-Control'] = 'no-cache'
-        # JS/CSS — never cache
         elif p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
             resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
             resp.headers['Pragma'] = 'no-cache'
             resp.headers['Expires'] = '0'
-        # Other static files (images, fonts) — cache 1 day
         elif p.startswith('/static/'):
             resp.headers['Cache-Control'] = 'public, max-age=86400'
-        # API — no cache
         elif p.startswith('/api/'):
             resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return resp
-app.add_middleware(CacheHeaders)
 
 class VisitorTracker(BaseHTTPMiddleware):
     async def dispatch(self, req, call_next):
         resp = await call_next(req)
-        # Track only page visits (not API/static)
         if req.method == "GET" and not req.url.path.startswith(("/api/", "/static/", "/docs")):
             ua = req.headers.get("user-agent", "")
-            ip = req.headers.get("x-forwarded-for", req.client.host if req.client else "unknown")
+            ip = req.headers.get("x-forwarded-for", "unknown")
             ip = ip.split(",")[0].strip()
-            # Parse device type from UA
-            if "iPhone" in ua or "Android" in ua and "Mobile" in ua:
-                device = "📱 Mobile"
-            elif "iPad" in ua or "Tablet" in ua:
-                device = "📲 Tablet"
-            elif "Mac" in ua or "Windows" in ua or "Linux" in ua:
-                device = "💻 Desktop"
-            else:
-                device = "❓ Unknown"
-            # Parse browser
-            if "Chrome" in ua and "Safari" in ua and "Edg" not in ua:
-                browser = "Chrome"
-            elif "Safari" in ua and "Chrome" not in ua:
-                browser = "Safari"
-            elif "Firefox" in ua:
-                browser = "Firefox"
-            elif "Edg" in ua:
-                browser = "Edge"
-            else:
-                browser = "Other"
-            _visitors.insert(0, {
-                "ip": ip,
-                "device": device,
-                "browser": browser,
-                "ua": ua[:120],
-                "path": req.url.path,
-                "time": datetime.utcnow().isoformat(),
-            })
-            if len(_visitors) > 500:
-                _visitors.pop()
+            device = "📱 Mobile" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) \
+                else "📲 Tablet" if ("iPad" in ua) \
+                else "💻 Desktop" if ("Mac" in ua or "Windows" in ua or "Linux" in ua) \
+                else "❓ Unknown"
+            browser = "Chrome" if ("Chrome" in ua and "Safari" in ua and "Edg" not in ua) \
+                else "Safari" if ("Safari" in ua and "Chrome" not in ua) \
+                else "Firefox" if "Firefox" in ua \
+                else "Edge" if "Edg" in ua else "Other"
+            # Store in DB asynchronously (non-blocking)
+            asyncio.create_task(_save_visitor(ip, device, browser, ua[:120]))
         return resp
-app.add_middleware(VisitorTracker)
 
+async def _save_visitor(ip, device, browser, ua):
+    try:
+        await db_execute(
+            "INSERT INTO visitors(ip, device, browser, ua, created_at) VALUES($1,$2,$3,$4,$5)",
+            ip, device, browser, ua, datetime.utcnow()
+        )
+    except Exception:
+        pass  # Non-critical
+
+app.add_middleware(CacheHeaders)
+app.add_middleware(VisitorTracker)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-JWT_SECRET = os.getenv("JWT_SECRET", "happytoys-secret-2025")
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "admin123")
-security   = HTTPBearer(auto_error=False)
+security = HTTPBearer(auto_error=False)
 
-# ── Two-level catalog structure ───────────────────────────────────────────────
-# Format: { category_name: { subcategory_name: [] } }
-_catalog: dict = {
-    "Машинки": {
-        "Легковые автомобили": [],
-        "Грузовики и спецтехника": [],
-        "Гоночные машины": [],
-        "Радиоуправляемые": [],
-        "Треки и наборы": [],
-    },
-    "Куклы": {
-        "Модные куклы": [],
-        "Пупсы и малыши": [],
-        "Принцессы": [],
-        "Аксессуары для кукол": [],
-    },
-    "Конструкторы": {
-        "Классические конструкторы": [],
-        "LEGO серии": [],
-        "Магнитные конструкторы": [],
-        "Деревянные конструкторы": [],
-        "Мягкие конструкторы": [],
-    },
-    "Мягкие игрушки": {
-        "Медведи и мишки": [],
-        "Единороги": [],
-        "Животные": [],
-        "Персонажи мультфильмов": [],
-        "Подушки-игрушки": [],
-    },
-    "Настольные игры": {
-        "Классические игры": [],
-        "Стратегии": [],
-        "Карточные игры": [],
-        "Игры для детей": [],
-    },
-    "Развивающие": {
-        "Сортеры и пазлы": [],
-        "Обучающие наборы": [],
-        "Музыкальные игрушки": [],
-        "Для малышей 0-3 года": [],
-    },
-    "Пазлы": {
-        "Детские пазлы": [],
-        "Пазлы 100-500 деталей": [],
-        "Пазлы 500-1000 деталей": [],
-        "3D пазлы": [],
-    },
-    "Творчество": {
-        "Наборы для рисования": [],
-        "Лепка и пластилин": [],
-        "Бисер и украшения": [],
-        "Наборы для шитья": [],
-        "Слаймы": [],
-    },
-    "Канцелярия": {
-        "Ручки и карандаши": [],
-        "Тетради и блокноты": [],
-        "Пеналы и сумки": [],
-        "Фломастеры и маркеры": [],
-        "Точилки и ластики": [],
-    },
-    "Спорт и активность": {
-        "Мячи": [],
-        "Велосипеды и самокаты": [],
-        "Скакалки и обручи": [],
-        "Батуты": [],
-    },
-    "Для малышей": {
-        "Погремушки": [],
-        "Прорезыватели": [],
-        "Мобили и ночники": [],
-        "Развивающие коврики": [],
-    },
+# ── DB init / startup ─────────────────────────────────────────────────────────
+@app.on_event("startup")
+async def startup():
+    global _db_pool
+    if not DATABASE_URL:
+        print("⚠️  DATABASE_URL not set — running in memory-only mode")
+        return
+    try:
+        import asyncpg
+        _db_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=1,
+            max_size=10,
+            command_timeout=30,
+            ssl="require",
+        )
+        await _create_tables()
+        await _seed_if_empty()
+        print("✅ Neon PostgreSQL connected")
+    except Exception as e:
+        print(f"❌ DB connection failed: {e}")
+        _db_pool = None
+
+@app.on_event("shutdown")
+async def shutdown():
+    global _db_pool
+    if _db_pool:
+        await _db_pool.close()
+
+async def _create_tables():
+    """Create all tables if they don't exist."""
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS products (
+        id          SERIAL PRIMARY KEY,
+        name        TEXT NOT NULL,
+        sku         TEXT UNIQUE NOT NULL,
+        price       NUMERIC(10,2) NOT NULL,
+        brand       TEXT DEFAULT '',
+        category    TEXT DEFAULT '',
+        subcategory TEXT DEFAULT '',
+        image       TEXT DEFAULT '',
+        stock       TEXT DEFAULT 'ok',
+        stock_qty   INTEGER DEFAULT 0,
+        description TEXT DEFAULT '',
+        min_order   INTEGER DEFAULT 1,
+        age_min     INTEGER DEFAULT 3,
+        tags        TEXT[] DEFAULT '{}',
+        is_active   BOOLEAN DEFAULT TRUE,
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS customers (
+        id            TEXT PRIMARY KEY,
+        first_name    TEXT DEFAULT '',
+        last_name     TEXT DEFAULT '',
+        email         TEXT UNIQUE NOT NULL,
+        phone         TEXT DEFAULT '',
+        address       TEXT DEFAULT '',
+        password_hash TEXT NOT NULL,
+        created_at    TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS orders (
+        id          SERIAL PRIMARY KEY,
+        code        TEXT UNIQUE NOT NULL,
+        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
+        items       JSONB NOT NULL DEFAULT '[]',
+        total       NUMERIC(10,2) DEFAULT 0,
+        comment     TEXT DEFAULT '',
+        store_name  TEXT DEFAULT '',
+        contact     TEXT DEFAULT '',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS catalog (
+        id          SERIAL PRIMARY KEY,
+        category    TEXT NOT NULL,
+        subcategory TEXT NOT NULL DEFAULT '',
+        image_url   TEXT DEFAULT '',
+        sort_order  INTEGER DEFAULT 0,
+        UNIQUE(category, subcategory)
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS brands (
+        name       TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS visitors (
+        id         SERIAL PRIMARY KEY,
+        ip         TEXT,
+        device     TEXT,
+        browser    TEXT,
+        ua         TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS sessions (
+        token      TEXT PRIMARY KEY,
+        user_id    TEXT NOT NULL,
+        role       TEXT NOT NULL,
+        expires_at TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    print("✅ Tables ready")
+
+# ── Catalog structure (kept in memory for speed, persisted in DB) ──────────────
+DEFAULT_CATALOG = {
+    "Машинки":         ["Легковые автомобили","Грузовики и спецтехника","Гоночные машины","Радиоуправляемые","Треки и наборы"],
+    "Куклы":           ["Модные куклы","Пупсы и малыши","Принцессы","Аксессуары для кукол"],
+    "Конструкторы":    ["Классические конструкторы","LEGO серии","Магнитные конструкторы","Деревянные конструкторы","Мягкие конструкторы"],
+    "Мягкие игрушки":  ["Медведи и мишки","Единороги","Животные","Персонажи мультфильмов","Подушки-игрушки"],
+    "Настольные игры": ["Классические игры","Стратегии","Карточные игры","Игры для детей"],
+    "Развивающие":     ["Сортеры и пазлы","Обучающие наборы","Музыкальные игрушки","Для малышей 0-3 года"],
+    "Пазлы":           ["Детские пазлы","Пазлы 100-500 деталей","Пазлы 500-1000 деталей","3D пазлы"],
+    "Творчество":      ["Наборы для рисования","Лепка и пластилин","Бисер и украшения","Наборы для шитья","Слаймы"],
+    "Канцелярия":      ["Ручки и карандаши","Тетради и блокноты","Пеналы и сумки","Фломастеры и маркеры","Точилки и ластики"],
+    "Спорт и активность": ["Мячи","Велосипеды и самокаты","Скакалки и обручи","Батуты"],
+    "Для малышей":     ["Погремушки","Прорезыватели","Мобили и ночники","Развивающие коврики"],
 }
 
-CATEGORIES = list(_catalog.keys())
-BRANDS     = ["LEGO","Barbie","Hot Wheels","Hasbro","Mattel","Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"]
-NAMES = [
-    "Кукла Барби Модница Делюкс","Конструктор City 500 дет.","Машинка Турбо X",
-    "Монополия Classic","Мишка плюшевый 45см","Пазл Природа 1000 эл.",
-    "Кукла LOL Surprise","LEGO Technic Суперкар","Hot Wheels трек Петля",
-    "Playmobil Ферма","Набор для рисования Pro","Глобус интерактивный 3D",
-    "Конструктор Duplo Старт","Monster High Frankie","Машина-трансформер XL",
-    "Клуэдо Classic","Единорог плюшевый 60см","RC Вертолёт Cobra 2.4G",
-    "Barbie Дом Мечты","LEGO Star Wars Set","Schleich Лошадь Арабская",
-    "Ravensburger 3D Замок","Fisher-Price Ксилофон","Funko POP Batman",
-    "Spin Master Hatchimals","Набор юного химика","Конструктор Magnetic",
-    "Кукла Enchantimals","Трек Hot Wheels City","Пазл Space 500 эл.",
-]
+DEFAULT_BRANDS = ["LEGO","Barbie","Hot Wheels","Hasbro","Mattel","Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"]
+
 IMGS = [
     "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1605457212628-cde2d61dab33?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1591988700625-3e71ae4a0e5d?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1587654780291-39c9404d746b?w=600&h=600&fit=crop&q=80",
     "https://images.unsplash.com/photo-1618842676088-c4d48a6a7571?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1567365672-15b7f0b9ce6e?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1611532736597-de2d4265fba3?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1553481187-be93c21490a9?w=600&h=600&fit=crop&q=80",
 ]
-DESC = "Высококачественная игрушка. Соответствует стандартам CE и EN71. Безопасные материалы, яркие цвета. Идеально для оптовых закупок."
+NAMES = [
+    "Кукла Барби Модница Делюкс","Конструктор City 500 дет.","Машинка Турбо X",
+    "Монополия Classic","Мишка плюшевый 45см","Пазл Природа 1000 эл.",
+    "Кукла LOL Surprise","LEGO Technic Суперкар","Hot Wheels трек Петля",
+    "Playmobil Ферма","Набор для рисования Pro","Глобус интерактивный 3D",
+]
 
-def _seed():
-    db = {}
-    all_subs = [(cat, sub) for cat, subs in _catalog.items() for sub in subs.keys()]
+async def _seed_if_empty():
+    """Seed DB with demo data on first run."""
+    count = await db_fetchrow("SELECT COUNT(*) FROM products")
+    if count[0] > 0:
+        print(f"✅ DB has {count[0]} products, skipping seed")
+        return
+
+    # Seed catalog
+    for cat, subs in DEFAULT_CATALOG.items():
+        await db_execute(
+            "INSERT INTO catalog(category, subcategory) VALUES($1,'') ON CONFLICT DO NOTHING",
+            cat
+        )
+        for sub in subs:
+            await db_execute(
+                "INSERT INTO catalog(category, subcategory) VALUES($1,$2) ON CONFLICT DO NOTHING",
+                cat, sub
+            )
+
+    # Seed brands
+    for b in DEFAULT_BRANDS:
+        await db_execute("INSERT INTO brands(name) VALUES($1) ON CONFLICT DO NOTHING", b)
+
+    # Seed 200 demo products
+    all_subs = [(cat, sub) for cat, subs in DEFAULT_CATALOG.items() for sub in subs]
     for i in range(1, 201):
         sv = random.random()
         stock = "ok" if sv > 0.6 else ("low" if sv > 0.25 else "out")
         cat, sub = all_subs[(i-1) % len(all_subs)]
-        db[i] = {
-            "id": i, "is_active": True,
-            "name": NAMES[(i-1) % len(NAMES)] + (f" #{i}" if i > len(NAMES) else ""),
-            "sku": f"{10000 + i}",
-            "price": round(random.uniform(3.5, 149.99), 2),
-            "brand": BRANDS[(i-1) % len(BRANDS)],
-            "category": cat,
-            "subcategory": sub,
-            "image": IMGS[(i-1) % len(IMGS)],
-            "stock": stock,
-            "stock_qty": random.randint(1, 500) if stock != "out" else 0,
-            "description": DESC,
-            "min_order": random.choice([1, 2, 6, 12]),
-            "age_min": random.choice([1, 3, 5, 6, 8]),
-            "tags": random.sample(["Новинка","Хит","Акция","Эксклюзив"], k=random.randint(0,2)),
-        }
-    return db
-
-_products = _seed()
-_carts    = {}
-_users_admin = {ADMIN_USER: hashlib.sha256(ADMIN_PASS.encode()).hexdigest()}
-_customers   = {}
-_visitors: list = []   # [{ip, ua, device, time, page}]
-_custom_brands: list = list({"LEGO","Barbie","Hot Wheels","Hasbro","Mattel",
-                              "Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"})
-_cache: dict = {}
-_cache_exp: dict = {}
-
-def c_get(k):
-    return _cache[k] if k in _cache and time.time() < _cache_exp.get(k, 0) else None
-def c_set(k, v, ttl=30):
-    _cache[k] = v; _cache_exp[k] = time.time() + ttl
+        tags = random.sample(["Новинка","Хит","Акция","Эксклюзив"], k=random.randint(0,2))
+        name = NAMES[(i-1) % len(NAMES)] + (f" #{i}" if i >= len(NAMES) else "")
+        await db_execute("""
+            INSERT INTO products(name,sku,price,brand,category,subcategory,image,stock,stock_qty,
+                                 description,min_order,age_min,tags)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+            ON CONFLICT DO NOTHING""",
+            name, str(10000+i), round(random.uniform(3.5,149.99),2),
+            DEFAULT_BRANDS[(i-1)%len(DEFAULT_BRANDS)], cat, sub,
+            IMGS[(i-1)%len(IMGS)], stock,
+            random.randint(1,500) if stock!="out" else 0,
+            "Высококачественная игрушка. Соответствует стандартам CE и EN71.",
+            random.choice([1,2,6,12]), random.choice([1,3,5,6,8]), tags
+        )
+    print("✅ Demo data seeded")
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 def make_token(sub, role="customer"):
-    return jwt.encode({"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(days=30)}, JWT_SECRET, algorithm="HS256")
+    return jwt.encode(
+        {"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(days=30)},
+        JWT_SECRET, algorithm="HS256"
+    )
 
 def require_admin(creds: HTTPAuthorizationCredentials = Depends(security)):
     if not creds: raise HTTPException(401, "Token required")
@@ -256,17 +333,13 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
     try: return jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
     except: return None
 
-# ── Schemas ───────────────────────────────────────────────────────────────────
+# ── Schemas ────────────────────────────────────────────────────────────────────
 class LoginIn(BaseModel):
     username: str; password: str
 
 class RegisterIn(BaseModel):
     first_name: str; last_name: str; email: str
     phone: str; password: str; address: Optional[str] = ""
-
-class CustomerUpdate(BaseModel):
-    first_name: Optional[str]=None; last_name: Optional[str]=None
-    phone: Optional[str]=None; address: Optional[str]=None
 
 class ProductIn(BaseModel):
     name: str; sku: str; price: float; brand: str
@@ -279,7 +352,7 @@ class ProductPatch(BaseModel):
     stock: Optional[str]=None; stock_qty: Optional[int]=None
     description: Optional[str]=None; is_active: Optional[bool]=None
     image: Optional[str]=None; category: Optional[str]=None
-    subcategory: Optional[str]=None
+    subcategory: Optional[str]=None; brand: Optional[str]=None
 
 class ShareIn(BaseModel):
     items: List[dict]; comment: str = ""; store_name: str = ""
@@ -306,36 +379,54 @@ async def index(request: Request):
 @app.post("/api/auth/login")
 async def login(b: LoginIn):
     h = hashlib.sha256(b.password.encode()).hexdigest()
-    if _users_admin.get(b.username) == h:
+    # Check admin
+    admin_hash = hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
+    if b.username == ADMIN_USER and h == admin_hash:
         return {"token": make_token(b.username, "admin"), "username": b.username, "role": "admin"}
-    for uid, c in _customers.items():
-        if c["email"] == b.username and c["password_hash"] == h:
-            return {"token": make_token(uid, "customer"), "customer": _safe_customer(c), "role": "customer"}
+    # Check customer in DB
+    if _db_pool:
+        row = await db_fetchrow(
+            "SELECT * FROM customers WHERE (email=$1 OR email=$1) AND password_hash=$2",
+            b.username, h
+        )
+        if row:
+            c = dict(row)
+            c.pop("password_hash", None)
+            return {"token": make_token(str(c["id"]), "customer"), "customer": c, "role": "customer"}
     raise HTTPException(401, "Invalid credentials")
 
 @app.post("/api/auth/register", status_code=201)
 async def register(b: RegisterIn):
-    for c in _customers.values():
-        if c["email"] == b.email: raise HTTPException(400, "Email already registered")
+    if not _db_pool:
+        raise HTTPException(503, "Database not available")
+    existing = await db_fetchrow("SELECT id FROM customers WHERE email=$1", b.email)
+    if existing:
+        raise HTTPException(400, "Email already registered")
     uid = str(uuid.uuid4())
-    _customers[uid] = {
-        "id": uid, "first_name": b.first_name, "last_name": b.last_name,
-        "email": b.email, "phone": b.phone, "address": b.address,
-        "password_hash": hashlib.sha256(b.password.encode()).hexdigest(),
-        "created_at": datetime.utcnow().isoformat(), "orders": [],
-    }
-    return {"token": make_token(uid, "customer"), "customer": _safe_customer(_customers[uid]), "role": "customer"}
-
-def _safe_customer(c):
-    return {k: v for k, v in c.items() if k != "password_hash"}
+    h = hashlib.sha256(b.password.encode()).hexdigest()
+    await db_execute(
+        """INSERT INTO customers(id,first_name,last_name,email,phone,address,password_hash)
+           VALUES($1,$2,$3,$4,$5,$6,$7)""",
+        uid, b.first_name, b.last_name, b.email, b.phone, b.address or "", h
+    )
+    row = await db_fetchrow("SELECT * FROM customers WHERE id=$1", uid)
+    c = dict(row); c.pop("password_hash", None)
+    return {"token": make_token(uid, "customer"), "customer": c, "role": "customer"}
 
 @app.get("/api/auth/me")
 async def me(payload=Depends(get_current_user)):
     if not payload: raise HTTPException(401)
-    if payload.get("role") == "admin": return {"role": "admin", "username": payload["sub"]}
+    if payload.get("role") == "admin":
+        return {"role": "admin", "username": payload["sub"]}
     uid = payload["sub"]
-    if uid not in _customers: raise HTTPException(404)
-    return {"role": "customer", "customer": _safe_customer(_customers[uid])}
+    if not _db_pool: raise HTTPException(503)
+    row = await db_fetchrow("SELECT * FROM customers WHERE id=$1", uid)
+    if not row: raise HTTPException(404)
+    c = dict(row); c.pop("password_hash", None)
+    # Get order count
+    cnt = await db_fetchrow("SELECT COUNT(*) FROM orders WHERE customer_id=$1", uid)
+    c["orders_count"] = cnt[0]
+    return {"role": "customer", "customer": c}
 
 # ── Products ──────────────────────────────────────────────────────────────────
 @app.get("/api/products")
@@ -345,366 +436,404 @@ async def products(
     brand: Optional[str] = None, search: Optional[str] = None,
     stock: Optional[str] = None, sort: str = "default",
 ):
-    ck = f"p:{page}:{per_page}:{category}:{subcategory}:{brand}:{search}:{stock}:{sort}"
-    cached = c_get(ck)
-    if cached: return cached
-    items = [p for p in _products.values() if p["is_active"]]
-    if category:    items = [p for p in items if p["category"] == category]
-    if subcategory: items = [p for p in items if p.get("subcategory") == subcategory]
-    if brand:       items = [p for p in items if p["brand"] == brand]
-    if stock:       items = [p for p in items if p["stock"] == stock]
+    if not _db_pool:
+        return {"items": [], "total": 0, "page": page, "per_page": per_page, "pages": 0}
+
+    conditions = ["is_active = TRUE"]
+    args = []
+    idx = 1
+
+    if category:
+        conditions.append(f"category = ${idx}"); args.append(category); idx+=1
+    if subcategory:
+        conditions.append(f"subcategory = ${idx}"); args.append(subcategory); idx+=1
+    if brand:
+        conditions.append(f"brand = ${idx}"); args.append(brand); idx+=1
+    if stock:
+        conditions.append(f"stock = ${idx}"); args.append(stock); idx+=1
     if search:
-        q = search.lower()
-        items = [p for p in items if q in p["name"].lower() or q in p["sku"].lower()
-                 or q in p["brand"].lower() or q in p["category"].lower()
-                 or q in p.get("subcategory","").lower()]
-    if sort == "price-asc":  items.sort(key=lambda x: x["price"])
-    if sort == "price-desc": items.sort(key=lambda x: x["price"], reverse=True)
-    if sort == "name":       items.sort(key=lambda x: x["name"])
-    total = len(items)
-    s = (page-1)*per_page
-    result = {"items": items[s:s+per_page], "total": total, "page": page,
-              "per_page": per_page, "pages": (total+per_page-1)//per_page}
-    c_set(ck, result, 30)
-    return result
+        conditions.append(f"(name ILIKE ${idx} OR sku ILIKE ${idx} OR brand ILIKE ${idx})")
+        args.append(f"%{search}%"); idx+=1
+
+    where = " AND ".join(conditions)
+    order = {"price-asc":"price ASC","price-desc":"price DESC","name":"name ASC"}.get(sort,"id ASC")
+
+    total_row = await db_fetchrow(f"SELECT COUNT(*) FROM products WHERE {where}", *args)
+    total = total_row[0]
+    offset = (page-1)*per_page
+
+    rows = await db_fetch(
+        f"SELECT * FROM products WHERE {where} ORDER BY {order} LIMIT ${ idx} OFFSET ${idx+1}",
+        *args, per_page, offset
+    )
+    items = [dict(r) for r in rows]
+    return {
+        "items": items, "total": total, "page": page,
+        "per_page": per_page, "pages": max(1, (total+per_page-1)//per_page)
+    }
 
 @app.get("/api/products/search")
 async def search_products(q: str, limit: int = 8):
-    if len(q) < 2: return {"items": []}
-    ck = f"srch:{q.lower()}:{limit}"
-    cached = c_get(ck)
-    if cached: return cached
-    ql = q.lower()
-    results = []
-    for p in _products.values():
-        if not p["is_active"]: continue
-        score = (10 if ql in p["name"].lower() else 0) + (8 if ql in p["sku"].lower() else 0) + (4 if ql in p["brand"].lower() else 0)
-        if score: results.append((score, p))
-    results.sort(key=lambda x: x[0], reverse=True)
-    result = {"items": [r[1] for r in results[:limit]]}
-    c_set(ck, result, 120)
-    return result
+    if len(q) < 2 or not _db_pool: return {"items": []}
+    rows = await db_fetch(
+        """SELECT * FROM products WHERE is_active=TRUE AND
+           (name ILIKE $1 OR sku ILIKE $1 OR brand ILIKE $1)
+           ORDER BY (CASE WHEN name ILIKE $1 THEN 0 ELSE 1 END) LIMIT $2""",
+        f"%{q}%", limit
+    )
+    return {"items": [dict(r) for r in rows]}
 
 @app.get("/api/products/{pid}")
 async def get_product(pid: int):
-    p = _products.get(pid)
-    if not p: raise HTTPException(404, "Not found")
-    similar = [x for x in _products.values() if x["category"]==p["category"] and x["id"]!=pid and x["is_active"]][:4]
-    return {**p, "similar": similar}
+    if not _db_pool: raise HTTPException(503)
+    row = await db_fetchrow("SELECT * FROM products WHERE id=$1 AND is_active=TRUE", pid)
+    if not row: raise HTTPException(404)
+    p = dict(row)
+    similar_rows = await db_fetch(
+        "SELECT * FROM products WHERE category=$1 AND id!=$2 AND is_active=TRUE LIMIT 4",
+        p["category"], pid
+    )
+    p["similar"] = [dict(r) for r in similar_rows]
+    return p
 
 @app.post("/api/products", status_code=201)
 async def create_product(b: ProductIn, _=Depends(require_admin)):
-    nid = max(_products)+1 if _products else 1
-    _products[nid] = {"id": nid, "is_active": True, "tags": [], "age_min": b.age_min,
-                       "created_at": datetime.utcnow().isoformat(), **b.dict()}
-    _cache.clear(); return _products[nid]
+    if not _db_pool: raise HTTPException(503)
+    row = await db_fetchrow("""
+        INSERT INTO products(name,sku,price,brand,category,subcategory,image,stock,stock_qty,
+                             description,min_order,age_min,tags)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        RETURNING *""",
+        b.name, b.sku, b.price, b.brand, b.category, b.subcategory or "",
+        b.image, b.stock, b.stock_qty, b.description, b.min_order, b.age_min, []
+    )
+    return dict(row)
 
 @app.patch("/api/products/{pid}")
 async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
-    if pid not in _products: raise HTTPException(404, "Not found")
-    _products[pid].update({k:v for k,v in b.dict().items() if v is not None})
-    _cache.clear(); return _products[pid]
+    if not _db_pool: raise HTTPException(503)
+    fields = {k:v for k,v in b.dict().items() if v is not None}
+    if not fields: raise HTTPException(400, "No fields to update")
+    sets = ", ".join(f"{k}=${i+2}" for i,k in enumerate(fields.keys()))
+    vals = list(fields.values())
+    row = await db_fetchrow(
+        f"UPDATE products SET {sets} WHERE id=$1 RETURNING *",
+        pid, *vals
+    )
+    if not row: raise HTTPException(404)
+    return dict(row)
 
 @app.delete("/api/products/{pid}", status_code=204)
 async def delete_product(pid: int, _=Depends(require_admin)):
-    if pid not in _products: raise HTTPException(404)
-    _products[pid]["is_active"] = False; _cache.clear()
+    if not _db_pool: raise HTTPException(503)
+    await db_execute("UPDATE products SET is_active=FALSE WHERE id=$1", pid)
 
+# ── Image upload (Cloudinary) ─────────────────────────────────────────────────
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
     content = await file.read()
-    if len(content) > 10*1024*1024: raise HTTPException(400, "File too large (max 10MB)")
-    media_type = file.content_type or "image/jpeg"
-    b64 = base64.b64encode(content).decode()
-    return {"url": f"data:{media_type};base64,{b64}", "filename": file.filename}
+    if len(content) > 15*1024*1024:
+        raise HTTPException(400, "File too large (max 15MB)")
 
-# ── Catalog structure API ─────────────────────────────────────────────────────
+    if _cloudinary_ok:
+        import cloudinary.uploader
+        result = cloudinary.uploader.upload(
+            content,
+            folder="happy-toys/products",
+            resource_type="image",
+            transformation=[
+                {"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"},
+            ]
+        )
+        return {"url": result["secure_url"], "public_id": result["public_id"]}
+    else:
+        # Fallback: base64 (works without Cloudinary)
+        media_type = file.content_type or "image/jpeg"
+        b64 = base64.b64encode(content).decode()
+        return {"url": f"data:{media_type};base64,{b64}", "filename": file.filename}
+
+# ── Categories ────────────────────────────────────────────────────────────────
 @app.get("/api/categories")
 async def categories():
-    cached = c_get("__cats__")
-    if cached: return cached
+    if not _db_pool:
+        return [{"name": cat, "count": 0, "subcategories": subs}
+                for cat, subs in DEFAULT_CATALOG.items()]
+    rows = await db_fetch("""
+        SELECT c.category, c.subcategory,
+               COUNT(p.id) as product_count
+        FROM catalog c
+        LEFT JOIN products p ON p.category=c.category
+            AND (c.subcategory='' OR p.subcategory=c.subcategory)
+            AND p.is_active=TRUE
+        WHERE c.subcategory=''
+        GROUP BY c.category, c.subcategory
+        ORDER BY c.category
+    """)
+    # Get subcategories
     result = []
-    for cat in CATEGORIES:
-        subs = list(_catalog.get(cat, {}).keys())
-        count = sum(1 for p in _products.values() if p["category"]==cat and p["is_active"])
-        result.append({"name": cat, "count": count, "subcategories": subs})
-    c_set("__cats__", result, 60)
+    for row in rows:
+        cat = row["category"]
+        sub_rows = await db_fetch(
+            "SELECT subcategory FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory",
+            cat
+        )
+        count_row = await db_fetchrow(
+            "SELECT COUNT(*) FROM products WHERE category=$1 AND is_active=TRUE", cat
+        )
+        result.append({
+            "name": cat,
+            "count": count_row[0],
+            "subcategories": [r["subcategory"] for r in sub_rows]
+        })
     return result
 
 @app.get("/api/categories/{cat}/subcategories")
 async def subcategories(cat: str):
-    if cat not in _catalog: raise HTTPException(404, "Category not found")
+    if not _db_pool:
+        subs = DEFAULT_CATALOG.get(cat, [])
+        return [{"name": s, "count": 0, "image": ""} for s in subs]
+    rows = await db_fetch(
+        "SELECT subcategory, image_url FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory",
+        cat
+    )
     result = []
-    for sub, meta in _catalog[cat].items():
-        count = sum(1 for p in _products.values()
-                    if p["category"]==cat and p.get("subcategory")==sub and p["is_active"])
-        img = meta.get("image", "") if isinstance(meta, dict) else ""
-        result.append({"name": sub, "count": count, "image": img})
+    for row in rows:
+        count_row = await db_fetchrow(
+            "SELECT COUNT(*) FROM products WHERE category=$1 AND subcategory=$2 AND is_active=TRUE",
+            cat, row["subcategory"]
+        )
+        result.append({"name": row["subcategory"], "count": count_row[0], "image": row["image_url"] or ""})
     return result
 
-# ── Admin: manage catalog structure ──────────────────────────────────────────
+# ── Admin catalog management ──────────────────────────────────────────────────
 @app.post("/api/admin/categories")
 async def add_category(b: CatalogCategoryIn, _=Depends(require_admin)):
-    if b.name in _catalog: raise HTTPException(400, "Category already exists")
-    _catalog[b.name] = {}
-    CATEGORIES.append(b.name)
-    _cache.clear()
-    return {"name": b.name, "subcategories": []}
+    if not _db_pool: raise HTTPException(503)
+    try:
+        await db_execute(
+            "INSERT INTO catalog(category, subcategory) VALUES($1, '')",
+            b.name
+        )
+    except Exception:
+        raise HTTPException(400, "Category already exists")
+    return {"name": b.name}
 
 @app.delete("/api/admin/categories/{name}")
 async def del_category(name: str, _=Depends(require_admin)):
-    if name not in _catalog: raise HTTPException(404)
-    del _catalog[name]
-    if name in CATEGORIES: CATEGORIES.remove(name)
-    _cache.clear()
+    if not _db_pool: raise HTTPException(503)
+    await db_execute("DELETE FROM catalog WHERE category=$1", name)
     return {"deleted": name}
 
 @app.post("/api/admin/subcategories")
 async def add_subcategory(b: CatalogSubcategoryIn, _=Depends(require_admin)):
-    if b.category not in _catalog: raise HTTPException(404, "Category not found")
-    if b.name in _catalog[b.category]: raise HTTPException(400, "Subcategory already exists")
-    _catalog[b.category][b.name] = []
-    _cache.clear()
+    if not _db_pool: raise HTTPException(503)
+    try:
+        await db_execute(
+            "INSERT INTO catalog(category, subcategory) VALUES($1, $2)",
+            b.category, b.name
+        )
+    except Exception:
+        raise HTTPException(400, "Subcategory already exists")
     return {"category": b.category, "name": b.name}
 
 @app.delete("/api/admin/subcategories/{cat}/{sub}")
 async def del_subcategory(cat: str, sub: str, _=Depends(require_admin)):
-    if cat not in _catalog or sub not in _catalog[cat]: raise HTTPException(404)
-    del _catalog[cat][sub]
-    _cache.clear()
+    if not _db_pool: raise HTTPException(503)
+    await db_execute(
+        "DELETE FROM catalog WHERE category=$1 AND subcategory=$2", cat, sub
+    )
     return {"deleted": sub}
+
+@app.post("/api/admin/subcategory-image")
+async def set_subcat_image(b: SubcategoryImageIn, _=Depends(require_admin)):
+    if not _db_pool: raise HTTPException(503)
+    await db_execute(
+        "UPDATE catalog SET image_url=$3 WHERE category=$1 AND subcategory=$2",
+        b.category, b.subcategory, b.image_url
+    )
+    return {"ok": True}
 
 # ── Brands ────────────────────────────────────────────────────────────────────
 @app.get("/api/brands")
 async def brands():
-    all_brands = sorted(set(_custom_brands) | {p["brand"] for p in _products.values() if p["is_active"]})
-    return [{"name": b, "count": sum(1 for p in _products.values() if p["brand"]==b and p["is_active"])} for b in all_brands]
+    if not _db_pool:
+        return [{"name": b, "count": 0} for b in DEFAULT_BRANDS]
+    rows = await db_fetch("""
+        SELECT b.name, COUNT(p.id) as count
+        FROM brands b
+        LEFT JOIN products p ON p.brand=b.name AND p.is_active=TRUE
+        GROUP BY b.name ORDER BY count DESC, b.name
+    """)
+    return [dict(r) for r in rows]
 
 @app.post("/api/admin/brands")
 async def add_brand(b: BrandIn, _=Depends(require_admin)):
-    name = b.name.strip()
-    if not name: raise HTTPException(400, "Name required")
-    if name not in _custom_brands:
-        _custom_brands.insert(0, name)
-        if len(_custom_brands) > 100: _custom_brands.pop()
-    _cache.clear()
-    return {"name": name, "brands": _custom_brands[:20]}
+    if not _db_pool: raise HTTPException(503)
+    await db_execute("INSERT INTO brands(name) VALUES($1) ON CONFLICT DO NOTHING", b.name.strip())
+    return {"name": b.name}
 
 @app.delete("/api/admin/brands/{name}")
 async def del_brand(name: str, _=Depends(require_admin)):
-    if name in _custom_brands: _custom_brands.remove(name)
-    _cache.clear()
+    if not _db_pool: raise HTTPException(503)
+    await db_execute("DELETE FROM brands WHERE name=$1", name)
     return {"deleted": name}
 
-# ── Cart / Share ──────────────────────────────────────────────────────────────
+# ── Cart / Orders ─────────────────────────────────────────────────────────────
 @app.post("/api/cart/share")
 async def share_cart(b: ShareIn):
     code = "".join(random.choices(string.ascii_uppercase+string.digits, k=8))
     total = sum(i.get("price",0)*i.get("quantity",0) for i in b.items)
-    cart_data = {
-        "code": code, "items": b.items, "total": round(total,2),
-        "comment": b.comment, "store_name": b.store_name,
-        "contact": b.contact, "created_at": datetime.utcnow().isoformat(),
-        "customer_id": b.customer_id,
-    }
-    _carts[code] = cart_data
-    if b.customer_id and b.customer_id in _customers:
-        _customers[b.customer_id]["orders"].append({
-            "code": code, "total": round(total,2),
-            "items_count": len(b.items), "date": datetime.utcnow().isoformat(),
-        })
-    return cart_data
+    if _db_pool:
+        await db_execute("""
+            INSERT INTO orders(code,customer_id,items,total,comment,store_name,contact)
+            VALUES($1,$2,$3,$4,$5,$6,$7)""",
+            code, b.customer_id or None,
+            json.dumps(b.items, ensure_ascii=False),
+            round(total,2), b.comment, b.store_name, b.contact
+        )
+    return {"code": code, "total": round(total,2), "items": b.items}
 
 @app.get("/api/cart/{code}")
 async def get_cart(code: str, request: Request):
-    if code not in _carts: raise HTTPException(404, "Cart not found")
-    cart = _carts[code]
-    accept = request.headers.get("accept", "")
-    if "text/html" not in accept: return cart
-    items   = cart.get("items", [])
-    total   = cart.get("total", 0)
-    comment = cart.get("comment", "") or ""
-    created = (cart.get("created_at") or "")[:10]
-    code_val = cart.get("code", code)
-    cid = cart.get("customer_id")
-    cname = cphone = caddr = ""
-    if cid and cid in _customers:
-        cu = _customers[cid]
-        cname = (cu.get("first_name","") + " " + cu.get("last_name","")).strip()
-        cphone = cu.get("phone","") or ""
-        caddr  = cu.get("address","") or ""
-    if not cname: cname = cart.get("store_name","") or ""
+    if not _db_pool: raise HTTPException(503)
+    row = await db_fetchrow("SELECT * FROM orders WHERE code=$1", code)
+    if not row: raise HTTPException(404, "Cart not found")
+    cart = dict(row)
+    cart["items"] = json.loads(cart["items"]) if isinstance(cart["items"], str) else cart["items"]
+    accept = request.headers.get("accept","")
+    if "text/html" not in accept:
+        return cart
+    # Return HTML page (same as before)
+    items = cart.get("items",[])
+    total = float(cart.get("total",0))
+    date  = (cart.get("created_at") or datetime.utcnow()).strftime("%d.%m.%Y") if cart.get("created_at") else ""
+    site_url = str(request.base_url).rstrip("/")
     rows_html = ""
     for it in items:
         img = it.get("image","") or ""
-        name = it.get("name",""); sku = it.get("sku","")
-        price = float(it.get("price",0)); qty = int(it.get("quantity",1)); sub = price*qty
-        img_tag = f'<img src="{img}" onerror="this.style.display=\'none\'">' if img else '<div class="no-img">&#129528;</div>'
-        rows_html += f"""
-        <div class="item-card">
+        img_tag = f'<img src="{img}" onerror="this.style.display=\'none\'">' if img else "<div>🧸</div>"
+        sub = float(it.get("price",0))*int(it.get("quantity",1))
+        rows_html += f"""<div class="item-card">
           <div class="item-img">{img_tag}</div>
           <div class="item-info">
-            <div class="item-name">{name}</div>
-            <div class="item-sku">SKU: {sku}</div>
+            <div class="item-name">{it.get('name','')}</div>
+            <div class="item-sku">Арт: {it.get('sku','')}</div>
             <div class="item-price-row">
-              <span class="item-qty">{qty} шт &times; &#8381;{price:.2f}</span>
-              <span class="item-sub">&#8381;{sub:.2f}</span>
+              <span>{it.get('quantity',1)} шт × ₽{float(it.get('price',0)):.2f}</span>
+              <span class="item-sub">₽{sub:.2f}</span>
             </div>
-          </div>
-        </div>"""
-    client_html = ""
-    if cname:
-        phone_line = f'<div class="client-detail">&#128222; {cphone}</div>' if cphone else ""
-        addr_line  = f'<div class="client-detail">&#128205; {caddr}</div>' if caddr else ""
-        client_html = f'<div class="client-block"><div class="client-name">&#128100; {cname}</div>{phone_line}{addr_line}</div>'
-    comment_html = f'<div class="comment-block">&#128172; {comment}</div>' if comment else ""
+          </div></div>"""
     html = f"""<!DOCTYPE html><html lang="ru"><head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Заказ {code_val} — Happy Toys</title>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
-  <style>
-    *{{margin:0;padding:0;box-sizing:border-box}}
-    body{{font-family:'Nunito',Arial,sans-serif;background:#f5f7ff;color:#1a1a2e;min-height:100vh}}
-    .topbar{{background:#fff;padding:14px 20px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
-    .logo-text{{font-size:20px;font-weight:900;color:#FF6B35}}.logo-sub{{font-size:11px;color:#aaa}}
-    .back-btn{{margin-left:auto;background:#fff;border:2px solid #FF6B35;color:#FF6B35;border-radius:10px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer;text-decoration:none}}
-    .container{{max-width:640px;margin:0 auto;padding:20px 16px 48px}}
-    .order-header{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;box-shadow:0 2px 12px rgba(0,0,0,.06)}}
-    .order-code{{font-size:12px;color:#aaa;margin-bottom:4px;text-transform:uppercase}}.order-title{{font-size:22px;font-weight:900}}.order-date{{font-size:13px;color:#aaa}}
-    .client-block{{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;border-radius:14px;padding:16px 20px;margin-bottom:16px}}
-    .client-name{{font-size:16px;font-weight:900;margin-bottom:6px}}.client-detail{{font-size:13px;opacity:.9;margin-top:3px}}
-    .section-title{{font-size:12px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:.6px;margin-bottom:12px;padding:0 4px}}
-    .items-section{{margin-bottom:16px}}
-    .item-card{{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;gap:14px;align-items:center;box-shadow:0 2px 8px rgba(0,0,0,.05)}}
-    .item-img{{width:80px;height:80px;flex-shrink:0;border-radius:10px;overflow:hidden;background:#f5f5f5;display:flex;align-items:center;justify-content:center}}
-    .item-img img{{width:100%;height:100%;object-fit:contain}}.no-img{{font-size:28px}}
-    .item-info{{flex:1;min-width:0}}.item-name{{font-size:14px;font-weight:700;margin-bottom:3px}}
-    .item-sku{{font-size:11px;color:#bbb;margin-bottom:8px}}
-    .item-price-row{{display:flex;justify-content:space-between}}.item-qty{{font-size:13px;color:#888}}.item-sub{{font-size:15px;font-weight:900;color:#FF6B35}}
-    .total-card{{background:#fff;border-radius:18px;padding:20px;margin-bottom:16px;box-shadow:0 2px 12px rgba(0,0,0,.06)}}
-    .total-row{{display:flex;justify-content:space-between;font-size:14px;padding:8px 0;border-bottom:1px solid #f5f5f5;color:#888}}
-    .total-row.big{{border-bottom:none;font-size:20px;font-weight:900;color:#FF6B35;padding-top:14px}}
-    .comment-block{{background:#fffbf0;border:1px solid #ffe0b2;border-radius:14px;padding:14px 16px;font-size:14px;color:#555;margin-bottom:16px}}
-    .cta{{background:#FF6B35;color:#fff;border-radius:14px;padding:16px;text-align:center;text-decoration:none;display:block;font-weight:900;font-size:16px}}
-  </style></head><body>
-  <div class="topbar">
-    <div><div class="logo-text">Happy Toys</div><div class="logo-sub">Оптовый каталог</div></div>
-    <a class="back-btn" href="/">На сайт</a>
-  </div>
-  <div class="container">
-    <div class="order-header">
-      <div class="order-code">Заказ #{code_val}</div>
-      <div class="order-title">Корзина покупателя</div>
-      <div class="order-date">Создан {created}</div>
-    </div>
-    {client_html}
-    <div class="section-title">Товары ({len(items)} позиций)</div>
-    <div class="items-section">{rows_html}</div>
-    <div class="total-card">
-      <div class="total-row"><span>Позиций</span><span>{len(items)}</span></div>
-      <div class="total-row big"><span>Итого</span><span>&#8381;{total:.2f}</span></div>
-    </div>
-    {comment_html}
-    <a class="cta" href="/">Открыть каталог Happy Toys</a>
-  </div></body></html>"""
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Заказ {code} — Happy Toys</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap" rel="stylesheet">
+<style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Nunito',sans-serif;background:#f5f5f5;color:#1a1a2e;padding:20px;max-width:640px;margin:0 auto}}
+.back-bar{{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}}.btn{{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:12px;font-size:14px;font-weight:800;cursor:pointer;text-decoration:none;border:none}}
+.back-btn{{background:#FF6B35;color:#fff}}.print-btn{{background:#fff;color:#FF6B35;border:2px solid #FF6B35}}
+.card{{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,.06)}}
+.item-card{{display:flex;gap:12px;margin-bottom:10px;background:#fff;border-radius:14px;padding:12px;box-shadow:0 1px 4px rgba(0,0,0,.05)}}
+.item-img{{width:80px;height:80px;border-radius:10px;overflow:hidden;background:#f5f5f5;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:30px}}
+.item-img img{{width:100%;height:100%;object-fit:contain}}.item-info{{flex:1}}.item-name{{font-weight:700;font-size:14px;margin-bottom:3px}}
+.item-sku{{font-size:11px;color:#bbb;margin-bottom:6px}}.item-price-row{{display:flex;justify-content:space-between}}.item-sub{{font-weight:900;color:#FF6B35}}
+.total-val{{font-size:24px;font-weight:900;color:#FF6B35}}.title{{font-size:20px;font-weight:900;margin-bottom:4px}}
+@media print{{.back-bar{{display:none}}}}</style></head><body>
+<div class="back-bar">
+  <a class="btn back-btn" href="{site_url}">← Вернуться в каталог</a>
+  <button class="btn print-btn" onclick="window.print()">🖨 Печать / PDF</button>
+</div>
+<div class="card"><div class="title">Заказ #{code}</div><div style="color:#aaa;font-size:13px">{date}</div></div>
+{rows_html}
+<div class="card" style="display:flex;justify-content:space-between;align-items:center">
+  <span style="font-weight:700">Итого</span><span class="total-val">₽{total:.2f}</span>
+</div>
+</body></html>"""
     from fastapi.responses import HTMLResponse as _HR
     return _HR(content=html)
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
 @app.get("/api/admin/stats")
 async def stats(_=Depends(require_admin)):
-    active = [p for p in _products.values() if p["is_active"]]
-    today = datetime.utcnow().date().isoformat()
-    today_visits = sum(1 for v in _visitors if v["time"][:10] == today)
+    if not _db_pool:
+        return {"total_products":0,"low_stock":0,"out_of_stock":0,"total_carts":0,"total_customers":0,"total_categories":0,"total_visitors":0,"today_visits":0}
+    p_stats = await db_fetchrow("""
+        SELECT
+          COUNT(*) FILTER(WHERE is_active) as total,
+          COUNT(*) FILTER(WHERE stock='low' AND is_active) as low,
+          COUNT(*) FILTER(WHERE stock='out' AND is_active) as out_of_stock
+        FROM products""")
+    carts     = await db_fetchrow("SELECT COUNT(*) FROM orders")
+    customers = await db_fetchrow("SELECT COUNT(*) FROM customers")
+    cats      = await db_fetchrow("SELECT COUNT(DISTINCT category) FROM catalog WHERE subcategory=''")
+    vis_total = await db_fetchrow("SELECT COUNT(*) FROM visitors")
+    vis_today = await db_fetchrow("SELECT COUNT(*) FROM visitors WHERE created_at::date=CURRENT_DATE")
     return {
-        "total_products": len(active),
-        "low_stock": sum(1 for p in active if p["stock"]=="low"),
-        "out_of_stock": sum(1 for p in active if p["stock"]=="out"),
-        "total_carts": len(_carts),
-        "total_customers": len(_customers),
-        "total_categories": len(_catalog),
-        "total_visitors": len(_visitors),
-        "today_visits": today_visits,
+        "total_products": p_stats[0], "low_stock": p_stats[1],
+        "out_of_stock": p_stats[2], "total_carts": carts[0],
+        "total_customers": customers[0], "total_categories": cats[0],
+        "total_visitors": vis_total[0], "today_visits": vis_today[0],
     }
 
 @app.get("/api/admin/carts")
 async def admin_carts(_=Depends(require_admin)):
-    return {"carts": sorted(_carts.values(), key=lambda x: x["created_at"], reverse=True)[:50]}
+    if not _db_pool: return {"carts":[]}
+    rows = await db_fetch("SELECT * FROM orders ORDER BY created_at DESC LIMIT 50")
+    carts = []
+    for r in rows:
+        d = dict(r)
+        d["items"] = json.loads(d["items"]) if isinstance(d["items"],str) else d["items"]
+        carts.append(d)
+    return {"carts": carts}
 
 @app.get("/api/admin/customers")
 async def admin_customers(_=Depends(require_admin)):
-    return {"customers": [_safe_customer(c) for c in sorted(_customers.values(), key=lambda x: x["created_at"], reverse=True)]}
-
-@app.get("/api/admin/customers/{uid}")
-async def admin_customer(uid: str, _=Depends(require_admin)):
-    if uid not in _customers: raise HTTPException(404)
-    c = _safe_customer(_customers[uid])
-    c["cart_details"] = [_carts[o["code"]] for o in c.get("orders",[]) if o["code"] in _carts]
-    return c
+    if not _db_pool: return {"customers":[]}
+    rows = await db_fetch("SELECT id,first_name,last_name,email,phone,address,created_at FROM customers ORDER BY created_at DESC")
+    return {"customers": [dict(r) for r in rows]}
 
 @app.get("/api/admin/visitors")
 async def admin_visitors(_=Depends(require_admin)):
-    return {"visitors": _visitors[:200]}
-
-@app.post("/api/admin/subcategory-image")
-async def set_subcat_image(b: SubcategoryImageIn, _=Depends(require_admin)):
-    """Store a custom image URL for a subcategory (for future use)."""
-    if b.category not in _catalog: raise HTTPException(404, "Category not found")
-    if b.subcategory not in _catalog[b.category]: raise HTTPException(404, "Subcategory not found")
-    # Store image URL in the subcategory list (use first element as metadata)
-    _catalog[b.category][b.subcategory] = {"image": b.image_url}
-    _cache.clear()
-    return {"ok": True, "category": b.category, "subcategory": b.subcategory, "image": b.image_url}
+    if not _db_pool: return {"visitors":[]}
+    rows = await db_fetch("SELECT ip,device,browser,created_at as time FROM visitors ORDER BY created_at DESC LIMIT 200")
+    return {"visitors": [dict(r) for r in rows]}
 
 @app.get("/api/admin/catalog")
 async def admin_catalog(_=Depends(require_admin)):
+    if not _db_pool: return []
+    cats = await db_fetch("SELECT DISTINCT category FROM catalog WHERE subcategory='' ORDER BY category")
     result = []
-    for cat, subs in _catalog.items():
+    for cat_row in cats:
+        cat = cat_row["category"]
+        subs = await db_fetch(
+            "SELECT subcategory, image_url FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory", cat
+        )
+        cnt = await db_fetchrow("SELECT COUNT(*) FROM products WHERE category=$1 AND is_active=TRUE", cat)
         sub_list = []
-        for sub in subs.keys():
-            count = sum(1 for p in _products.values() if p["category"]==cat and p.get("subcategory")==sub and p["is_active"])
-            sub_list.append({"name": sub, "count": count})
-        cat_count = sum(1 for p in _products.values() if p["category"]==cat and p["is_active"])
-        result.append({"name": cat, "count": cat_count, "subcategories": sub_list})
+        for s in subs:
+            sc = await db_fetchrow("SELECT COUNT(*) FROM products WHERE category=$1 AND subcategory=$2 AND is_active=TRUE", cat, s["subcategory"])
+            sub_list.append({"name": s["subcategory"], "count": sc[0]})
+        result.append({"name": cat, "count": cnt[0], "subcategories": sub_list})
     return result
 
-@app.get("/api/health")
-async def health():
-    return {"status": "ok", "products": len(_products), "ts": datetime.utcnow().isoformat()}
+# ── PWA files ─────────────────────────────────────────────────────────────────
+MANIFEST_DATA = {
+    "name":"Happy Toys — Оптовый каталог","short_name":"Happy Toys",
+    "start_url":"/","scope":"/","display":"standalone",
+    "background_color":"#ffffff","theme_color":"#FF6B35",
+    "lang":"ru",
+    "icons":[
+        {"src":"/static/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
+        {"src":"/static/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"},
+    ]
+}
 
-# ── PWA files — serve from root path as fallback ─────────────────────────────
 @app.get("/manifest.json", include_in_schema=False)
-async def manifest_root():
-    import json as _json, os as _os
-    from fastapi.responses import Response, FileResponse
+@app.get("/static/manifest.json", include_in_schema=False)
+async def manifest_json():
     path = "static/manifest.json"
-    if _os.path.exists(path):
+    if os.path.exists(path):
         r = FileResponse(path, media_type="application/manifest+json")
-        r.headers["Cache-Control"] = "no-cache"
-        r.headers["Service-Worker-Allowed"] = "/"
-        return r
-    # Inline fallback manifest when file not found
-    data = {
-        "name": "Happy Toys — Оптовый каталог",
-        "short_name": "Happy Toys",
-        "description": "Оптовый каталог игрушек",
-        "start_url": "/", "scope": "/",
-        "display": "standalone",
-        "background_color": "#ffffff",
-        "theme_color": "#FF6B35",
-        "orientation": "portrait-primary",
-        "lang": "ru",
-        "icons": [
-            {"src": "/static/icon-192.png", "sizes": "192x192",
-             "type": "image/png", "purpose": "any maskable"},
-            {"src": "/static/icon-512.png", "sizes": "512x512",
-             "type": "image/png", "purpose": "any maskable"}
-        ]
-    }
-    r = Response(
-        content=_json.dumps(data, ensure_ascii=False),
-        media_type="application/manifest+json"
-    )
+    else:
+        r = Response(json.dumps(MANIFEST_DATA), media_type="application/manifest+json")
     r.headers["Cache-Control"] = "no-cache"
     return r
 
@@ -712,78 +841,36 @@ SW_INLINE = (
     "self.addEventListener('install',e=>self.skipWaiting());"
     "self.addEventListener('activate',e=>self.clients.claim());"
     "self.addEventListener('fetch',e=>{"
+    "if(e.request.method!=='GET')return;"
     "const u=e.request.url;"
-    "if(u.includes('/api/')||u.includes('app.js')||u.includes('style.css')){"
-    "e.respondWith(fetch(e.request));return;}"
-    "e.respondWith(caches.open('ht-v3').then(c=>"
-    "c.match(e.request).then(r=>r||fetch(e.request).then(nr=>{"
-    "if(nr.ok)c.put(e.request,nr.clone());return nr;}))"
-    ").catch(()=>caches.match('/')));});"
+    "if(u.includes('/api/')||u.includes('app.js')||u.includes('style.css')){e.respondWith(fetch(e.request));return;}"
+    "e.respondWith(caches.open('ht-v4').then(c=>c.match(e.request).then(r=>r||fetch(e.request)"
+    ".then(nr=>{if(nr.ok)c.put(e.request,nr.clone());return nr;}))).catch(()=>caches.match('/')));"
+    "});"
 )
 
-def _sw_resp():
-    import os
-    from fastapi.responses import FileResponse, Response as _R
-    path = "static/sw.js"
-    content = open(path).read() if os.path.exists(path) else SW_INLINE
-    r = _R(content=content, media_type="application/javascript")
+def _sw_response():
+    sw_path = "static/sw.js"
+    content = open(sw_path).read() if os.path.exists(sw_path) else SW_INLINE
+    r = Response(content=content, media_type="application/javascript")
     r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     r.headers["Service-Worker-Allowed"] = "/"
     return r
 
 @app.get("/sw.js", include_in_schema=False)
-async def sw_root(): return _sw_resp()
+async def sw_root(): return _sw_response()
 
 @app.get("/static/sw.js", include_in_schema=False)
-async def sw_static(): return _sw_resp()
+async def sw_static(): return _sw_response()
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "products": len(_products), "ts": datetime.utcnow().isoformat()}
-
-# ── PWA files — serve from root path as fallback ─────────────────────────────
-@app.get("/manifest.json", include_in_schema=False)
-async def manifest_root():
-    import json as _json, os as _os
-    from fastapi.responses import Response, FileResponse
-    path = "static/manifest.json"
-    if _os.path.exists(path):
-        r = FileResponse(path, media_type="application/manifest+json")
-        r.headers["Cache-Control"] = "no-cache"
-        r.headers["Service-Worker-Allowed"] = "/"
-        return r
-    # Inline fallback manifest when file not found
-    data = {
-        "name": "Happy Toys — Оптовый каталог",
-        "short_name": "Happy Toys",
-        "description": "Оптовый каталог игрушек",
-        "start_url": "/", "scope": "/",
-        "display": "standalone",
-        "background_color": "#ffffff",
-        "theme_color": "#FF6B35",
-        "orientation": "portrait-primary",
-        "lang": "ru",
-        "icons": [
-            {"src": "/static/icon-192.png", "sizes": "192x192",
-             "type": "image/png", "purpose": "any maskable"},
-            {"src": "/static/icon-512.png", "sizes": "512x512",
-             "type": "image/png", "purpose": "any maskable"}
-        ]
+    return {
+        "status": "ok",
+        "db": _db_pool is not None,
+        "cloudinary": _cloudinary_ok,
+        "ts": datetime.utcnow().isoformat()
     }
-    r = Response(
-        content=_json.dumps(data, ensure_ascii=False),
-        media_type="application/manifest+json"
-    )
-    r.headers["Cache-Control"] = "no-cache"
-    return r
-
-@app.get("/sw.js", include_in_schema=False)
-async def sw_root():
-    from fastapi.responses import FileResponse
-    r = FileResponse("static/sw.js", media_type="application/javascript")
-    r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    r.headers["Service-Worker-Allowed"] = "/"
-    return r
 
 if __name__ == "__main__":
     import uvicorn
