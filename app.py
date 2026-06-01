@@ -176,10 +176,12 @@ async def _create_tables():
         name        TEXT NOT NULL,
         sku         TEXT UNIQUE NOT NULL,
         price       NUMERIC(10,2) NOT NULL,
+        price_old   NUMERIC(10,2) DEFAULT NULL,
         brand       TEXT DEFAULT '',
         category    TEXT DEFAULT '',
         subcategory TEXT DEFAULT '',
         image       TEXT DEFAULT '',
+        images      TEXT[] DEFAULT '{}',
         stock       TEXT DEFAULT 'ok',
         stock_qty   INTEGER DEFAULT 0,
         description TEXT DEFAULT '',
@@ -189,6 +191,16 @@ async def _create_tables():
         is_active   BOOLEAN DEFAULT TRUE,
         created_at  TIMESTAMPTZ DEFAULT NOW()
     )""")
+    # Migrate existing DB — add new columns if missing
+    for col_sql in [
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS price_old NUMERIC(10,2) DEFAULT NULL",
+        "ALTER TABLE products ADD COLUMN IF NOT EXISTS images TEXT[] DEFAULT '{}'",
+    ]:
+        try:
+            await db_execute(col_sql)
+        except Exception:
+            pass
+
 
     await db_execute("""
     CREATE TABLE IF NOT EXISTS customers (
@@ -358,17 +370,22 @@ class RegisterIn(BaseModel):
     phone: str; password: str; address: Optional[str] = ""
 
 class ProductIn(BaseModel):
-    name: str; sku: str; price: float; brand: str
+    name: str; sku: str; price: float
+    price_old: Optional[float] = None
+    brand: Optional[str] = ""
     category: str; subcategory: Optional[str] = ""
-    image: str = ""; stock: str = "ok"; stock_qty: int = 0
+    image: str = ""; images: Optional[List[str]] = []
+    stock: str = "ok"; stock_qty: int = 0
     description: str = ""; min_order: int = 1; age_min: int = 3
 
 class ProductPatch(BaseModel):
     name: Optional[str]=None; price: Optional[float]=None
+    price_old: Optional[float]=None
     stock: Optional[str]=None; stock_qty: Optional[int]=None
     description: Optional[str]=None; is_active: Optional[bool]=None
-    image: Optional[str]=None; category: Optional[str]=None
-    subcategory: Optional[str]=None; brand: Optional[str]=None
+    image: Optional[str]=None; images: Optional[List[str]]=None
+    category: Optional[str]=None; subcategory: Optional[str]=None
+    brand: Optional[str]=None
 
 class ShareIn(BaseModel):
     items: List[dict]; comment: str = ""; store_name: str = ""
@@ -516,12 +533,14 @@ async def get_product(pid: int):
 async def create_product(b: ProductIn, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
     row = await db_fetchrow("""
-        INSERT INTO products(name,sku,price,brand,category,subcategory,image,stock,stock_qty,
-                             description,min_order,age_min,tags)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        INSERT INTO products(name,sku,price,price_old,brand,category,subcategory,
+                             image,images,stock,stock_qty,description,min_order,age_min,tags)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
         RETURNING *""",
-        b.name, b.sku, b.price, b.brand, b.category, b.subcategory or "",
-        b.image, b.stock, b.stock_qty, b.description, b.min_order, b.age_min, []
+        b.name, b.sku, b.price, b.price_old,
+        b.brand or "", b.category, b.subcategory or "",
+        b.image, b.images or [], b.stock, b.stock_qty,
+        b.description, b.min_order, b.age_min, []
     )
     return dict(row)
 
@@ -637,6 +656,8 @@ async def add_category(b: CatalogCategoryIn, _=Depends(require_admin)):
 @app.delete("/api/admin/categories/{name}")
 async def del_category(name: str, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
+    from urllib.parse import unquote
+    name = unquote(name)
     await db_execute("DELETE FROM catalog WHERE category=$1", name)
     return {"deleted": name}
 
@@ -655,9 +676,9 @@ async def add_subcategory(b: CatalogSubcategoryIn, _=Depends(require_admin)):
 @app.delete("/api/admin/subcategories/{cat}/{sub}")
 async def del_subcategory(cat: str, sub: str, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
-    await db_execute(
-        "DELETE FROM catalog WHERE category=$1 AND subcategory=$2", cat, sub
-    )
+    from urllib.parse import unquote
+    cat = unquote(cat); sub = unquote(sub)
+    await db_execute("DELETE FROM catalog WHERE category=$1 AND subcategory=$2", cat, sub)
     return {"deleted": sub}
 
 @app.post("/api/admin/subcategory-image")
@@ -879,6 +900,29 @@ async def sw_root(): return _sw_response()
 @app.get("/static/sw.js", include_in_schema=False)
 async def sw_static(): return _sw_response()
 
+@app.get("/api/admin/products")
+async def admin_products_list(
+    page: int = 1, per_page: int = 20,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    _=Depends(require_admin)
+):
+    if not _db_pool: return {"items": [], "total": 0}
+    conds = ["TRUE"]; args = []; idx = 1
+    if search:
+        conds.append(f"(name ILIKE ${idx} OR sku ILIKE ${idx})")
+        args.append(f"%{search}%"); idx += 1
+    if category:
+        conds.append(f"category = ${idx}"); args.append(category); idx += 1
+    where = " AND ".join(conds)
+    total = (await db_fetchrow(f"SELECT COUNT(*) FROM products WHERE {where}", *args))[0]
+    rows = await db_fetch(
+        f"SELECT * FROM products WHERE {where} ORDER BY id DESC LIMIT ${idx} OFFSET ${idx+1}",
+        *args, per_page, (page-1)*per_page
+    )
+    return {"items": [dict(r) for r in rows], "total": total,
+            "page": page, "pages": max(1,(total+per_page-1)//per_page)}
+
 @app.get("/api/health")
 async def health():
     db_ok = False
@@ -900,15 +944,37 @@ async def health():
 
 @app.get("/api/debug/db")
 async def debug_db():
-    """Check DB connection details — remove in production."""
+    """Live DB connection test — shows exact error."""
     if not DATABASE_URL:
         return {"error": "DATABASE_URL env var not set"}
-    masked = DATABASE_URL[:30] + "..." if len(DATABASE_URL) > 30 else DATABASE_URL
-    return {
-        "url_set": True,
-        "url_preview": masked,
-        "pool_active": _db_pool is not None,
-    }
+
+    # Clean URL same way as startup
+    db_url = DATABASE_URL
+    for param in ['channel_binding=require', 'channel_binding=disable']:
+        db_url = db_url.replace('&' + param, '').replace('?' + param + '&', '?').replace('?' + param, '')
+
+    masked = db_url[:45] + "..." if len(db_url) > 45 else db_url
+
+    # Try connecting right now
+    result = {"url_preview": masked, "pool_active": _db_pool is not None}
+    try:
+        import asyncpg, ssl as _ssl
+        ssl_ctx = _ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = _ssl.CERT_NONE
+
+        conn = await asyncpg.connect(db_url, ssl=ssl_ctx, timeout=15,
+                                     statement_cache_size=0)
+        ver = await conn.fetchval("SELECT version()")
+        await conn.close()
+        result["live_test"] = "✅ SUCCESS"
+        result["pg_version"] = ver[:60]
+    except Exception as e:
+        result["live_test"] = "❌ FAILED"
+        result["error_type"] = type(e).__name__
+        result["error_msg"] = str(e)
+
+    return result
 
 if __name__ == "__main__":
     import uvicorn
