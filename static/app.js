@@ -82,6 +82,13 @@ const API = {
   categories()    { return this.get('/api/categories'); },
   subcategories(cat) { return this.get(`/api/categories/${encodeURIComponent(cat)}/subcategories`); },
   adminCatalog()  { return this.get('/api/admin/catalog'); },
+  adminProducts(p={}) {
+    const q = new URLSearchParams({page: p.page||1, per_page: p.per_page||20});
+    if (p.search)   q.set('search', p.search);
+    if (p.category) q.set('category', p.category);
+    return this.get('/api/admin/products?' + q);
+  },
+  updateProduct(id, data) { return this.req('PATCH', `/api/products/${id}`, data); },
   addCategory(name) { return this.post('/api/admin/categories', {name}, State.user?.token); },
   delCategory(name) { return this.del(`/api/admin/categories/${encodeURIComponent(name)}`, State.user?.token); },
   addSubcategory(category, name) { return this.post('/api/admin/subcategories', {category, name}, State.user?.token); },
@@ -133,6 +140,59 @@ function toast(msg, type = 'ok') {
 }
 
 // ── Cart ──────────────────────────────────────────────────────────────────────
+function addToCartAnimated(btn, id) {
+  if (!btn) return;
+  btn.classList.add('add-anim');
+  // Fly animation
+  const rect = btn.getBoundingClientRect();
+  const cartBtn = $('cartBadge');
+  if (cartBtn) {
+    const cr = cartBtn.getBoundingClientRect();
+    const dot = document.createElement('div');
+    dot.className = 'cart-fly-dot';
+    dot.style.cssText = `left:${rect.left + rect.width/2}px;top:${rect.top + rect.height/2}px`;
+    document.body.appendChild(dot);
+    requestAnimationFrame(() => {
+      dot.style.transition = 'all 0.55s cubic-bezier(.4,0,.2,1)';
+      dot.style.left = (cr.left + cr.width/2) + 'px';
+      dot.style.top  = (cr.top  + cr.height/2) + 'px';
+      dot.style.transform = 'scale(0.2)';
+      dot.style.opacity = '0';
+    });
+    setTimeout(() => dot.remove(), 600);
+  }
+  setTimeout(() => btn.classList.remove('add-anim'), 400);
+  addToCart(id, 1);
+  // Refresh card to show qty controls (no toast needed)
+  setTimeout(() => refreshCard(id), 50);
+}
+
+function changeCardQty(id, delta) {
+  const cur = State.cart[id]?.qty || 0;
+  const newQty = cur + delta;
+  if (newQty <= 0) {
+    delete State.cart[id];
+  } else {
+    if (State.cart[id]) State.cart[id].qty = newQty;
+  }
+  saveCart();
+  updateCartBadge();
+  renderCart();
+  refreshCard(id);
+}
+
+function refreshCard(id) {
+  const p = State.products.find(x => x.id === id);
+  if (!p) return;
+  const el = document.getElementById('card-' + id);
+  if (!el) return;
+  const newHtml = renderProductCard(p);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = newHtml;
+  const newCard = tmp.firstElementChild;
+  if (newCard) el.replaceWith(newCard);
+}
+
 function addToCart(id, qty = 1) {
   const p = State.products.find(x => x.id === id) || State._lastProduct;
   if (!p || p.stock === 'out') return;
@@ -156,6 +216,10 @@ function adjustQty(id, delta) {
   if (!State.cart[id]) return;
   State.cart[id].qty = Math.max(1, State.cart[id].qty + delta);
   renderCart();
+}
+
+function saveCart() {
+  try { localStorage.setItem('ht_cart', JSON.stringify(State.cart)); } catch(e){}
 }
 
 function updateCartBadge() {
@@ -227,30 +291,53 @@ function renderCart() {
 
 // ── Product Card ──────────────────────────────────────────────────────────────
 function renderProductCard(p) {
-  const tagMap = { 'Новинка': 'new', 'Хит': 'hit', 'Акция': 'sale', 'Эксклюзив': 'excl' };
-  const tagClass = { 'Новинка': 'tag-new', 'Хит': 'tag-hit', 'Акция': 'tag-sale', 'Эксклюзив': 'tag-excl' };
+  const tagClass = {'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'};
+  const tags = (p.tags||[]).map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
+  const disabled  = p.stock === 'out' ? 'disabled' : '';
+  const cartItem  = State.cart[p.id];
+  const cartQty   = cartItem ? cartItem.qty : 0;
+  const mainImg   = (p.images&&p.images[0]) || p.image || '';
 
-  const tags = (p.tags || []).map(t => `<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
-  const disabled = p.stock === 'out' ? 'disabled' : '';
-  const inCart = !!State.cart[p.id];
+  // Discount badge
+  let discBadge = '';
+  if (p.price_old && p.price_old > p.price) {
+    const pct = Math.round((1 - p.price / p.price_old) * 100);
+    discBadge = `<span class="discount-badge">-${pct}%</span>`;
+  }
+
+  // Qty controls vs add button
+  const qtyCtrl = cartQty > 0
+    ? `<div class="card-qty-ctrl" onclick="event.stopPropagation()">
+         <button class="qty-sm-btn" onclick="changeCardQty(${p.id},-1)">−</button>
+         <span class="qty-sm-val">${cartQty}</span>
+         <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
+       </div>`
+    : `<button class="card-add${disabled?' disabled':''}" ${disabled}
+         onclick="event.stopPropagation();addToCartAnimated(this,${p.id})">
+         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+       </button>`;
 
   return `
-  <div class="product-card" onclick="openProduct(${p.id})">
+  <div class="product-card" id="card-${p.id}" onclick="openProduct(${p.id})">
     <div class="card-img-wrap">
-      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async">
-      ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+      <div class="card-img-skeleton skeleton"></div>
+      <img src="${escHtml(mainImg)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async"
+           onload="this.previousElementSibling.style.display='none';this.classList.add('loaded')"
+           onerror="this.previousElementSibling.style.display='none';this.classList.add('loaded')">
+      ${tags||discBadge ? `<div class="card-tags">${tags}${discBadge}</div>` : ''}
       <span class="stock-badge stock-${p.stock}">${stockLabel(p.stock)}</span>
     </div>
     <div class="card-body">
       <div class="card-name">${escHtml(p.name)}</div>
-      <div class="card-brand">${escHtml(p.brand)}</div>
+      <div class="card-brand">${escHtml(p.brand||'')}</div>
     </div>
     <div class="card-price-row">
-      <div class="card-price">${rub(p.price)}<small>/шт</small></div>
-      <button class="card-add ${inCart ? 'in-cart' : ''}" ${disabled}
-        onclick="event.stopPropagation();addToCart(${p.id})">
-        ${inCart ? '✓' : '+'}
-      </button>
+      <div>
+        <div class="card-price">${rub(p.price)}<small>/шт</small></div>
+        ${p.price_old && p.price_old > p.price
+          ? `<div class="card-price-old">${rub(p.price_old)}</div>` : ''}
+      </div>
+      ${qtyCtrl}
     </div>
   </div>`;
 }
@@ -670,12 +757,18 @@ async function openProduct(id) {
       </div>`).join('');
 
     $('modalInner').innerHTML = `
-      <img class="product-modal-img" src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
+      <img class="product-modal-img" id="modalMainImg" src="${escHtml((p.images&&p.images[0])||p.image||'')}" alt="${escHtml(p.name)}" onerror="this.src='/static/icon-192.png'">
       <div class="product-modal-body">
         <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
         <div class="product-modal-name">${escHtml(p.name)}</div>
         <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Возраст: ${p.age_min}+</div>
-        <div class="product-modal-price">${rub(p.price)} <small>/ шт</small></div>
+        <div class="product-modal-price">
+          ${rub(p.price)} <small>/ шт</small>
+          ${p.price_old && p.price_old > p.price
+            ? `<span class="modal-price-old">${rub(p.price_old)}</span>
+               <span class="modal-discount-badge">-${Math.round((1-p.price/p.price_old)*100)}%</span>`
+            : ''}
+        </div>
         <div class="product-modal-wholesale">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
           <div><strong>Оптовые условия:</strong> мин. заказ ${p.min_order} шт · цена за единицу · счёт по запросу</div>
@@ -1184,9 +1277,10 @@ async function renderAdmin() {
     let visitors = [];
     try { const vd = await API.get('/api/admin/visitors'); visitors = vd.visitors || []; } catch(e){}
     const formHtml    = await renderAddProductForm();
+    const editHtml    = await renderEditProducts();
     const catalogHtml = await renderCatalogManager();
     const visitorsHtml = renderVisitorsTable(visitors);
-    $('adminBody').innerHTML = formHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []) + visitorsHtml;
+    $('adminBody').innerHTML = formHtml + editHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []) + visitorsHtml;
     // Pre-load subcats for first category
     const firstCat = $('fcat');
     if (firstCat?.value) loadSubcatsAdmin(firstCat.value);
@@ -1215,16 +1309,19 @@ async function renderAddProductForm() {
       <input type="file" id="imgFile" accept="image/*" onchange="previewUpload(this)">
     </div>
 
-    <div class="form-grid full">
-      <div class="field"><label>URL изображения</label><input id="fimg" type="url" placeholder="https://..."></div>
-    </div>
+    <!-- Images hidden - use upload only -->
+    <input type="hidden" id="fimg" value="">
     <div class="form-grid">
       <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
       <div class="field"><label>Артикул *</label><input id="fsku" type="text" placeholder="10201"></div>
     </div>
     <div class="form-grid">
       <div class="field"><label>Цена (₽) *</label><input id="fprice" type="number" step="0.01" placeholder="999.99"></div>
+      <div class="field"><label>Старая цена (₽) <small style="color:#aaa">необязательно</small></label><input id="fprice-old" type="number" step="0.01" placeholder="1500.00"></div>
+    </div>
+    <div class="form-grid">
       <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
+      <div class="field"><label>Мин. заказ (шт)</label><input id="fminorder" type="number" value="1" min="1"></div>
     </div>
     <div class="form-grid">
       <div class="field">
@@ -1258,6 +1355,146 @@ async function renderAddProductForm() {
       Добавить товар
     </button>
   </div>`;
+}
+
+async function renderEditProducts() {
+  let data = {items:[], total:0, page:1, pages:1};
+  try { data = await API.adminProducts({per_page:20}); } catch(e){}
+
+  const rows = data.items.map(p => {
+    const active = p.is_active !== false;
+    return `<div class="edit-prod-row" id="epr-${p.id}">
+      <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}"
+           onerror="this.src='/static/icon-192.png'" alt="">
+      <div class="edit-prod-info">
+        <div class="edit-prod-name">${escHtml(p.name)}</div>
+        <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
+        <div class="edit-prod-cat" style="font-size:11px;color:#aaa">${escHtml(p.category||'')} ${p.subcategory?'› '+escHtml(p.subcategory):''}</div>
+      </div>
+      <div class="edit-prod-actions">
+        <button class="btn-edit-prod" onclick="openEditProduct(${p.id})" title="Редактировать">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="btn-del-prod" onclick="toggleProductActive(${p.id},${active})" title="${active?'Скрыть':'Показать'}">
+          ${active
+            ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>'
+            : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
+          }
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      Редактировать товары <span class="orders-count-badge">${data.total}</span>
+    </h3>
+    <input type="text" class="field input" placeholder="🔍 Поиск товара..." style="margin-bottom:12px;width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none"
+      oninput="searchAdminProducts(this.value)">
+    <div id="editProdList">${rows || '<p style="color:#bbb">Нет товаров</p>'}</div>
+  </div>`;
+}
+
+async function searchAdminProducts(q) {
+  clearTimeout(window._apTimer);
+  window._apTimer = setTimeout(async () => {
+    try {
+      const data = await API.adminProducts({search:q, per_page:20});
+      const list = $('editProdList');
+      if (!list) return;
+      list.innerHTML = data.items.map(p => {
+        const active = p.is_active !== false;
+        return `<div class="edit-prod-row" id="epr-${p.id}">
+          <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}" onerror="this.src='/static/icon-192.png'" alt="">
+          <div class="edit-prod-info">
+            <div class="edit-prod-name">${escHtml(p.name)}</div>
+            <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
+          </div>
+          <div class="edit-prod-actions">
+            <button class="btn-edit-prod" onclick="openEditProduct(${p.id})">✏️</button>
+            <button class="btn-del-prod" onclick="toggleProductActive(${p.id},${active})">${active?'🗑':'✓'}</button>
+          </div>
+        </div>`;
+      }).join('') || '<p style="color:#bbb">Ничего не найдено</p>';
+    } catch(e){}
+  }, 300);
+}
+
+async function openEditProduct(id) {
+  let p;
+  try { p = await API.product(id); } catch(e){ toast('Ошибка', 'err'); return; }
+
+  const cats = await API.categories().catch(()=>[]);
+  const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}" ${p.category===c.name?'selected':''}>${escHtml(c.name)}</option>`).join('');
+
+  showConfirm('', '', () => {});  // Close any open confirm
+  $('confirmOverlay').classList.remove('open');
+
+  // Open edit in a custom modal
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'editProductOverlay';
+  overlay.innerHTML = `<div class="modal product-modal" onclick="event.stopPropagation()" style="padding:0">
+    <button class="modal-x" onclick="document.getElementById('editProductOverlay').remove()">✕</button>
+    <div style="padding:20px">
+      <h3 style="font-family:'Nunito',sans-serif;font-size:18px;font-weight:900;margin-bottom:16px">
+        Редактировать товар #${id}
+      </h3>
+      <div class="field"><label>Название *</label><input id="ep-name" value="${escHtml(p.name)}"></div>
+      <div class="form-grid">
+        <div class="field"><label>Цена (₽) *</label><input id="ep-price" type="number" step="0.01" value="${p.price}"></div>
+        <div class="field"><label>Цена без скидки (₽)</label><input id="ep-price-old" type="number" step="0.01" value="${p.price_old||''}"></div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label>Категория</label><select id="ep-cat">${catOpts}</select></div>
+        <div class="field"><label>Остаток</label><input id="ep-qty" type="number" value="${p.stock_qty||0}"></div>
+      </div>
+      <div class="form-grid">
+        <div class="field"><label>Статус</label>
+          <select id="ep-stock">
+            <option value="ok" ${p.stock==='ok'?'selected':''}>В наличии</option>
+            <option value="low" ${p.stock==='low'?'selected':''}>Мало</option>
+            <option value="out" ${p.stock==='out'?'selected':''}>Нет</option>
+          </select>
+        </div>
+        <div class="field"><label>Бренд</label><input id="ep-brand" value="${escHtml(p.brand||'')}"></div>
+      </div>
+      <div class="field"><label>Описание</label><textarea id="ep-desc" rows="2">${escHtml(p.description||'')}</textarea></div>
+      <button class="btn-primary full" onclick="saveEditProduct(${id})" style="margin-top:8px">
+        💾 Сохранить изменения
+      </button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = e => { if(e.target===overlay) overlay.remove(); };
+}
+
+async function saveEditProduct(id) {
+  const body = {
+    name:      document.getElementById('ep-name')?.value?.trim(),
+    price:     parseFloat(document.getElementById('ep-price')?.value),
+    price_old: parseFloat(document.getElementById('ep-price-old')?.value) || null,
+    category:  document.getElementById('ep-cat')?.value,
+    stock:     document.getElementById('ep-stock')?.value,
+    stock_qty: parseInt(document.getElementById('ep-qty')?.value) || 0,
+    brand:     document.getElementById('ep-brand')?.value,
+    description: document.getElementById('ep-desc')?.value,
+  };
+  try {
+    await API.updateProduct(id, body);
+    toast('Сохранено! ✓');
+    document.getElementById('editProductOverlay')?.remove();
+    renderAdmin();
+  } catch(e) { toast('Ошибка сохранения', 'err'); }
+}
+
+async function toggleProductActive(id, currentActive) {
+  try {
+    await API.updateProduct(id, {is_active: !currentActive});
+    toast(currentActive ? 'Товар скрыт' : 'Товар активирован');
+    renderAdmin();
+  } catch(e) { toast('Ошибка', 'err'); }
 }
 
 async function renderCatalogManager() {
@@ -1334,6 +1571,7 @@ async function submitProduct() {
     name:        $('fn')?.value?.trim(),
     sku:         $('fsku')?.value?.trim(),
     price:       parseFloat($('fprice')?.value || 0),
+    price_old:   parseFloat($('fprice-old')?.value) || null,
     stock_qty:   parseInt($('fqty')?.value || 0),
     category:    $('fcat')?.value,
     subcategory: $('fsubcat')?.value || '',
