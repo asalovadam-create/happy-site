@@ -123,19 +123,7 @@ function escHtml(s) {
   );
 }
 
-/**
- * proxyImg — routes external image URLs through the server proxy
- * so they load for ALL users regardless of VPN / geo-blocks.
- * URLs that already point to /api/proxy-image or /static/ are returned as-is.
- */
-function proxyImg(url) {
-  if (!url) return '';
-  // Already a proxy or local URL — don't double-wrap
-  if (url.startsWith('/') || url.startsWith('data:')) return url;
-  return '/api/proxy-image?url=' + encodeURIComponent(url);
-}
-
-
+function initials(c) {
   if (!c) return '?';
   return ((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'');
 }
@@ -277,7 +265,7 @@ function renderCart() {
     totalQty += qty;
     html += `
     <div class="cart-item">
-      <img src="${proxyImg(p.image)}" alt="${escHtml(p.name)}">
+      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
       <div class="cart-item-info">
         <div class="cart-item-name">${escHtml(p.name)}</div>
         <div class="cart-item-sku">SKU: ${escHtml(p.sku)}</div>
@@ -333,7 +321,7 @@ function renderProductCard(p) {
   <div class="product-card" id="card-${p.id}" onclick="openProduct(${p.id})">
     <div class="card-img-wrap">
       <div class="card-img-skeleton skeleton"></div>
-      <img src="${proxyImg(mainImg)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async"
+      <img src="${escHtml(mainImg)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async"
            onload="this.previousElementSibling.style.display='none';this.classList.add('loaded')"
            onerror="this.previousElementSibling.style.display='none';this.classList.add('loaded')">
       ${tags||discBadge ? `<div class="card-tags">${tags}${discBadge}</div>` : ''}
@@ -657,7 +645,7 @@ async function selectCatalogCategory(name) {
 
   const subItems = subs.map((s, i) => {
     const imgHtml = s.image
-      ? `<img src="${proxyImg(s.image)}" alt="${escHtml(s.name)}" class="sl-subcat-img">`
+      ? `<img src="${escHtml(s.image)}" alt="${escHtml(s.name)}" class="sl-subcat-img">`
       : `<div class="sl-subcat-emoji">${m.emoji}</div>`;
     return `
       <div class="sl-subcat-row" onclick="selectSubcategory('${escHtml(s.name)}')">
@@ -761,7 +749,7 @@ async function openProduct(id) {
 
     const similar = (p.similar || []).map(s => `
       <div class="similar-card" onclick="openProduct(${s.id})">
-        <img src="${proxyImg(s.image)}" alt="${escHtml(s.name)}">
+        <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}">
         <div class="similar-card-info">
           <div class="similar-card-name">${escHtml(s.name)}</div>
           <div class="similar-card-price">${rub(s.price)}</div>
@@ -769,7 +757,7 @@ async function openProduct(id) {
       </div>`).join('');
 
     $('modalInner').innerHTML = `
-      <img class="product-modal-img" id="modalMainImg" src="${proxyImg((p.images&&p.images[0])||p.image||'')}" alt="${escHtml(p.name)}" onerror="this.src='/static/icon-192.png'">
+      <img class="product-modal-img" id="modalMainImg" src="${escHtml((p.images&&p.images[0])||p.image||'')}" alt="${escHtml(p.name)}" onerror="this.src='/static/icon-192.png'">
       <div class="product-modal-body">
         <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
         <div class="product-modal-name">${escHtml(p.name)}</div>
@@ -1004,7 +992,7 @@ function downloadCartPDF() {
   const rows = items.map(({product:p, qty}) => {
     const sub = p.price * qty; total += sub; qty2 += qty;
     return `<tr>
-      <td class="ti"><img src="${proxyImg(p.image)}" onerror="this.style.display='none'"></td>
+      <td class="ti"><img src="${p.image}" onerror="this.style.display='none'"></td>
       <td class="tn"><div class="pn">${escHtml(p.name)}</div><div class="ps">Арт: ${escHtml(p.sku)}</div><div class="ps">Мин: ${p.min_order||1} шт</div></td>
       <td class="tr2">${rub(p.price)}</td>
       <td class="tr2">${qty} шт</td>
@@ -1314,6 +1302,10 @@ async function renderAddProductForm() {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Добавить товар
     </h3>
+    <div class="admin-notice">
+      ⚠️ Если картинки не грузятся без VPN —
+      <button onclick="migrateImages()" class="btn-migrate">Заменить на заглушки</button>
+    </div>
 
     <div class="img-upload-area" id="imgUploadArea" onclick="$('imgFile').click()">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -1376,7 +1368,7 @@ async function renderEditProducts() {
   const rows = data.items.map(p => {
     const active = p.is_active !== false;
     return `<div class="edit-prod-row" id="epr-${p.id}">
-      <img class="edit-prod-img" src="${proxyImg((p.images&&p.images[0])||p.image||'')}"
+      <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}"
            onerror="this.src='/static/icon-192.png'" alt="">
       <div class="edit-prod-info">
         <div class="edit-prod-name">${escHtml(p.name)}</div>
@@ -1418,7 +1410,7 @@ async function searchAdminProducts(q) {
       list.innerHTML = data.items.map(p => {
         const active = p.is_active !== false;
         return `<div class="edit-prod-row" id="epr-${p.id}">
-          <img class="edit-prod-img" src="${proxyImg((p.images&&p.images[0])||p.image||'')}" onerror="this.src='/static/icon-192.png'" alt="">
+          <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}" onerror="this.src='/static/icon-192.png'" alt="">
           <div class="edit-prod-info">
             <div class="edit-prod-name">${escHtml(p.name)}</div>
             <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
@@ -1569,6 +1561,16 @@ async function previewUpload(input) {
   }
 }
 
+async function migrateImages() {
+  try {
+    const r = await API.req('POST', '/api/admin/migrate-images');
+    toast(`✅ Обновлено ${r.updated} картинок! Обновите страницу.`);
+    setTimeout(() => location.reload(), 2000);
+  } catch(e) {
+    toast('Ошибка: ' + (e.detail || e.message), 'err');
+  }
+}
+
 function filterBrandList(val) {
   // Just highlights — datalist handles filtering natively
 }
@@ -1704,7 +1706,7 @@ function onSearch(val) {
       }
       drop.innerHTML = data.items.map(p => `
         <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
-          <img src="${proxyImg(p.image)}" alt="${escHtml(p.name)}">
+          <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
           <div style="flex:1;min-width:0">
             <div class="search-result-name">${escHtml(p.name)}</div>
             <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
