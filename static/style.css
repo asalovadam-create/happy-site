@@ -2011,6 +2011,271 @@ body {
 }
 
 
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   SKELETON / IMAGE LOADING ANIMATIONS
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.card-img-wrap {
+  position: relative;
+}
+
+.card-img-skeleton {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg,#f0f0f0 25%,#e0e0e0 50%,#f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s infinite;
+  border-radius: 0;
+  z-index: 1;
+}
+
+.card-img-wrap img {
+  opacity: 0;
+  transition: opacity .3s ease;
+  position: relative;
+  z-index: 2;
+}
+
+.card-img-wrap img.loaded {
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   DISCOUNT / PRICE OLD
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.discount-badge {
+  background: #e53935;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  font-family: 'Nunito', sans-serif;
+  padding: 3px 7px;
+  border-radius: 6px;
+  line-height: 1;
+  display: inline-block;
+}
+
+.card-price-old {
+  font-size: 11px;
+  color: #bbb;
+  text-decoration: line-through;
+  font-weight: 600;
+  margin-top: 1px;
+}
+
+.modal-price-old {
+  font-size: 16px;
+  color: #bbb;
+  text-decoration: line-through;
+  font-weight: 600;
+  margin-left: 10px;
+}
+
+.modal-discount-badge {
+  background: #e53935;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+  font-family: 'Nunito', sans-serif;
+  padding: 3px 9px;
+  border-radius: 8px;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   QTY CONTROLS ON CARD
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.card-qty-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 2px;
+}
+
+.qty-sm-btn {
+  width: 30px; height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  font-size: 17px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s, transform .1s;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  color: var(--text1);
+  flex-shrink: 0;
+}
+
+.qty-sm-btn:hover { background: #f0f0f0; }
+.qty-sm-btn:active { transform: scale(0.88); }
+.qty-sm-plus { background: var(--accent) !important; color: #fff; }
+.qty-sm-plus:hover { background: #e05a25 !important; }
+
+.qty-sm-val {
+  font-family: 'Nunito', sans-serif;
+  font-size: 15px;
+  font-weight: 900;
+  min-width: 22px;
+  text-align: center;
+  color: var(--accent);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ADD TO CART ANIMATION
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* Flying dot animation */
+.cart-fly-dot {
+  position: fixed;
+  width: 14px; height: 14px;
+  background: var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 9999;
+  transform: translate(-50%, -50%);
+}
+
+/* Button pulse */
+.card-add.add-anim {
+  animation: addPulse .4s ease;
+}
+
+@keyframes addPulse {
+  0%   { transform: scale(1); background: var(--accent); }
+  40%  { transform: scale(1.35); background: var(--green); }
+  70%  { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PRODUCT MODAL GALLERY
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.product-modal-gallery {
+  position: relative;
+}
+
+.modal-thumbs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: #fafafa;
+}
+.modal-thumbs::-webkit-scrollbar { display: none; }
+
+.modal-thumb {
+  width: 56px; height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+  cursor: pointer;
+  border: 2px solid transparent;
+  opacity: 0.7;
+  transition: all .2s;
+  flex-shrink: 0;
+}
+.modal-thumb.active, .modal-thumb:hover {
+  border-color: var(--accent);
+  opacity: 1;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   ADMIN — EDIT PRODUCTS
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+.edit-prod-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  transition: background .12s;
+  border-radius: 8px;
+}
+.edit-prod-row:last-child { border-bottom: none; }
+.edit-prod-row:hover { background: #fff8f5; padding-left: 6px; }
+
+.edit-prod-img {
+  width: 52px; height: 52px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg);
+}
+
+.edit-prod-info { flex: 1; min-width: 0; }
+.edit-prod-name {
+  font-size: 13px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.edit-prod-meta { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.edit-prod-cat { font-size: 11px; color: #bbb; }
+
+.edit-prod-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.btn-edit-prod {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border);
+  background: #fff;
+  color: var(--accent);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+}
+.btn-edit-prod:hover { background: #fff5f0; border-color: var(--accent); }
+
+.btn-del-prod {
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  border: 1.5px solid #fdd;
+  background: #fff;
+  color: var(--red);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .15s;
+}
+.btn-del-prod:hover { background: #fff0f0; }
+
+/* ══════════════════════════════════════════════════════════════════════════════
+   PERFORMANCE OPTIMIZATIONS
+   ══════════════════════════════════════════════════════════════════════════════ */
+
+/* GPU acceleration for animated elements */
+.product-card, .cart-drawer, .overlay,
+.cat-card, .sl-subcat-row {
+  will-change: transform;
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
+/* Smooth scroll everywhere */
+* { -webkit-overflow-scrolling: touch; }
+
+/* Instant tap response */
+button, a, [onclick] {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+/* Image rendering optimization */
+img {
+  image-rendering: -webkit-optimize-contrast;
+}
+
+/* Preload state for cards */
+.product-card { contain: layout style; }
+
+
 /* ── iOS / Android PWA ───────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
 
