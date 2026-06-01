@@ -2276,6 +2276,36 @@ img {
 .product-card { contain: layout style; }
 
 
+
+/* ── Admin notice ────────────────────────────────────────────────────────── */
+.admin-notice {
+  background: #fff8e1;
+  border: 1.5px solid #ffe082;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #795548;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.btn-migrate {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background .15s;
+}
+.btn-migrate:hover { background: #e05a25; }
+
 /* ── iOS / Android PWA ───────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
 
