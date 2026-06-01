@@ -16,10 +16,6 @@ from typing import Optional, List
 from datetime import datetime, timedelta
 from starlette.middleware.base import BaseHTTPMiddleware
 import jwt, hashlib, random, string, time, os, base64, uuid, json, asyncio
-try:
-    import aiohttp as _aiohttp_check  # verify it's available at startup
-except ImportError:
-    _aiohttp_check = None
 
 app = FastAPI(title="Happy Toys API", version="4.0.0", docs_url="/api/docs")
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -160,7 +156,6 @@ async def startup():
         print("✅ Neon pool created, initializing tables...")
         await _create_tables()
         await _seed_if_empty()
-        await _migrate_images_to_proxy()  # Fix existing Unsplash URLs -> proxy
         print("✅ Neon PostgreSQL connected and ready!")
     except Exception as e:
         print(f"❌ DB connection failed: {type(e).__name__}: {e}")
@@ -286,21 +281,27 @@ DEFAULT_CATALOG = {
 
 DEFAULT_BRANDS = ["LEGO","Barbie","Hot Wheels","Hasbro","Mattel","Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"]
 
-def _proxy(url: str) -> str:
-    """Wrap external image URL in our server proxy so clients never hit blocked domains."""
-    from urllib.parse import quote
-    return f"/api/proxy-image?url={quote(url, safe='')}"
+# Placeholder images — accessible without VPN in Russia
+# These are colored placeholders until admin uploads real product photos
+def _toy_img(seed: int) -> str:
+    """Generate a placeholder image URL that works in Russia.
+    Uses placehold.co which runs on Cloudflare — accessible everywhere."""
+    colors = [
+        ("FF6B35", "ffffff"),  # orange
+        ("1e88e5", "ffffff"),  # blue
+        ("2ECC71", "ffffff"),  # green
+        ("e53935", "ffffff"),  # red
+        ("7c3aed", "ffffff"),  # purple
+        ("FFB347", "1a1a2e"),  # yellow
+        ("FF6B9D", "ffffff"),  # pink
+        ("0891b2", "ffffff"),  # teal
+    ]
+    bg, fg = colors[seed % len(colors)]
+    emojis = ["🧸","🚗","🪆","🧱","🎲","🎨","🧩","⚽","🤖","🎁","✈️","🎵"]
+    emoji = emojis[seed % len(emojis)]
+    return f"https://placehold.co/600x600/{bg}/{fg}?text={emoji}"
 
-# Original Unsplash URLs — fetched server-side, served via /api/proxy-image
-_UNSPLASH_IMGS = [
-    "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1596461404969-9ae70f2830c1?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1515488042361-ee00e0ddd4e4?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1605457212628-cde2d61dab33?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1587654780291-39c9404d746b?w=600&h=600&fit=crop&q=80",
-    "https://images.unsplash.com/photo-1618842676088-c4d48a6a7571?w=600&h=600&fit=crop&q=80",
-]
-IMGS = [_proxy(u) for u in _UNSPLASH_IMGS]
+IMGS = [_toy_img(i) for i in range(12)]
 NAMES = [
     "Кукла Барби Модница Делюкс","Конструктор City 500 дет.","Машинка Турбо X",
     "Монополия Classic","Мишка плюшевый 45см","Пазл Природа 1000 эл.",
@@ -346,32 +347,12 @@ async def _seed_if_empty():
             ON CONFLICT DO NOTHING""",
             name, str(10000+i), round(random.uniform(3.5,149.99),2),
             DEFAULT_BRANDS[(i-1)%len(DEFAULT_BRANDS)], cat, sub,
-            IMGS[(i-1)%len(IMGS)], stock,
+            _toy_img((i-1) % 12), stock,
             random.randint(1,500) if stock!="out" else 0,
             "Высококачественная игрушка. Соответствует стандартам CE и EN71.",
             random.choice([1,2,6,12]), random.choice([1,3,5,6,8]), tags
         )
     print("✅ Demo data seeded")
-
-
-async def _migrate_images_to_proxy():
-    """
-    One-time migration: replace raw Unsplash URLs in the DB with /api/proxy-image URLs.
-    Runs at startup — safe to run multiple times (already-proxied URLs are skipped).
-    """
-    if not _db_pool:
-        return
-    rows = await db_fetch(
-        "SELECT id, image FROM products WHERE image LIKE 'http%' AND image NOT LIKE '/api/%'"
-    )
-    if not rows:
-        return
-    print(f"\u{2714} Migrating {len(rows)} product images to proxy URLs...")
-    from urllib.parse import quote as _quote
-    for row in rows:
-        proxied = f"/api/proxy-image?url={_quote(row['image'], safe='')}"
-        await db_execute("UPDATE products SET image=$1 WHERE id=$2", proxied, row['id'])
-    print(f"\u2705 Migrated {len(rows)} images to server proxy")
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 def make_token(sub, role="customer"):
@@ -955,66 +936,19 @@ async def admin_products_list(
     return {"items": [dict(r) for r in rows], "total": total,
             "page": page, "pages": max(1,(total+per_page-1)//per_page)}
 
-
-# ── Image proxy (makes blocked domains like Unsplash work in Russia) ──────────
-# Simple in-memory LRU-style cache: url -> (content_type, bytes)
-_IMG_CACHE: dict = {}
-_IMG_CACHE_MAX = 200  # max cached images
-
-@app.get("/api/proxy-image")
-async def proxy_image(url: str):
-    """
-    Server-side image proxy. The browser requests /api/proxy-image?url=<external>,
-    the server fetches it (bypassing any client-side geo-blocks), caches the result,
-    and streams it back. Images are cached in memory for the lifetime of the process.
-    """
-    from urllib.parse import unquote
-    import aiohttp
-
-    url = unquote(url)
-
-    # Only allow http/https, block local network abuse
-    if not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Invalid URL")
-
-    # Serve from cache if available
-    if url in _IMG_CACHE:
-        content_type, data = _IMG_CACHE[url]
-        return Response(
-            content=data,
-            media_type=content_type,
-            headers={
-                "Cache-Control": "public, max-age=86400",
-                "X-Proxy-Cache": "HIT",
-            }
-        )
-
-    # Fetch from origin server-side
-    try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-                if resp.status != 200:
-                    raise HTTPException(502, f"Upstream returned {resp.status}")
-                content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0]
-                data = await resp.read()
-
-        # Cache it (evict oldest if full)
-        if len(_IMG_CACHE) >= _IMG_CACHE_MAX:
-            oldest_key = next(iter(_IMG_CACHE))
-            del _IMG_CACHE[oldest_key]
-        _IMG_CACHE[url] = (content_type, data)
-
-        return Response(
-            content=data,
-            media_type=content_type,
-            headers={
-                "Cache-Control": "public, max-age=86400",
-                "X-Proxy-Cache": "MISS",
-            }
-        )
-    except aiohttp.ClientError as e:
-        raise HTTPException(502, f"Failed to fetch image: {e}")
+@app.post("/api/admin/migrate-images")
+async def migrate_images(_=Depends(require_admin)):
+    """One-time migration: replace unsplash URLs with placeholders."""
+    if not _db_pool:
+        raise HTTPException(503, "DB not available")
+    updated = 0
+    rows = await db_fetch("SELECT id, image FROM products WHERE image LIKE '%unsplash%'")
+    for i, row in enumerate(rows):
+        new_img = _toy_img(i % 12)
+        await db_execute("UPDATE products SET image=$1, images='{}' WHERE id=$2",
+                         new_img, row["id"])
+        updated += 1
+    return {"updated": updated, "message": f"Replaced {updated} unsplash images with placeholders"}
 
 @app.get("/api/health")
 async def health():
