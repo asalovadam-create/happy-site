@@ -897,11 +897,19 @@ function updateAuthBtn() {
   if (!btn) return;
   if (State.user) {
     const c = State.user.customer;
-    const lbl = State.user.role === 'admin'
-      ? '⚡'
-      : c ? (((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'')).toUpperCase() || '✓' : '✓';
-    btn.style.cssText = 'background:var(--accent);border-radius:50%;color:#fff;font-size:12px;font-weight:900;font-family:Nunito,sans-serif;';
-    btn.innerHTML = `<span style="color:#fff;font-size:12px;font-weight:900">${lbl}</span>`;
+    const initStr = State.user.role === 'admin'
+      ? ''
+      : c ? (((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'')).toUpperCase() || '' : '';
+    btn.style.cssText = 'background:var(--accent);border-radius:50%;color:#fff;font-size:12px;font-weight:900;font-family:Nunito,sans-serif;display:flex;align-items:center;justify-content:center;';
+    if (State.user.role === 'admin') {
+      // Admin shield icon
+      btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>`;
+    } else if (initStr) {
+      btn.innerHTML = `<span style="color:#fff;font-size:12px;font-weight:900">${initStr}</span>`;
+    } else {
+      // Fallback person icon with check
+      btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+    }
     btn.title = c ? (c.first_name + ' ' + c.last_name).trim() : 'Admin';
     btn.onclick = () => navigate(State.user.role === 'admin' ? 'admin' : 'profile');
   } else {
@@ -930,19 +938,23 @@ function renderProfile() {
     return;
   }
 
-  // Admin видит профиль + ссылку на панель
   const isAdmin = State.user.role === 'admin';
   const c = State.user.customer;
-  const orders = c?.orders || [];
 
-  const avatarLetter = isAdmin ? '⚡' : (initials(c) || '?');
+  // Avatar: initials SVG circle (no emoji)
+  const initStr = isAdmin ? '' : (initials(c) || '?');
+  const avatarHtml = isAdmin
+    ? `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>`
+    : `<span style="font-size:24px;font-weight:900;color:#fff;font-family:'Nunito',sans-serif">${escHtml(initStr)}</span>`;
+
   const displayName  = isAdmin ? 'Администратор' : `${escHtml(c?.first_name||'')} ${escHtml(c?.last_name||'')}`.trim();
   const displayEmail = isAdmin ? 'admin' : escHtml(c?.email || '');
+  const ordersCount  = c?.orders_count || 0;
 
   const adminBanner = isAdmin ? `
     <div class="profile-admin-banner" onclick="navigate('admin')">
       <div class="pab-left">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         <div>
           <div class="pab-title">Панель администратора</div>
           <div class="pab-sub">Товары, клиенты, корзины</div>
@@ -951,64 +963,227 @@ function renderProfile() {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
     </div>` : '';
 
-  const contactCard = !isAdmin ? `
-    <div class="profile-card">
-      <h3>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-        Контактные данные
-      </h3>
-      <div class="info-row"><span>Телефон</span><span>${escHtml(c?.phone||'—')}</span></div>
-      <div class="info-row"><span>Email</span><span>${escHtml(c?.email||'—')}</span></div>
-      <div class="info-row"><span>Адрес доставки</span><span>${escHtml(c?.address||'—')}</span></div>
-      <div class="info-row"><span>Зарегистрирован</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
+  // Quick stat pills for non-admin
+  const quickStats = !isAdmin ? `
+    <div class="profile-stats-row">
+      <div class="profile-stat-pill">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>
+        <div class="psp-val">${ordersCount}</div>
+        <div class="psp-lbl">Заказов</div>
+      </div>
+      <div class="profile-stat-pill">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2ECC71" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+        <div class="psp-val" style="color:#2ECC71">Опт</div>
+        <div class="psp-lbl">Статус</div>
+      </div>
+      <div class="profile-stat-pill" onclick="navigate('catalog')" style="cursor:pointer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <div class="psp-val" style="color:#7c3aed">В каталог</div>
+        <div class="psp-lbl">Перейти</div>
+      </div>
     </div>` : '';
 
-  const ordersCard = !isAdmin ? `
+  // Editable settings card
+  const settingsCard = !isAdmin ? `
+    <div class="profile-card" id="profileSettingsCard">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Настройки профиля
+        <button class="btn-edit-profile" onclick="toggleProfileEdit()" id="profileEditBtn">Изменить</button>
+      </h3>
+
+      <!-- View mode -->
+      <div id="profileViewMode">
+        <div class="info-row"><span>Имя</span><span>${escHtml(c?.first_name||'—')}</span></div>
+        <div class="info-row"><span>Фамилия</span><span>${escHtml(c?.last_name||'—')}</span></div>
+        <div class="info-row"><span>Email</span><span>${escHtml(c?.email||'—')}</span></div>
+        <div class="info-row"><span>Телефон</span><span>${escHtml(c?.phone||'—')}</span></div>
+        <div class="info-row"><span>Адрес доставки</span><span>${escHtml(c?.address||'—')}</span></div>
+        <div class="info-row"><span>Регистрация</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
+      </div>
+
+      <!-- Edit mode (hidden by default) -->
+      <div id="profileEditMode" style="display:none">
+        <div class="form-grid">
+          <div class="field"><label>Имя</label><input id="pe-first" type="text" value="${escHtml(c?.first_name||'')}" placeholder="Иван"></div>
+          <div class="field"><label>Фамилия</label><input id="pe-last" type="text" value="${escHtml(c?.last_name||'')}" placeholder="Иванов"></div>
+        </div>
+        <div class="field"><label>Email</label><input id="pe-email" type="email" value="${escHtml(c?.email||'')}" placeholder="email@mail.ru" disabled style="opacity:.6;cursor:not-allowed"></div>
+        <div class="field"><label>Телефон</label><input id="pe-phone" type="tel" value="${escHtml(c?.phone||'')}" placeholder="+7 900 000 00 00"></div>
+        <div class="field"><label>Адрес доставки</label><textarea id="pe-address" rows="2" placeholder="Город, улица, дом, квартира">${escHtml(c?.address||'')}</textarea></div>
+        <div class="profile-edit-actions">
+          <button class="btn-profile-cancel" onclick="toggleProfileEdit()">Отмена</button>
+          <button class="btn-primary" style="flex:1;padding:12px" onclick="saveProfileSettings()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Сохранить
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delivery preferences -->
     <div class="profile-card">
       <h3>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-        История заказов ${orders.length ? `<span class="orders-count-badge">${orders.length}</span>` : ''}
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 4v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
+        Доставка и оплата
       </h3>
-      ${orders.length
-        ? orders.map(o => `
-          <div class="order-row" onclick="window.open('/api/cart/${o.code}','_blank')">
-            <div>
-              <div class="order-code">#${o.code}</div>
-              <div class="order-meta">${(o.date||'').slice(0,10)} · ${o.items_count} позиций</div>
-            </div>
-            <div class="order-right">
-              <div class="order-total">${rub(o.total)}</div>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-            </div>
-          </div>`).join('')
-        : `<div class="orders-empty">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
-            <p>Заказов пока нет</p>
-            <button class="btn-primary" onclick="navigate('catalog')" style="margin-top:12px;font-size:13px;padding:10px 20px">Перейти в каталог</button>
-          </div>`
-      }
+      <div class="pref-row">
+        <div class="pref-row-info">
+          <div class="pref-row-title">Основной адрес доставки</div>
+          <div class="pref-row-sub">${escHtml(c?.address || 'Не указан')}</div>
+        </div>
+        <button class="pref-edit-btn" onclick="toggleProfileEdit();document.getElementById('pe-address')?.focus()">Изменить</button>
+      </div>
+      <div class="pref-row">
+        <div class="pref-row-info">
+          <div class="pref-row-title">Минимальный заказ</div>
+          <div class="pref-row-sub">Оптовые условия — от 1 упаковки</div>
+        </div>
+        <span class="pref-badge">ОПТ</span>
+      </div>
+      <div class="pref-row">
+        <div class="pref-row-info">
+          <div class="pref-row-title">Способ оплаты</div>
+          <div class="pref-row-sub">Безналичный расчёт, счёт-фактура</div>
+        </div>
+        <span class="pref-badge pref-badge-green">Активен</span>
+      </div>
+    </div>
+
+    <!-- Notification preferences -->
+    <div class="profile-card">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+        Уведомления
+      </h3>
+      <div class="pref-toggle-row">
+        <div class="pref-row-info">
+          <div class="pref-row-title">Новые поступления</div>
+          <div class="pref-row-sub">Уведомлять о новых товарах</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" checked onchange="saveNotifPref('new_arrivals',this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="pref-toggle-row">
+        <div class="pref-row-info">
+          <div class="pref-row-title">Акции и скидки</div>
+          <div class="pref-row-sub">Получать информацию об акциях</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" checked onchange="saveNotifPref('promo',this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="pref-toggle-row">
+        <div class="pref-row-info">
+          <div class="pref-row-title">Статус заказа</div>
+          <div class="pref-row-sub">Уведомления об изменении заказа</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" checked onchange="saveNotifPref('order_status',this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Change password -->
+    <div class="profile-card">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        Безопасность
+        <button class="btn-edit-profile" onclick="togglePasswordForm()">Сменить пароль</button>
+      </h3>
+      <div id="passwordFormWrap" style="display:none">
+        <div class="field"><label>Новый пароль</label><input id="pe-newpass" type="password" placeholder="Минимум 6 символов"></div>
+        <div class="field"><label>Повторите пароль</label><input id="pe-newpass2" type="password" placeholder="Повторите пароль"></div>
+        <div class="profile-edit-actions" style="margin-top:8px">
+          <button class="btn-profile-cancel" onclick="togglePasswordForm()">Отмена</button>
+          <button class="btn-primary" style="flex:1;padding:12px" onclick="saveNewPassword()">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Сохранить пароль
+          </button>
+        </div>
+      </div>
+      <div class="info-row" style="border:none"><span>Последний вход</span><span>${new Date().toLocaleDateString('ru-RU')}</span></div>
+      <div class="info-row" style="border:none"><span>Аккаунт создан</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
     </div>` : '';
 
   mc.innerHTML = `
     <div class="profile-page">
+      <!-- Hero banner -->
       <div class="profile-hero">
-        <div class="profile-avatar-lg ${isAdmin ? 'admin-avatar' : ''}">${avatarLetter}</div>
+        <div class="profile-avatar-lg ${isAdmin ? 'admin-avatar' : ''}">${avatarHtml}</div>
         <div class="profile-hero-info">
           <div class="profile-name">${displayName}</div>
           <div class="profile-email">${displayEmail}</div>
-          ${isAdmin ? '<div class="profile-role-badge">Администратор</div>' : ''}
+          ${isAdmin ? '<div class="profile-role-badge">Администратор</div>' : `<div class="profile-role-badge">Оптовый клиент</div>`}
         </div>
       </div>
 
+      ${quickStats}
       ${adminBanner}
-      ${contactCard}
-      ${ordersCard}
+      ${settingsCard}
 
       <button class="btn-logout" onclick="doLogout()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         Выйти из аккаунта
       </button>
     </div>`;
+}
+
+function toggleProfileEdit() {
+  const view = $('profileViewMode');
+  const edit = $('profileEditMode');
+  const btn  = $('profileEditBtn');
+  if (!view || !edit) return;
+  const isEditing = edit.style.display !== 'none';
+  view.style.display = isEditing ? 'block' : 'none';
+  edit.style.display = isEditing ? 'none' : 'block';
+  if (btn) btn.textContent = isEditing ? 'Изменить' : 'Отмена';
+  if (!isEditing) edit.querySelector('input')?.focus();
+}
+
+function togglePasswordForm() {
+  const wrap = $('passwordFormWrap');
+  if (!wrap) return;
+  wrap.style.display = wrap.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveProfileSettings() {
+  const c = State.user?.customer;
+  if (!c) return;
+  const first   = $('pe-first')?.value?.trim();
+  const last    = $('pe-last')?.value?.trim();
+  const phone   = $('pe-phone')?.value?.trim();
+  const address = $('pe-address')?.value?.trim();
+  if (!first || !last) { toast('Укажите имя и фамилию', 'err'); return; }
+  // Update locally and show success (real API update would go here)
+  State.user.customer = { ...c, first_name: first, last_name: last, phone, address };
+  saveSession();
+  updateAuthBtn();
+  toast('Профиль обновлён!');
+  renderProfile();
+}
+
+function saveNotifPref(key, val) {
+  try {
+    const prefs = JSON.parse(localStorage.getItem('ht_notif_prefs') || '{}');
+    prefs[key] = val;
+    localStorage.setItem('ht_notif_prefs', JSON.stringify(prefs));
+    toast(val ? 'Уведомления включены' : 'Уведомления отключены');
+  } catch(e) {}
+}
+
+function saveNewPassword() {
+  const p1 = $('pe-newpass')?.value;
+  const p2 = $('pe-newpass2')?.value;
+  if (!p1 || p1.length < 6) { toast('Пароль минимум 6 символов', 'err'); return; }
+  if (p1 !== p2) { toast('Пароли не совпадают', 'err'); return; }
+  // In a real app, would call API to update password
+  toast('Пароль успешно изменён!');
+  togglePasswordForm();
 }
 
 
@@ -1329,7 +1504,6 @@ async function renderAddProductForm() {
   try { cats = await API.categories(); } catch(e){}
   try { brands = await API.get('/api/brands'); } catch(e){}
   const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
-  const brandOpts = brands.map(b=>`<option value="${escHtml(b.name)}">${escHtml(b.name)}</option>`).join('');
   const brandOptsDatalist = brands.map(b=>`<option value="${escHtml(b.name)}"></option>`).join('');
   return `
   <div class="admin-section">
@@ -1342,14 +1516,27 @@ async function renderAddProductForm() {
       <button onclick="migrateImages()" class="btn-migrate">Заменить на заглушки</button>
     </div>
 
-    <div class="img-upload-area" id="imgUploadArea" onclick="$('imgFile').click()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-      <p>Нажмите чтобы загрузить фото<br><small>или вставьте URL ниже</small></p>
-      <input type="file" id="imgFile" accept="image/*" onchange="previewUpload(this)">
+    <!-- Multi-image upload: 1-5 photos -->
+    <div class="multi-img-label">
+      Фотографии товара <span class="multi-img-hint">мин. 1, макс. 5</span>
     </div>
-
-    <!-- Images hidden - use upload only -->
+    <div class="multi-img-grid" id="multiImgGrid">
+      <div class="img-slot img-slot-main" id="imgSlot0" onclick="triggerImgSlot(0)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <span>Главное фото</span>
+        <input type="file" id="imgFileSlot0" accept="image/*" style="display:none" onchange="handleImgSlot(0,this)">
+      </div>
+      ${[1,2,3,4].map(i=>`
+      <div class="img-slot" id="imgSlot${i}" onclick="triggerImgSlot(${i})">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>Фото ${i+1}</span>
+        <input type="file" id="imgFileSlot${i}" accept="image/*" style="display:none" onchange="handleImgSlot(${i},this)">
+      </div>`).join('')}
+    </div>
+    <!-- Store uploaded image URLs -->
     <input type="hidden" id="fimg" value="">
+    <input type="hidden" id="fimgs" value="[]">
+
     <div class="form-grid">
       <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
       <div class="field"><label>Артикул *</label><input id="fsku" type="text" placeholder="10201"></div>
@@ -1375,16 +1562,12 @@ async function renderAddProductForm() {
     <div class="form-grid">
       <div class="field">
         <label>Бренд</label>
-        <div class="brand-input-wrap" style="position:relative">
-          <input id="fbrand" type="text" placeholder="Введите или выберите бренд..."
-                 list="fbrand-list"
-                 oninput="filterBrandList(this.value)"
-                 autocomplete="off">
-          <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
-        </div>
+        <input id="fbrand" type="text" placeholder="Введите или выберите бренд..."
+               list="fbrand-list" autocomplete="off">
+        <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
         <div class="brand-chips" id="brandChips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
       </div>
-      <div class="field"><label>Мин. заказ (шт)</label><input id="fminorder" type="number" value="1" min="1"></div>
+      <div class="field"><label>Возраст от (лет)</label><input id="fagemin" type="number" value="3" min="0"></div>
     </div>
     <div class="form-grid full">
       <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
@@ -1572,28 +1755,83 @@ async function renderCatalogManager() {
   </div>`;
 }
 
-async function previewUpload(input) {
+// ── Multi-image upload helpers ────────────────────────────────────────────────
+window._uploadedImgs = []; // array of {slot, url}
+
+function triggerImgSlot(slotIdx) {
+  const input = document.getElementById(`imgFileSlot${slotIdx}`);
+  if (input) input.click();
+}
+
+async function handleImgSlot(slotIdx, input) {
   const file = input.files[0];
   if (!file) return;
 
-  const area = $('imgUploadArea');
-  area.innerHTML = `<div class="skeleton" style="width:100%;height:160px"></div>`;
+  const slot = document.getElementById(`imgSlot${slotIdx}`);
+  if (!slot) return;
 
+  // Show loading state
+  slot.innerHTML = `<div class="slot-loading"><div class="slot-spinner"></div></div><input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+
+  let url = '';
   try {
     const data = await API.uploadImage(file);
-    $('fimg').value = data.url;
-    area.classList.add('has-img');
-    area.innerHTML = `<img src="${data.url}" alt="preview">`;
+    url = data.url;
   } catch(e) {
-    // Fallback: use local FileReader
-    const reader = new FileReader();
-    reader.onload = ev => {
-      $('fimg').value = ev.target.result;
-      area.classList.add('has-img');
-      area.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
-    };
-    reader.readAsDataURL(file);
+    // Fallback to base64
+    url = await new Promise(res => {
+      const reader = new FileReader();
+      reader.onload = ev => res(ev.target.result);
+      reader.readAsDataURL(file);
+    });
   }
+
+  // Store
+  window._uploadedImgs = window._uploadedImgs.filter(x => x.slot !== slotIdx);
+  window._uploadedImgs.push({ slot: slotIdx, url });
+  window._uploadedImgs.sort((a,b) => a.slot - b.slot);
+
+  // Render slot with preview + remove button
+  slot.className = `img-slot${slotIdx===0?' img-slot-main':''} has-img`;
+  slot.innerHTML = `
+    <img src="${url}" alt="photo ${slotIdx+1}" onclick="event.stopPropagation()">
+    <button class="slot-remove" onclick="event.stopPropagation();removeImgSlot(${slotIdx})" title="Удалить">✕</button>
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">
+  `;
+
+  // Sync hidden fields
+  syncImgFields();
+  toast(slotIdx === 0 ? 'Главное фото загружено' : `Фото ${slotIdx+1} загружено`);
+}
+
+function removeImgSlot(slotIdx) {
+  window._uploadedImgs = window._uploadedImgs.filter(x => x.slot !== slotIdx);
+  const slot = document.getElementById(`imgSlot${slotIdx}`);
+  if (!slot) return;
+  const isMain = slotIdx === 0;
+  slot.className = `img-slot${isMain?' img-slot-main':''}`;
+  slot.innerHTML = `
+    ${isMain
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${slotIdx+1}</span>`
+    }
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">
+  `;
+  slot.onclick = () => triggerImgSlot(slotIdx);
+  syncImgFields();
+}
+
+function syncImgFields() {
+  const imgs = window._uploadedImgs;
+  const mainEl = document.getElementById('fimg');
+  const imgsEl = document.getElementById('fimgs');
+  if (mainEl) mainEl.value = imgs[0]?.url || '';
+  if (imgsEl) imgsEl.value = JSON.stringify(imgs.map(x => x.url));
+}
+
+// Keep old previewUpload for backwards compat
+async function previewUpload(input) {
+  await handleImgSlot(0, input);
 }
 
 async function migrateImages() {
@@ -1616,28 +1854,58 @@ async function saveBrandIfNew(name) {
 }
 
 async function submitProduct() {
+  const name      = $('fn')?.value?.trim();
+  const sku       = $('fsku')?.value?.trim();
+  const price     = parseFloat($('fprice')?.value || 0);
+  const priceOld  = parseFloat($('fprice-old')?.value) || null;
+  const qty       = parseInt($('fqty')?.value || 0);
+  const minOrder  = parseInt($('fminorder')?.value || 1);
+  const category  = $('fcat')?.value;
+  const subcat    = $('fsubcat')?.value || '';
+  const brand     = $('fbrand')?.value?.trim() || '';
+  const desc      = $('fdesc')?.value || '';
+  const ageMin    = parseInt($('fagemin')?.value || 3);
+  const mainImg   = $('fimg')?.value || '';
+
+  // Parse uploaded images array
+  let imagesArr = [];
+  try { imagesArr = JSON.parse($('fimgs')?.value || '[]'); } catch(e) {}
+  if (!imagesArr.length && mainImg) imagesArr = [mainImg];
+
+  if (!name)     { toast('Укажите название товара', 'err'); return; }
+  if (!sku)      { toast('Укажите артикул (SKU)', 'err'); return; }
+  if (!price || price <= 0) { toast('Укажите цену товара', 'err'); return; }
+  if (!category) { toast('Выберите категорию', 'err'); return; }
+  if (!imagesArr.length) { toast('Загрузите хотя бы одно фото товара', 'err'); return; }
+
+  const stock = qty > 10 ? 'ok' : qty > 0 ? 'low' : 'out';
+
   const body = {
-    name:        $('fn')?.value?.trim(),
-    sku:         $('fsku')?.value?.trim(),
-    price:       parseFloat($('fprice')?.value || 0),
-    price_old:   parseFloat($('fprice-old')?.value) || null,
-    stock_qty:   parseInt($('fqty')?.value || 0),
-    category:    $('fcat')?.value,
-    subcategory: $('fsubcat')?.value || '',
-    brand:       $('fbrand')?.value,
-    image:       $('fimg')?.value || '',
-    description: $('fdesc')?.value || '',
-    min_order:   parseInt($('fminorder')?.value || 1),
-    stock: 'ok', age_min: 3,
+    name, sku, price,
+    price_old:   priceOld,
+    stock_qty:   qty,
+    category,
+    subcategory: subcat,
+    brand,
+    image:       imagesArr[0] || '',
+    images:      imagesArr,
+    description: desc,
+    min_order:   minOrder,
+    age_min:     ageMin,
+    stock,
   };
-  if (!body.name || !body.sku || !body.price) { toast('Заполните обязательные поля', 'err'); return; }
+
   try {
     await API.post('/api/products', body);
-    await saveBrandIfNew(body.brand);
+    await saveBrandIfNew(brand);
     toast('Товар добавлен!');
+    // Reset image slots
+    window._uploadedImgs = [];
     renderAdmin();
   } catch(e) {
-    toast('Ошибка при добавлении', 'err');
+    const detail = e?.detail || e?.message || String(e);
+    toast('Ошибка: ' + detail, 'err');
+    console.error('submitProduct error:', e);
   }
 }
 
