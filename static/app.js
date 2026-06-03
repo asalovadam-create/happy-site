@@ -52,7 +52,7 @@ const API = {
 
   async req(method, path, body, isForm = false) {
     const headers = {};
-    if (!isForm) headers['Content-Type'] = 'application/json';
+    if (!isForm && method !== 'DELETE') headers['Content-Type'] = 'application/json';
     const token = State.user?.token;
     if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -60,12 +60,18 @@ const API = {
     if (body) opts.body = isForm ? body : JSON.stringify(body);
 
     const r = await fetch(this.base + path, opts);
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
+    if (!r.ok) {
+      const msg = await r.text().catch(()=>'');
+      try { throw JSON.parse(msg); } catch(e2) { throw new Error(msg||r.statusText); }
+    }
+    if (r.status === 204) return {};
+    const txt = await r.text();
+    return txt ? JSON.parse(txt) : {};
   },
 
-  get(path)         { return this.req('GET', path); },
-  post(path, body)  { return this.req('POST', path, body); },
+  get(path)         { return this.req('GET',    path); },
+  del(path)         { return this.req('DELETE', path); },
+  post(path, body)  { return this.req('POST',   path, body); },
 
   products(params = {}) {
     const q = new URLSearchParams({ page: State.pageNum, per_page: State.perPage });
@@ -90,9 +96,9 @@ const API = {
   },
   updateProduct(id, data) { return this.req('PATCH', `/api/products/${id}`, data); },
   addCategory(name) { return this.post('/api/admin/categories', {name}, State.user?.token); },
-  delCategory(name) { return this.del(`/api/admin/categories/${encodeURIComponent(name)}`, State.user?.token); },
+  delCategory(name) { return this.req('DELETE', `/api/admin/categories/${encodeURIComponent(name)}`); },
   addSubcategory(category, name) { return this.post('/api/admin/subcategories', {category, name}, State.user?.token); },
-  delSubcategory(cat, sub) { return this.del(`/api/admin/subcategories/${encodeURIComponent(cat)}/${encodeURIComponent(sub)}`, State.user?.token); },
+  delSubcategory(cat, sub) { return this.req('DELETE', `/api/admin/subcategories/${encodeURIComponent(cat)}/${encodeURIComponent(sub)}`); },
   shareCart(p)    { return this.post('/api/cart/share', p); },
   login(u, p)     { return this.post('/api/auth/login', { username: u, password: p }); },
   register(body)  { return this.post('/api/auth/register', body); },
@@ -291,54 +297,83 @@ function renderCart() {
 
 // ── Product Card ──────────────────────────────────────────────────────────────
 function renderProductCard(p) {
-  const tagClass = {'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'};
-  const tags = (p.tags||[]).map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
-  const disabled  = p.stock === 'out' ? 'disabled' : '';
-  const cartItem  = State.cart[p.id];
-  const cartQty   = cartItem ? cartItem.qty : 0;
-  const mainImg   = (p.images&&p.images[0]) || p.image || '';
+  const tagClass = {
+    'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'
+  };
+  const tags = (p.tags||[]).slice(0,2)
+    .map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
 
-  // Discount badge
-  let discBadge = '';
+  const mainImg  = (p.images&&p.images[0]) || p.image || '';
+  const cartItem = State.cart[p.id];
+  const cartQty  = cartItem ? cartItem.qty : 0;
+  const isOut    = p.stock === 'out';
+
+  // Discount
+  let discPct = 0;
   if (p.price_old && p.price_old > p.price) {
-    const pct = Math.round((1 - p.price / p.price_old) * 100);
-    discBadge = `<span class="discount-badge">-${pct}%</span>`;
+    discPct = Math.round((1 - p.price / p.price_old) * 100);
   }
 
-  // Qty controls vs add button
-  const qtyCtrl = cartQty > 0
-    ? `<div class="card-qty-ctrl" onclick="event.stopPropagation()">
-         <button class="qty-sm-btn" onclick="changeCardQty(${p.id},-1)">−</button>
-         <span class="qty-sm-val">${cartQty}</span>
-         <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
-       </div>`
-    : `<button class="card-add${disabled?' disabled':''}" ${disabled}
-         onclick="event.stopPropagation();addToCartAnimated(this,${p.id})">
-         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-       </button>`;
+  // Stock label
+  const stockLabel = p.stock === 'ok'  ? '<span class="stock-badge stock-ok">В наличии</span>'
+                   : p.stock === 'low' ? '<span class="stock-badge stock-low">Мало</span>'
+                   : '<span class="stock-badge stock-out">Нет</span>';
+
+  // Bottom controls
+  const ctrl = isOut
+    ? `<button class="card-add disabled" disabled title="Нет в наличии">
+         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+       </button>`
+    : cartQty > 0
+      ? `<div class="card-qty-ctrl" onclick="event.stopPropagation()">
+           <button class="qty-sm-btn" onclick="changeCardQty(${p.id},-1)">−</button>
+           <span class="qty-sm-val">${cartQty}</span>
+           <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
+         </div>`
+      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})"
+           title="Добавить в корзину">
+           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+         </button>`;
 
   return `
   <div class="product-card" id="card-${p.id}" onclick="openProduct(${p.id})">
+
+    <!-- Image zone -->
     <div class="card-img-wrap">
       <div class="card-img-skeleton skeleton"></div>
-      <img src="${escHtml(mainImg)}" alt="${escHtml(p.name)}" loading="lazy" decoding="async"
+      <img src="${escHtml(mainImg)}"
+           alt="${escHtml(p.name)}"
+           loading="lazy" decoding="async"
            onload="this.previousElementSibling.style.display='none';this.classList.add('loaded')"
            onerror="this.previousElementSibling.style.display='none';this.classList.add('loaded')">
-      ${tags||discBadge ? `<div class="card-tags">${tags}${discBadge}</div>` : ''}
-      <span class="stock-badge stock-${p.stock}">${stockLabel(p.stock)}</span>
+
+      <!-- Top-left: tags -->
+      ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+
+      <!-- Top-right: discount -->
+      ${discPct > 0 ? `<div class="card-disc-badge">-${discPct}%</div>` : ''}
+
+      <!-- Bottom: stock -->
+      <div class="card-stock-wrap">${stockLabel}</div>
     </div>
+
+    <!-- Info zone -->
     <div class="card-body">
       <div class="card-name">${escHtml(p.name)}</div>
-      <div class="card-brand">${escHtml(p.brand||'')}</div>
+      ${p.brand ? `<div class="card-brand">${escHtml(p.brand)}</div>` : ''}
+      ${p.min_order && p.min_order > 1
+        ? `<div class="card-moq">Мин. заказ: ${p.min_order} шт</div>` : ''}
     </div>
+
+    <!-- Price + action -->
     <div class="card-price-row">
-      <div>
-        <div class="card-price">${rub(p.price)}<small>/шт</small></div>
-        ${p.price_old && p.price_old > p.price
-          ? `<div class="card-price-old">${rub(p.price_old)}</div>` : ''}
+      <div class="card-price-block">
+        <div class="card-price">${rub(p.price)}<span class="card-per"> / шт</span></div>
+        ${discPct > 0 ? `<div class="card-price-old">${rub(p.price_old)}</div>` : ''}
       </div>
-      ${qtyCtrl}
+      ${ctrl}
     </div>
+
   </div>`;
 }
 
