@@ -769,70 +769,207 @@ function renderCatalogProducts() {
   loadProducts();
 }
 
-// ── Product modal ─────────────────────────────────────────────────────────────
+// ── Product modal — gallery + desktop two-column ──────────────────────────────
 async function openProduct(id) {
   const overlay = $('productOverlay');
   overlay.classList.add('open');
-  $('modalInner').innerHTML = `<div style="padding:40px;text-align:center"><div class="skeleton" style="width:100%;aspect-ratio:1;border-radius:20px 20px 0 0;margin-bottom:16px"></div></div>`;
+  $('modalInner').innerHTML = `<div class="modal-loading-state"><div class="modal-skeleton-img skeleton"></div><div class="modal-skeleton-body"><div class="skeleton" style="height:14px;width:40%;border-radius:6px;margin-bottom:10px"></div><div class="skeleton" style="height:26px;width:80%;border-radius:8px;margin-bottom:8px"></div><div class="skeleton" style="height:18px;width:55%;border-radius:6px;margin-bottom:20px"></div><div class="skeleton" style="height:40px;width:30%;border-radius:10px"></div></div></div>`;
 
   try {
     const p = await API.product(id);
     State._lastProduct = p;
 
-    const inCart = !!State.cart[id];
+    // Build images list — deduplicate and normalize
+    const rawImgs = Array.isArray(p.images) && p.images.length ? p.images : (p.image ? [p.image] : []);
+    const images = [...new Set(rawImgs.filter(Boolean))];
+    const mainImg = images[0] || '/static/icon-192.png';
+
+    const inCart   = !!State.cart[id];
     const disabled = p.stock === 'out' ? 'disabled' : '';
 
-    const similar = (p.similar || []).map(s => `
+    // Gallery HTML
+    const galleryHtml = images.length > 1
+      ? `<div class="modal-thumb-strip" id="modalThumbStrip">
+          ${images.map((src, i) => `
+            <button class="modal-thumb-btn ${i===0?'active':''}" onclick="switchModalImg('${escHtml(src)}',this)" title="Фото ${i+1}">
+              <img src="${escHtml(src)}" alt="фото ${i+1}" loading="lazy">
+            </button>`).join('')}
+         </div>`
+      : '';
+
+    // Nav arrows for gallery (mobile swipe or click)
+    const arrowsHtml = images.length > 1
+      ? `<button class="modal-img-prev" onclick="modalImgNav(-1)" aria-label="Назад">
+           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+         </button>
+         <button class="modal-img-next" onclick="modalImgNav(1)" aria-label="Вперёд">
+           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+         </button>
+         <div class="modal-img-dots" id="modalImgDots">
+           ${images.map((_,i) => `<span class="modal-dot ${i===0?'active':''}" onclick="modalGoToImg(${i})"></span>`).join('')}
+         </div>`
+      : '';
+
+    // Discount
+    let discPct = 0;
+    if (p.price_old && p.price_old > p.price) discPct = Math.round((1 - p.price/p.price_old)*100);
+
+    // Stock badge
+    const stockMap = { ok: ['В наличии','#2ECC71'], low: ['Заканчивается','#F1C40F'], out: ['Нет в наличии','#E74C3C'] };
+    const [sLabel, sColor] = stockMap[p.stock] || stockMap.out;
+
+    // Similar
+    const similar = (p.similar||[]).map(s => `
       <div class="similar-card" onclick="openProduct(${s.id})">
-        <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}">
+        <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}" loading="lazy">
         <div class="similar-card-info">
           <div class="similar-card-name">${escHtml(s.name)}</div>
           <div class="similar-card-price">${rub(s.price)}</div>
         </div>
       </div>`).join('');
 
+    // Store images on window for nav
+    window._modalImgs = images;
+    window._modalImgIdx = 0;
+
     $('modalInner').innerHTML = `
-      <img class="product-modal-img" id="modalMainImg" src="${escHtml((p.images&&p.images[0])||p.image||'')}" alt="${escHtml(p.name)}" onerror="this.src='/static/icon-192.png'">
-      <div class="product-modal-body">
-        <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
-        <div class="product-modal-name">${escHtml(p.name)}</div>
-        <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Возраст: ${p.age_min}+</div>
-        <div class="product-modal-price">
-          ${rub(p.price)} <small>/ шт</small>
-          ${p.price_old && p.price_old > p.price
-            ? `<span class="modal-price-old">${rub(p.price_old)}</span>
-               <span class="modal-discount-badge">-${Math.round((1-p.price/p.price_old)*100)}%</span>`
-            : ''}
-        </div>
-        <div class="product-modal-wholesale">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-          <div><strong>Оптовые условия:</strong> мин. заказ ${p.min_order} шт · цена за единицу · счёт по запросу</div>
-        </div>
-        <div class="product-modal-desc">${escHtml(p.description)}</div>
+      <div class="modal-desktop-layout">
 
-        <div class="product-modal-add">
-          <div class="qty-row">
-            <button onclick="adjustModalQty(-1)">−</button>
-            <input id="modalQty" type="number" value="1" min="1" max="999">
-            <button onclick="adjustModalQty(1)">+</button>
+        <!-- LEFT: image gallery -->
+        <div class="modal-gallery-col">
+          <div class="modal-gallery-main-wrap" id="modalGalleryWrap">
+            <img class="product-modal-img" id="modalMainImg"
+                 src="${escHtml(mainImg)}"
+                 alt="${escHtml(p.name)}"
+                 onerror="this.src='/static/icon-192.png'">
+            ${arrowsHtml}
+            ${discPct > 0 ? `<div class="modal-disc-float">-${discPct}%</div>` : ''}
           </div>
-          <button class="btn-primary" style="flex:1" ${disabled}
-            onclick="addToCart(${p.id}, parseInt($('modalQty').value)||1);closeProductModal()">
-            ${inCart ? '✓ В корзине' : 'В корзину'}
-          </button>
+          ${galleryHtml}
         </div>
 
-        ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
-      </div>
-    `;
+        <!-- RIGHT: info -->
+        <div class="modal-info-col">
+          <div class="product-modal-body">
+
+            <!-- Breadcrumb-style category -->
+            <div class="product-modal-brand">
+              ${escHtml(p.brand||'')}${p.brand && p.category ? ' · ' : ''}${escHtml(p.category||'')}
+              ${p.subcategory ? ` <span style="color:#bbb">› ${escHtml(p.subcategory)}</span>` : ''}
+            </div>
+
+            <div class="product-modal-name">${escHtml(p.name)}</div>
+
+            <div class="modal-meta-row">
+              <span class="modal-sku-badge">SKU: ${escHtml(p.sku)}</span>
+              ${p.age_min ? `<span class="modal-age-badge">${p.age_min}+</span>` : ''}
+              <span class="modal-stock-dot" style="background:${sColor}" title="${sLabel}"></span>
+              <span class="modal-stock-text" style="color:${sColor}">${sLabel}</span>
+            </div>
+
+            <div class="product-modal-price">
+              ${rub(p.price)} <small>/ шт</small>
+              ${discPct > 0 ? `<span class="modal-price-old">${rub(p.price_old)}</span>
+                               <span class="modal-discount-badge">-${discPct}%</span>` : ''}
+            </div>
+
+            <div class="product-modal-wholesale">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+              <div><strong>Оптовые условия:</strong> мин. заказ ${p.min_order||1} шт · цена за единицу · счёт по запросу</div>
+            </div>
+
+            ${p.description ? `<div class="product-modal-desc">${escHtml(p.description)}</div>` : ''}
+
+            <div class="product-modal-add">
+              <div class="qty-row">
+                <button onclick="adjustModalQty(-1)">−</button>
+                <input id="modalQty" type="number" value="${p.min_order||1}" min="${p.min_order||1}" max="9999">
+                <button onclick="adjustModalQty(1)">+</button>
+              </div>
+              <button class="btn-primary" style="flex:1" ${disabled}
+                onclick="addToCart(${p.id}, parseInt($('modalQty').value)||1);closeProductModal()">
+                ${p.stock==='out' ? 'Нет в наличии' : inCart ? '✓ В корзине · добавить ещё' : 'В корзину'}
+              </button>
+            </div>
+
+            ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
+          </div>
+        </div>
+
+      </div>`;
+
+    // Touch swipe support
+    setupModalSwipe();
+
   } catch(e) {
-    $('modalInner').innerHTML = `<div style="padding:40px;text-align:center;color:#999">Ошибка загрузки</div>`;
+    $('modalInner').innerHTML = `<div style="padding:40px;text-align:center;color:#999">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+      <p style="margin-top:12px">Ошибка загрузки товара</p>
+      <button class="btn-primary" style="margin-top:12px;padding:10px 20px;font-size:13px" onclick="openProduct(${id})">Повторить</button>
+    </div>`;
   }
+}
+
+function switchModalImg(src, btn) {
+  const img = $('modalMainImg');
+  if (!img) return;
+  // Fade transition
+  img.style.opacity = '0';
+  img.style.transform = 'scale(0.97)';
+  setTimeout(() => {
+    img.src = src;
+    img.onload = () => { img.style.opacity = '1'; img.style.transform = 'scale(1)'; };
+    img.onerror = () => { img.style.opacity = '1'; img.style.transform = 'scale(1)'; };
+  }, 120);
+
+  // Update active thumb
+  document.querySelectorAll('.modal-thumb-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+
+  // Update dots
+  const imgs = window._modalImgs || [];
+  const idx = imgs.indexOf(src);
+  if (idx >= 0) {
+    window._modalImgIdx = idx;
+    document.querySelectorAll('.modal-dot').forEach((d,i) => d.classList.toggle('active', i===idx));
+  }
+}
+
+function modalImgNav(dir) {
+  const imgs = window._modalImgs || [];
+  if (!imgs.length) return;
+  window._modalImgIdx = ((window._modalImgIdx||0) + dir + imgs.length) % imgs.length;
+  const btn = document.querySelectorAll('.modal-thumb-btn')[window._modalImgIdx];
+  switchModalImg(imgs[window._modalImgIdx], btn);
+}
+
+function modalGoToImg(idx) {
+  const imgs = window._modalImgs || [];
+  if (!imgs[idx]) return;
+  const btn = document.querySelectorAll('.modal-thumb-btn')[idx];
+  switchModalImg(imgs[idx], btn);
+}
+
+function setupModalSwipe() {
+  const wrap = $('modalGalleryWrap');
+  if (!wrap) return;
+  let startX = 0, startY = 0;
+  wrap.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, { passive: true });
+  wrap.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) {
+      modalImgNav(dx < 0 ? 1 : -1);
+    }
+  }, { passive: true });
 }
 
 function adjustModalQty(d) {
   const el = $('modalQty');
-  if (el) el.value = Math.max(1, (parseInt(el.value)||1) + d);
+  if (el) el.value = Math.max(parseInt(el.min)||1, (parseInt(el.value)||1) + d);
 }
 
 function closeProductModal() {
@@ -902,12 +1039,10 @@ function updateAuthBtn() {
       : c ? (((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'')).toUpperCase() || '' : '';
     btn.style.cssText = 'background:var(--accent);border-radius:50%;color:#fff;font-size:12px;font-weight:900;font-family:Nunito,sans-serif;display:flex;align-items:center;justify-content:center;';
     if (State.user.role === 'admin') {
-      // Admin shield icon
-      btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>`;
+      btn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke="#fff" stroke-width="2.2"/></svg>`;
     } else if (initStr) {
       btn.innerHTML = `<span style="color:#fff;font-size:12px;font-weight:900">${initStr}</span>`;
     } else {
-      // Fallback person icon with check
       btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
     }
     btn.title = c ? (c.first_name + ' ' + c.last_name).trim() : 'Admin';
@@ -940,16 +1075,36 @@ function renderProfile() {
 
   const isAdmin = State.user.role === 'admin';
   const c = State.user.customer;
+  const orders = c?.orders || [];
 
-  // Avatar: initials SVG circle (no emoji)
+  // Avatar
   const initStr = isAdmin ? '' : (initials(c) || '?');
   const avatarHtml = isAdmin
-    ? `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/></svg>`
+    ? `<svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10" stroke="#fff" stroke-width="2.2"/></svg>`
     : `<span style="font-size:24px;font-weight:900;color:#fff;font-family:'Nunito',sans-serif">${escHtml(initStr)}</span>`;
 
   const displayName  = isAdmin ? 'Администратор' : `${escHtml(c?.first_name||'')} ${escHtml(c?.last_name||'')}`.trim();
   const displayEmail = isAdmin ? 'admin' : escHtml(c?.email || '');
-  const ordersCount  = c?.orders_count || 0;
+  const ordersCount  = orders.length;
+
+  const quickStats = !isAdmin ? `
+    <div class="profile-stats-row">
+      <div class="profile-stat-pill">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>
+        <div class="psp-val">${ordersCount}</div>
+        <div class="psp-lbl">Заказов</div>
+      </div>
+      <div class="profile-stat-pill">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2ECC71" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+        <div class="psp-val" style="color:#2ECC71">ОПТ</div>
+        <div class="psp-lbl">Статус</div>
+      </div>
+      <div class="profile-stat-pill" onclick="navigate('catalog')" style="cursor:pointer">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        <div class="psp-val" style="color:#7c3aed;font-size:11px">Каталог</div>
+        <div class="psp-lbl">Перейти</div>
+      </div>
+    </div>` : '';
 
   const adminBanner = isAdmin ? `
     <div class="profile-admin-banner" onclick="navigate('admin')">
@@ -963,27 +1118,6 @@ function renderProfile() {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
     </div>` : '';
 
-  // Quick stat pills for non-admin
-  const quickStats = !isAdmin ? `
-    <div class="profile-stats-row">
-      <div class="profile-stat-pill">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>
-        <div class="psp-val">${ordersCount}</div>
-        <div class="psp-lbl">Заказов</div>
-      </div>
-      <div class="profile-stat-pill">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2ECC71" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-        <div class="psp-val" style="color:#2ECC71">Опт</div>
-        <div class="psp-lbl">Статус</div>
-      </div>
-      <div class="profile-stat-pill" onclick="navigate('catalog')" style="cursor:pointer">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-        <div class="psp-val" style="color:#7c3aed">В каталог</div>
-        <div class="psp-lbl">Перейти</div>
-      </div>
-    </div>` : '';
-
-  // Editable settings card
   const settingsCard = !isAdmin ? `
     <div class="profile-card" id="profileSettingsCard">
       <h3>
@@ -991,24 +1125,20 @@ function renderProfile() {
         Настройки профиля
         <button class="btn-edit-profile" onclick="toggleProfileEdit()" id="profileEditBtn">Изменить</button>
       </h3>
-
-      <!-- View mode -->
       <div id="profileViewMode">
         <div class="info-row"><span>Имя</span><span>${escHtml(c?.first_name||'—')}</span></div>
         <div class="info-row"><span>Фамилия</span><span>${escHtml(c?.last_name||'—')}</span></div>
         <div class="info-row"><span>Email</span><span>${escHtml(c?.email||'—')}</span></div>
         <div class="info-row"><span>Телефон</span><span>${escHtml(c?.phone||'—')}</span></div>
         <div class="info-row"><span>Адрес доставки</span><span>${escHtml(c?.address||'—')}</span></div>
-        <div class="info-row"><span>Регистрация</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
+        <div class="info-row"><span>Дата регистрации</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
       </div>
-
-      <!-- Edit mode (hidden by default) -->
       <div id="profileEditMode" style="display:none">
         <div class="form-grid">
           <div class="field"><label>Имя</label><input id="pe-first" type="text" value="${escHtml(c?.first_name||'')}" placeholder="Иван"></div>
           <div class="field"><label>Фамилия</label><input id="pe-last" type="text" value="${escHtml(c?.last_name||'')}" placeholder="Иванов"></div>
         </div>
-        <div class="field"><label>Email</label><input id="pe-email" type="email" value="${escHtml(c?.email||'')}" placeholder="email@mail.ru" disabled style="opacity:.6;cursor:not-allowed"></div>
+        <div class="field"><label>Email</label><input id="pe-email" type="email" value="${escHtml(c?.email||'')}" disabled style="opacity:.6;cursor:not-allowed;background:#f5f5f5"></div>
         <div class="field"><label>Телефон</label><input id="pe-phone" type="tel" value="${escHtml(c?.phone||'')}" placeholder="+7 900 000 00 00"></div>
         <div class="field"><label>Адрес доставки</label><textarea id="pe-address" rows="2" placeholder="Город, улица, дом, квартира">${escHtml(c?.address||'')}</textarea></div>
         <div class="profile-edit-actions">
@@ -1021,77 +1151,47 @@ function renderProfile() {
       </div>
     </div>
 
-    <!-- Delivery preferences -->
     <div class="profile-card">
       <h3>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="1" y="3" width="15" height="13" rx="1"/><path d="M16 8h4l3 4v4h-7V8z"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>
         Доставка и оплата
       </h3>
       <div class="pref-row">
-        <div class="pref-row-info">
-          <div class="pref-row-title">Основной адрес доставки</div>
-          <div class="pref-row-sub">${escHtml(c?.address || 'Не указан')}</div>
-        </div>
-        <button class="pref-edit-btn" onclick="toggleProfileEdit();document.getElementById('pe-address')?.focus()">Изменить</button>
+        <div class="pref-row-info"><div class="pref-row-title">Основной адрес доставки</div><div class="pref-row-sub">${escHtml(c?.address||'Не указан')}</div></div>
+        <button class="pref-edit-btn" onclick="toggleProfileEdit();setTimeout(()=>document.getElementById('pe-address')?.focus(),200)">Изменить</button>
       </div>
       <div class="pref-row">
-        <div class="pref-row-info">
-          <div class="pref-row-title">Минимальный заказ</div>
-          <div class="pref-row-sub">Оптовые условия — от 1 упаковки</div>
-        </div>
+        <div class="pref-row-info"><div class="pref-row-title">Условия поставки</div><div class="pref-row-sub">Оптовые условия — от 1 упаковки</div></div>
         <span class="pref-badge">ОПТ</span>
       </div>
       <div class="pref-row">
-        <div class="pref-row-info">
-          <div class="pref-row-title">Способ оплаты</div>
-          <div class="pref-row-sub">Безналичный расчёт, счёт-фактура</div>
-        </div>
+        <div class="pref-row-info"><div class="pref-row-title">Способ оплаты</div><div class="pref-row-sub">Безналичный расчёт, счёт-фактура</div></div>
         <span class="pref-badge pref-badge-green">Активен</span>
       </div>
     </div>
 
-    <!-- Notification preferences -->
     <div class="profile-card">
       <h3>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
         Уведомления
       </h3>
       <div class="pref-toggle-row">
-        <div class="pref-row-info">
-          <div class="pref-row-title">Новые поступления</div>
-          <div class="pref-row-sub">Уведомлять о новых товарах</div>
-        </div>
-        <label class="toggle-switch">
-          <input type="checkbox" checked onchange="saveNotifPref('new_arrivals',this.checked)">
-          <span class="toggle-slider"></span>
-        </label>
+        <div class="pref-row-info"><div class="pref-row-title">Новые поступления</div><div class="pref-row-sub">Сообщать о новых товарах</div></div>
+        <label class="toggle-switch"><input type="checkbox" checked onchange="saveNotifPref('new_arrivals',this.checked)"><span class="toggle-slider"></span></label>
       </div>
       <div class="pref-toggle-row">
-        <div class="pref-row-info">
-          <div class="pref-row-title">Акции и скидки</div>
-          <div class="pref-row-sub">Получать информацию об акциях</div>
-        </div>
-        <label class="toggle-switch">
-          <input type="checkbox" checked onchange="saveNotifPref('promo',this.checked)">
-          <span class="toggle-slider"></span>
-        </label>
+        <div class="pref-row-info"><div class="pref-row-title">Акции и скидки</div><div class="pref-row-sub">Получать информацию об акциях</div></div>
+        <label class="toggle-switch"><input type="checkbox" checked onchange="saveNotifPref('promo',this.checked)"><span class="toggle-slider"></span></label>
       </div>
       <div class="pref-toggle-row">
-        <div class="pref-row-info">
-          <div class="pref-row-title">Статус заказа</div>
-          <div class="pref-row-sub">Уведомления об изменении заказа</div>
-        </div>
-        <label class="toggle-switch">
-          <input type="checkbox" checked onchange="saveNotifPref('order_status',this.checked)">
-          <span class="toggle-slider"></span>
-        </label>
+        <div class="pref-row-info"><div class="pref-row-title">Статус заказа</div><div class="pref-row-sub">Уведомления об изменении заказа</div></div>
+        <label class="toggle-switch"><input type="checkbox" checked onchange="saveNotifPref('order_status',this.checked)"><span class="toggle-slider"></span></label>
       </div>
     </div>
 
-    <!-- Change password -->
     <div class="profile-card">
       <h3>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         Безопасность
         <button class="btn-edit-profile" onclick="togglePasswordForm()">Сменить пароль</button>
       </h3>
@@ -1100,32 +1200,45 @@ function renderProfile() {
         <div class="field"><label>Повторите пароль</label><input id="pe-newpass2" type="password" placeholder="Повторите пароль"></div>
         <div class="profile-edit-actions" style="margin-top:8px">
           <button class="btn-profile-cancel" onclick="togglePasswordForm()">Отмена</button>
-          <button class="btn-primary" style="flex:1;padding:12px" onclick="saveNewPassword()">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Сохранить пароль
-          </button>
+          <button class="btn-primary" style="flex:1;padding:12px" onclick="saveNewPassword()">Сохранить пароль</button>
         </div>
       </div>
       <div class="info-row" style="border:none"><span>Последний вход</span><span>${new Date().toLocaleDateString('ru-RU')}</span></div>
       <div class="info-row" style="border:none"><span>Аккаунт создан</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
+    </div>
+
+    <div class="profile-card">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>
+        История заказов ${orders.length ? `<span class="orders-count-badge">${orders.length}</span>` : ''}
+      </h3>
+      ${orders.length
+        ? orders.map(o => `
+          <div class="order-row" onclick="window.open('/api/cart/${o.code}','_blank')">
+            <div><div class="order-code">#${o.code}</div><div class="order-meta">${(o.date||'').slice(0,10)} · ${o.items_count} позиций</div></div>
+            <div class="order-right"><div class="order-total">${rub(o.total)}</div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg></div>
+          </div>`).join('')
+        : `<div class="orders-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg>
+            <p>Заказов пока нет</p>
+            <button class="btn-primary" onclick="navigate('catalog')" style="margin-top:12px;font-size:13px;padding:10px 20px">Перейти в каталог</button>
+          </div>`
+      }
     </div>` : '';
 
   mc.innerHTML = `
     <div class="profile-page">
-      <!-- Hero banner -->
       <div class="profile-hero">
-        <div class="profile-avatar-lg ${isAdmin ? 'admin-avatar' : ''}">${avatarHtml}</div>
+        <div class="profile-avatar-lg ${isAdmin?'admin-avatar':''}">${avatarHtml}</div>
         <div class="profile-hero-info">
           <div class="profile-name">${displayName}</div>
           <div class="profile-email">${displayEmail}</div>
-          ${isAdmin ? '<div class="profile-role-badge">Администратор</div>' : `<div class="profile-role-badge">Оптовый клиент</div>`}
+          <div class="profile-role-badge">${isAdmin?'Администратор':'Оптовый клиент'}</div>
         </div>
       </div>
-
       ${quickStats}
       ${adminBanner}
       ${settingsCard}
-
       <button class="btn-logout" onclick="doLogout()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         Выйти из аккаунта
@@ -1134,44 +1247,38 @@ function renderProfile() {
 }
 
 function toggleProfileEdit() {
-  const view = $('profileViewMode');
-  const edit = $('profileEditMode');
-  const btn  = $('profileEditBtn');
+  const view = $('profileViewMode'), edit = $('profileEditMode'), btn = $('profileEditBtn');
   if (!view || !edit) return;
   const isEditing = edit.style.display !== 'none';
   view.style.display = isEditing ? 'block' : 'none';
   edit.style.display = isEditing ? 'none' : 'block';
   if (btn) btn.textContent = isEditing ? 'Изменить' : 'Отмена';
-  if (!isEditing) edit.querySelector('input')?.focus();
+  if (!isEditing) setTimeout(() => edit.querySelector('input:not([disabled])')?.focus(), 50);
 }
 
 function togglePasswordForm() {
-  const wrap = $('passwordFormWrap');
-  if (!wrap) return;
-  wrap.style.display = wrap.style.display === 'none' ? 'block' : 'none';
+  const w = $('passwordFormWrap');
+  if (w) w.style.display = w.style.display === 'none' ? 'block' : 'none';
 }
 
 async function saveProfileSettings() {
   const c = State.user?.customer;
   if (!c) return;
-  const first   = $('pe-first')?.value?.trim();
-  const last    = $('pe-last')?.value?.trim();
-  const phone   = $('pe-phone')?.value?.trim();
-  const address = $('pe-address')?.value?.trim();
+  const first = $('pe-first')?.value?.trim();
+  const last  = $('pe-last')?.value?.trim();
+  const phone = $('pe-phone')?.value?.trim();
+  const addr  = $('pe-address')?.value?.trim();
   if (!first || !last) { toast('Укажите имя и фамилию', 'err'); return; }
-  // Update locally and show success (real API update would go here)
-  State.user.customer = { ...c, first_name: first, last_name: last, phone, address };
-  saveSession();
-  updateAuthBtn();
+  State.user.customer = { ...c, first_name: first, last_name: last, phone, address: addr };
+  saveSession(); updateAuthBtn();
   toast('Профиль обновлён!');
   renderProfile();
 }
 
 function saveNotifPref(key, val) {
   try {
-    const prefs = JSON.parse(localStorage.getItem('ht_notif_prefs') || '{}');
-    prefs[key] = val;
-    localStorage.setItem('ht_notif_prefs', JSON.stringify(prefs));
+    const p = JSON.parse(localStorage.getItem('ht_notif_prefs')||'{}');
+    p[key] = val; localStorage.setItem('ht_notif_prefs', JSON.stringify(p));
     toast(val ? 'Уведомления включены' : 'Уведомления отключены');
   } catch(e) {}
 }
@@ -1181,7 +1288,6 @@ function saveNewPassword() {
   const p2 = $('pe-newpass2')?.value;
   if (!p1 || p1.length < 6) { toast('Пароль минимум 6 символов', 'err'); return; }
   if (p1 !== p2) { toast('Пароли не совпадают', 'err'); return; }
-  // In a real app, would call API to update password
   toast('Пароль успешно изменён!');
   togglePasswordForm();
 }
@@ -1500,6 +1606,7 @@ async function renderAdmin() {
 }
 
 async function renderAddProductForm() {
+  window._uploadedImgs = [];
   let cats = []; let brands = [];
   try { cats = await API.categories(); } catch(e){}
   try { brands = await API.get('/api/brands'); } catch(e){}
@@ -1516,10 +1623,8 @@ async function renderAddProductForm() {
       <button onclick="migrateImages()" class="btn-migrate">Заменить на заглушки</button>
     </div>
 
-    <!-- Multi-image upload: 1-5 photos -->
-    <div class="multi-img-label">
-      Фотографии товара <span class="multi-img-hint">мин. 1, макс. 5</span>
-    </div>
+    <!-- Multi-image: 1-5 photos -->
+    <div class="multi-img-label">Фотографии <span class="multi-img-hint">мин. 1, макс. 5</span></div>
     <div class="multi-img-grid" id="multiImgGrid">
       <div class="img-slot img-slot-main" id="imgSlot0" onclick="triggerImgSlot(0)">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
@@ -1533,7 +1638,6 @@ async function renderAddProductForm() {
         <input type="file" id="imgFileSlot${i}" accept="image/*" style="display:none" onchange="handleImgSlot(${i},this)">
       </div>`).join('')}
     </div>
-    <!-- Store uploaded image URLs -->
     <input type="hidden" id="fimg" value="">
     <input type="hidden" id="fimgs" value="[]">
 
@@ -1562,17 +1666,16 @@ async function renderAddProductForm() {
     <div class="form-grid">
       <div class="field">
         <label>Бренд</label>
-        <input id="fbrand" type="text" placeholder="Введите или выберите бренд..."
-               list="fbrand-list" autocomplete="off">
+        <input id="fbrand" type="text" placeholder="Введите или выберите бренд..." list="fbrand-list" autocomplete="off">
         <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
         <div class="brand-chips" id="brandChips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
       </div>
-      <div class="field"><label>Возраст от (лет)</label><input id="fagemin" type="number" value="3" min="0"></div>
+      <div class="field"><label>Возраст от (лет)</label><input id="fagemin" type="number" value="3" min="0" max="18"></div>
     </div>
     <div class="form-grid full">
       <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
     </div>
-    <button class="btn-primary" onclick="submitProduct()">
+    <button class="btn-primary" onclick="submitProduct()" style="min-width:200px">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Добавить товар
     </button>
@@ -1756,50 +1859,43 @@ async function renderCatalogManager() {
 }
 
 // ── Multi-image upload helpers ────────────────────────────────────────────────
-window._uploadedImgs = []; // array of {slot, url}
+window._uploadedImgs = [];
 
 function triggerImgSlot(slotIdx) {
-  const input = document.getElementById(`imgFileSlot${slotIdx}`);
-  if (input) input.click();
+  document.getElementById(`imgFileSlot${slotIdx}`)?.click();
 }
 
 async function handleImgSlot(slotIdx, input) {
   const file = input.files[0];
   if (!file) return;
-
   const slot = document.getElementById(`imgSlot${slotIdx}`);
   if (!slot) return;
 
-  // Show loading state
-  slot.innerHTML = `<div class="slot-loading"><div class="slot-spinner"></div></div><input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  slot.innerHTML = `<div class="slot-loading"><div class="slot-spinner"></div></div>
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
 
   let url = '';
   try {
     const data = await API.uploadImage(file);
     url = data.url;
   } catch(e) {
-    // Fallback to base64
     url = await new Promise(res => {
-      const reader = new FileReader();
-      reader.onload = ev => res(ev.target.result);
-      reader.readAsDataURL(file);
+      const r = new FileReader();
+      r.onload = ev => res(ev.target.result);
+      r.readAsDataURL(file);
     });
   }
 
-  // Store
   window._uploadedImgs = window._uploadedImgs.filter(x => x.slot !== slotIdx);
   window._uploadedImgs.push({ slot: slotIdx, url });
   window._uploadedImgs.sort((a,b) => a.slot - b.slot);
 
-  // Render slot with preview + remove button
   slot.className = `img-slot${slotIdx===0?' img-slot-main':''} has-img`;
   slot.innerHTML = `
     <img src="${url}" alt="photo ${slotIdx+1}" onclick="event.stopPropagation()">
     <button class="slot-remove" onclick="event.stopPropagation();removeImgSlot(${slotIdx})" title="Удалить">✕</button>
-    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">
-  `;
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
 
-  // Sync hidden fields
   syncImgFields();
   toast(slotIdx === 0 ? 'Главное фото загружено' : `Фото ${slotIdx+1} загружено`);
 }
@@ -1815,8 +1911,7 @@ function removeImgSlot(slotIdx) {
       ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
       : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${slotIdx+1}</span>`
     }
-    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">
-  `;
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
   slot.onclick = () => triggerImgSlot(slotIdx);
   syncImgFields();
 }
@@ -1829,10 +1924,7 @@ function syncImgFields() {
   if (imgsEl) imgsEl.value = JSON.stringify(imgs.map(x => x.url));
 }
 
-// Keep old previewUpload for backwards compat
-async function previewUpload(input) {
-  await handleImgSlot(0, input);
-}
+async function previewUpload(input) { await handleImgSlot(0, input); }
 
 async function migrateImages() {
   try {
@@ -1854,29 +1946,28 @@ async function saveBrandIfNew(name) {
 }
 
 async function submitProduct() {
-  const name      = $('fn')?.value?.trim();
-  const sku       = $('fsku')?.value?.trim();
-  const price     = parseFloat($('fprice')?.value || 0);
-  const priceOld  = parseFloat($('fprice-old')?.value) || null;
-  const qty       = parseInt($('fqty')?.value || 0);
-  const minOrder  = parseInt($('fminorder')?.value || 1);
-  const category  = $('fcat')?.value;
-  const subcat    = $('fsubcat')?.value || '';
-  const brand     = $('fbrand')?.value?.trim() || '';
-  const desc      = $('fdesc')?.value || '';
-  const ageMin    = parseInt($('fagemin')?.value || 3);
-  const mainImg   = $('fimg')?.value || '';
+  const name     = $('fn')?.value?.trim();
+  const sku      = $('fsku')?.value?.trim();
+  const price    = parseFloat($('fprice')?.value || 0);
+  const priceOld = parseFloat($('fprice-old')?.value) || null;
+  const qty      = parseInt($('fqty')?.value || 0);
+  const minOrder = parseInt($('fminorder')?.value || 1);
+  const category = $('fcat')?.value;
+  const subcat   = $('fsubcat')?.value || '';
+  const brand    = $('fbrand')?.value?.trim() || '';
+  const desc     = $('fdesc')?.value || '';
+  const ageMin   = parseInt($('fagemin')?.value || 3);
 
-  // Parse uploaded images array
   let imagesArr = [];
   try { imagesArr = JSON.parse($('fimgs')?.value || '[]'); } catch(e) {}
-  if (!imagesArr.length && mainImg) imagesArr = [mainImg];
+  const mainImg = imagesArr[0] || $('fimg')?.value || '';
 
-  if (!name)     { toast('Укажите название товара', 'err'); return; }
-  if (!sku)      { toast('Укажите артикул (SKU)', 'err'); return; }
-  if (!price || price <= 0) { toast('Укажите цену товара', 'err'); return; }
-  if (!category) { toast('Выберите категорию', 'err'); return; }
-  if (!imagesArr.length) { toast('Загрузите хотя бы одно фото товара', 'err'); return; }
+  if (!name)              { toast('Укажите название товара', 'err'); return; }
+  if (!sku)               { toast('Укажите артикул (SKU)', 'err'); return; }
+  if (!price || price<=0) { toast('Укажите цену товара', 'err'); return; }
+  if (!category)          { toast('Выберите категорию', 'err'); return; }
+  if (!imagesArr.length && !mainImg) { toast('Загрузите хотя бы одно фото', 'err'); return; }
+  if (!imagesArr.length && mainImg) imagesArr = [mainImg];
 
   const stock = qty > 10 ? 'ok' : qty > 0 ? 'low' : 'out';
 
@@ -1898,14 +1989,13 @@ async function submitProduct() {
   try {
     await API.post('/api/products', body);
     await saveBrandIfNew(brand);
-    toast('Товар добавлен!');
-    // Reset image slots
+    toast('Товар успешно добавлен!');
     window._uploadedImgs = [];
     renderAdmin();
   } catch(e) {
     const detail = e?.detail || e?.message || String(e);
     toast('Ошибка: ' + detail, 'err');
-    console.error('submitProduct error:', e);
+    console.error('submitProduct:', e);
   }
 }
 
