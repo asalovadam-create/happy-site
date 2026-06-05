@@ -297,34 +297,30 @@ function renderCart() {
 
 // ── Product Card ──────────────────────────────────────────────────────────────
 function renderProductCard(p) {
-  const tagClass = {
-    'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'
-  };
+  const tagClass = {'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'};
   const tags = (p.tags||[]).slice(0,2)
     .map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
 
-  // Build deduplicated image list
-  const rawImgs = Array.isArray(p.images) && p.images.length ? p.images : (p.image ? [p.image] : []);
-  const images  = [...new Set(rawImgs.filter(Boolean))];
-  const mainImg = images[0] || '';
+  // Images — deduplicate
+  const imgs = [...new Set(
+    (Array.isArray(p.images) && p.images.length ? p.images : (p.image?[p.image]:[])).filter(Boolean)
+  )];
+  const hasMulti = imgs.length > 1;
 
   const cartItem = State.cart[p.id];
   const cartQty  = cartItem ? cartItem.qty : 0;
   const isOut    = p.stock === 'out';
 
-  // Discount
   let discPct = 0;
   if (p.price_old && p.price_old > p.price)
     discPct = Math.round((1 - p.price / p.price_old) * 100);
 
-  // Stock badge
   const stockLabel = p.stock === 'ok'  ? '<span class="stock-badge stock-ok">В наличии</span>'
-                   : p.stock === 'low' ? '<span class="stock-badge stock-low">Мало</span>'
+                   : p.stock === 'low' ? '<span class="stock-badge stock-low">Заканчивается</span>'
                    : '<span class="stock-badge stock-out">Нет</span>';
 
-  // Cart control
   const ctrl = isOut
-    ? `<button class="card-add disabled" disabled title="Нет в наличии">
+    ? `<button class="card-add disabled" disabled>
          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
        </button>`
     : cartQty > 0
@@ -333,75 +329,59 @@ function renderProductCard(p) {
            <span class="qty-sm-val">${cartQty}</span>
            <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
          </div>`
-      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})" title="В корзину">
+      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})">
            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
          </button>`;
 
-  // ── Gallery strips (WB/Ozon style) ──
-  // Hover zones — invisible columns over the image to detect which photo to show
-  const hasGallery = images.length > 1;
+  // ── Gallery strip: ALL images rendered as a CSS scroll strip (no JS swap = no flicker) ──
+  // The strip slides horizontally via transform. Each image fills 100% of the wrap width.
+  const stripSlides = imgs.map((src, i) => `
+    <div class="cstrip-slide">
+      <div class="card-img-skeleton skeleton" id="csk-${p.id}-${i}"></div>
+      <img src="${escHtml(src)}" alt="${escHtml(p.name)} фото ${i+1}"
+           loading="${i===0?'eager':'lazy'}" decoding="async"
+           onload="document.getElementById('csk-${p.id}-${i}')?.remove();this.classList.add('loaded')"
+           onerror="document.getElementById('csk-${p.id}-${i}')?.remove();this.classList.add('loaded')">
+    </div>`).join('');
 
   // Dot indicators
-  const dots = hasGallery
+  const dots = hasMulti
     ? `<div class="card-dots" id="cdots-${p.id}">
-        ${images.map((_,i) => `<span class="card-dot${i===0?' active':''}"></span>`).join('')}
-       </div>`
-    : '';
+        ${imgs.map((_,i)=>`<span class="card-dot${i===0?' active':''}"></span>`).join('')}
+       </div>` : '';
 
-  // Hidden image preload list (data attribute)
-  const imagesAttr = hasGallery ? `data-images='${JSON.stringify(images).replace(/'/g,"&#39;")}'` : '';
+  // Hover zone strips (desktop) — thin divs that call cardGoto on mouseenter
+  const hoverZones = hasMulti
+    ? `<div class="card-hover-zones">
+        ${imgs.map((_,i)=>`<div onmouseenter="cardGoto(${p.id},${i},false)"></div>`).join('')}
+       </div>` : '';
 
-  // Hover segments — equal-width invisible divs that trigger photo change on hover
-  const segments = hasGallery
-    ? `<div class="card-hover-segments" onclick="event.stopPropagation();openProduct(${p.id})">
-        ${images.map((_,i) =>
-          `<div class="card-seg" onmouseenter="cardImgGoto(${p.id},${i})"
-               ontouchstart="cardImgGoto(${p.id},${i})"></div>`
-        ).join('')}
-       </div>`
-    : '';
+  // Encode images for data attribute (safe JSON, avoid ' issues)
+  const imgsData = hasMulti ? ` data-imgs="${escHtml(JSON.stringify(imgs))}"` : '';
 
   return `
-  <div class="product-card" id="card-${p.id}"
-       ${imagesAttr}
-       data-img-idx="0"
-       onclick="if(this._swipedAt&&Date.now()-this._swipedAt<350)return;openProduct(${p.id})">
+  <div class="product-card" id="card-${p.id}"${imgsData} data-cidx="0"
+       onclick="if(this._noclick){this._noclick=false;return;}openProduct(${p.id})">
 
-    <!-- ── Image zone ── -->
     <div class="card-img-wrap">
-      <div class="card-img-skeleton skeleton"></div>
-      <img id="cimg-${p.id}"
-           src="${escHtml(mainImg)}"
-           alt="${escHtml(p.name)}"
-           loading="lazy" decoding="async"
-           onload="this.previousElementSibling.style.display='none';this.classList.add('loaded')"
-           onerror="this.previousElementSibling.style.display='none';this.classList.add('loaded')">
+      <!-- CSS strip slider — NO JS image swap, zero flicker -->
+      <div class="card-strip" id="cstrip-${p.id}">
+        ${stripSlides}
+      </div>
 
-      <!-- Tags top-left -->
+      ${hoverZones}
       ${tags ? `<div class="card-tags">${tags}</div>` : ''}
-
-      <!-- Discount top-right -->
       ${discPct > 0 ? `<div class="card-disc-badge">-${discPct}%</div>` : ''}
-
-      <!-- Hover segments for gallery (above image, below tags) -->
-      ${segments}
-
-      <!-- Dots indicator -->
       ${dots}
-
-      <!-- Stock badge -->
       <div class="card-stock-wrap">${stockLabel}</div>
     </div>
 
-    <!-- ── Info ── -->
     <div class="card-body">
       <div class="card-name">${escHtml(p.name)}</div>
       ${p.brand ? `<div class="card-brand">${escHtml(p.brand)}</div>` : ''}
-      ${p.min_order && p.min_order > 1
-        ? `<div class="card-moq">Мин. заказ: ${p.min_order} шт</div>` : ''}
+      ${p.min_order && p.min_order > 1 ? `<div class="card-moq">Мин. заказ: ${p.min_order} шт</div>` : ''}
     </div>
 
-    <!-- ── Price + action ── -->
     <div class="card-price-row">
       <div class="card-price-block">
         <div class="card-price">${rub(p.price)}<span class="card-per"> / шт</span></div>
@@ -412,63 +392,61 @@ function renderProductCard(p) {
   </div>`;
 }
 
-// ── Card gallery controller ───────────────────────────────────────────────────
-function cardImgGoto(productId, idx) {
-  const card = document.getElementById('card-' + productId);
-  if (!card) return;
+// ── Card gallery controller ─────────────────────────────────────────────────
+// Uses CSS transform on the strip — no image src swap, no flicker
+function cardGoto(id, idx, animate = true) {
+  const card  = document.getElementById('card-' + id);
+  const strip = document.getElementById('cstrip-' + id);
+  const dotsEl= document.getElementById('cdots-' + id);
+  if (!card || !strip) return;
 
-  let images;
-  try { images = JSON.parse(card.dataset.images || '[]'); } catch(e) { return; }
-  if (!images[idx]) return;
+  const cur = parseInt(card.dataset.cidx || '0');
+  if (cur === idx) return;
 
-  const curIdx = parseInt(card.dataset.imgIdx || '0');
-  if (curIdx === idx) return;
+  let total = 1;
+  try { total = JSON.parse(card.dataset.imgs || '[]').length || 1; } catch(e){}
+  if (idx < 0 || idx >= total) return;
 
-  card.dataset.imgIdx = idx;
+  card.dataset.cidx = idx;
+  strip.style.transition = animate ? 'transform .28s cubic-bezier(.4,0,.2,1)' : 'none';
+  strip.style.transform  = `translateX(-${idx * 100}%)`;
 
-  // Swap main image with crossfade
-  const img = document.getElementById('cimg-' + productId);
-  if (img) {
-    img.style.opacity = '0';
-    img.style.transform = 'scale(0.97)';
-    setTimeout(() => {
-      img.src = images[idx];
-      img.onload = () => { img.style.opacity = '1'; img.style.transform = 'scale(1)'; };
-      img.onerror = () => { img.style.opacity = '1'; img.style.transform = 'scale(1)'; };
-    }, 100);
-  }
-
-  // Update dots
-  const dotsEl = document.getElementById('cdots-' + productId);
   if (dotsEl) {
-    dotsEl.querySelectorAll('.card-dot').forEach((d, i) => {
-      d.classList.toggle('active', i === idx);
-    });
+    dotsEl.querySelectorAll('.card-dot').forEach((d,i) => d.classList.toggle('active', i === idx));
   }
 }
 
-// Touch swipe on card (mobile)
-function initCardSwipe(card) {
-  let startX = 0;
-  let startY = 0;
+// Touch swipe on card — attach once after grid render
+function initCardTouchSwipe(card) {
+  if (card._swipeInited) return;
+  card._swipeInited = true;
+
+  let sx = 0, sy = 0, moved = false;
+
   card.addEventListener('touchstart', e => {
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
-  }, { passive: true });
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+    moved = false;
+  }, {passive: true});
+
+  card.addEventListener('touchmove', e => {
+    moved = true;
+  }, {passive: true});
+
   card.addEventListener('touchend', e => {
-    const dx = e.changedTouches[0].clientX - startX;
-    const dy = e.changedTouches[0].clientY - startY;
-    if (Math.abs(dx) < 30 || Math.abs(dx) < Math.abs(dy)) return;
-    let images;
-    try { images = JSON.parse(card.dataset.images || '[]'); } catch(e) { return; }
-    if (images.length < 2) return;
-    const cur  = parseInt(card.dataset.imgIdx || '0');
-    const next = (cur + (dx < 0 ? 1 : -1) + images.length) % images.length;
-    const idNum = parseInt(card.id.replace('card-',''));
-    cardImgGoto(idNum, next);
-    // Prevent card click from firing after swipe
-    card._swipedAt = Date.now();
-  }, { passive: true });
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    if (!moved || Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+
+    let imgs = [];
+    try { imgs = JSON.parse(card.dataset.imgs || '[]'); } catch(e){}
+    if (imgs.length < 2) return;
+
+    const id  = parseInt(card.id.replace('card-',''));
+    const cur = parseInt(card.dataset.cidx || '0');
+    cardGoto(id, Math.max(0, Math.min(imgs.length-1, cur + (dx < 0 ? 1 : -1))));
+    card._noclick = true; // suppress tap-to-open after swipe
+  }, {passive: true});
 }
 
 function renderSkeletons(n = 8) {
@@ -499,8 +477,8 @@ async function loadProducts() {
         : `<div class="empty-state">
              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
              <h3>Ничего не найдено</h3><p>Попробуйте изменить фильтры</p></div>`;
-      // Init touch swipe on cards that have multiple images
-      grid.querySelectorAll('.product-card[data-images]').forEach(initCardSwipe);
+      // Init touch swipe on cards with multiple images
+      grid.querySelectorAll('.product-card[data-imgs]').forEach(initCardTouchSwipe);
     }
 
     const countEl = $('productCount');
@@ -866,69 +844,209 @@ function renderCatalogProducts() {
 }
 
 // ── Product modal ─────────────────────────────────────────────────────────────
+// ── Product modal — full gallery + desktop two-column ────────────────────────
 async function openProduct(id) {
   const overlay = $('productOverlay');
   overlay.classList.add('open');
-  $('modalInner').innerHTML = `<div style="padding:40px;text-align:center"><div class="skeleton" style="width:100%;aspect-ratio:1;border-radius:20px 20px 0 0;margin-bottom:16px"></div></div>`;
+  // Skeleton loading state
+  $('modalInner').innerHTML = `
+    <div class="modal-skel-wrap">
+      <div class="skeleton modal-skel-img"></div>
+      <div class="modal-skel-body">
+        <div class="skeleton" style="height:12px;width:35%;border-radius:6px;margin-bottom:10px"></div>
+        <div class="skeleton" style="height:24px;width:85%;border-radius:8px;margin-bottom:8px"></div>
+        <div class="skeleton" style="height:24px;width:60%;border-radius:8px;margin-bottom:16px"></div>
+        <div class="skeleton" style="height:36px;width:40%;border-radius:10px;margin-bottom:12px"></div>
+        <div class="skeleton" style="height:52px;border-radius:12px"></div>
+      </div>
+    </div>`;
 
   try {
     const p = await API.product(id);
     State._lastProduct = p;
 
-    const inCart = !!State.cart[id];
-    const disabled = p.stock === 'out' ? 'disabled' : '';
+    // Images
+    const imgs = [...new Set(
+      (Array.isArray(p.images) && p.images.length ? p.images : (p.image?[p.image]:[])).filter(Boolean)
+    )];
+    const hasMulti = imgs.length > 1;
 
-    const similar = (p.similar || []).map(s => `
+    // Discount
+    let discPct = 0;
+    if (p.price_old && p.price_old > p.price)
+      discPct = Math.round((1-p.price/p.price_old)*100);
+
+    const inCart  = !!State.cart[id];
+    const isOut   = p.stock === 'out';
+    const minQty  = p.min_order || 1;
+
+    // Stock indicator
+    const stockMap = {ok:['В наличии','#2ECC71'],low:['Заканчивается','#f59e0b'],out:['Нет в наличии','#E74C3C']};
+    const [sLabel, sColor] = stockMap[p.stock] || stockMap.out;
+
+    // ── Gallery: CSS strip slider (same technique as card — zero flicker) ──
+    const slides = imgs.map((src, i) => `
+      <div class="mgal-slide">
+        <div class="skeleton" id="msk-${i}" style="position:absolute;inset:0;border-radius:0;z-index:1"></div>
+        <img src="${escHtml(src)}" alt="${escHtml(p.name)} фото ${i+1}"
+             loading="${i===0?'eager':'lazy'}" decoding="async"
+             style="width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:2"
+             onload="document.getElementById('msk-${i}')?.remove()"
+             onerror="document.getElementById('msk-${i}')?.remove()">
+      </div>`).join('');
+
+    // Thumb strip
+    const thumbs = hasMulti ? imgs.map((src,i) => `
+      <button class="mgal-thumb ${i===0?'active':''}" id="mthumb-${i}"
+              onclick="modalGoto(${i})" title="Фото ${i+1}">
+        <img src="${escHtml(src)}" alt="фото ${i+1}" loading="lazy">
+      </button>`).join('') : '';
+
+    // Nav arrows
+    const arrows = hasMulti ? `
+      <button class="mgal-arrow mgal-prev" onclick="modalGoto(window._mIdx-1)" aria-label="Назад">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button class="mgal-arrow mgal-next" onclick="modalGoto(window._mIdx+1)" aria-label="Вперёд">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>` : '';
+
+    // Dot counter "2 / 5"
+    const counter = hasMulti
+      ? `<div class="mgal-counter" id="mgal-counter">1 / ${imgs.length}</div>` : '';
+
+    // Similar products
+    const similar = (p.similar||[]).map(s => `
       <div class="similar-card" onclick="openProduct(${s.id})">
-        <img src="${escHtml(s.image)}" alt="${escHtml(s.name)}">
+        <img src="${escHtml(s.image||s.images?.[0]||'')}" alt="${escHtml(s.name)}" loading="lazy">
         <div class="similar-card-info">
           <div class="similar-card-name">${escHtml(s.name)}</div>
           <div class="similar-card-price">${rub(s.price)}</div>
         </div>
       </div>`).join('');
 
+    window._mImgs  = imgs;
+    window._mIdx   = 0;
+    window._mTotal = imgs.length;
+
     $('modalInner').innerHTML = `
-      <img class="product-modal-img" id="modalMainImg" src="${escHtml((p.images&&p.images[0])||p.image||'')}" alt="${escHtml(p.name)}" onerror="this.src='/static/icon-192.png'">
-      <div class="product-modal-body">
-        <div class="product-modal-brand">${escHtml(p.brand)} · ${escHtml(p.category)}</div>
-        <div class="product-modal-name">${escHtml(p.name)}</div>
-        <div class="product-modal-sku">SKU: ${escHtml(p.sku)} · Возраст: ${p.age_min}+</div>
-        <div class="product-modal-price">
-          ${rub(p.price)} <small>/ шт</small>
-          ${p.price_old && p.price_old > p.price
-            ? `<span class="modal-price-old">${rub(p.price_old)}</span>
-               <span class="modal-discount-badge">-${Math.round((1-p.price/p.price_old)*100)}%</span>`
-            : ''}
-        </div>
-        <div class="product-modal-wholesale">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-          <div><strong>Оптовые условия:</strong> мин. заказ ${p.min_order} шт · цена за единицу · счёт по запросу</div>
-        </div>
-        <div class="product-modal-desc">${escHtml(p.description)}</div>
+      <div class="modal-layout">
 
-        <div class="product-modal-add">
-          <div class="qty-row">
-            <button onclick="adjustModalQty(-1)">−</button>
-            <input id="modalQty" type="number" value="1" min="1" max="999">
-            <button onclick="adjustModalQty(1)">+</button>
+        <!-- ── LEFT: gallery ── -->
+        <div class="mgal-col">
+          <div class="mgal-main" id="mgal-main">
+            <div class="mgal-strip" id="mgal-strip">${slides}</div>
+            ${arrows}
+            ${counter}
+            ${discPct > 0 ? `<div class="mgal-disc-pill">−${discPct}%</div>` : ''}
           </div>
-          <button class="btn-primary" style="flex:1" ${disabled}
-            onclick="addToCart(${p.id}, parseInt($('modalQty').value)||1);closeProductModal()">
-            ${inCart ? '✓ В корзине' : 'В корзину'}
-          </button>
+          ${hasMulti ? `<div class="mgal-thumbs" id="mgal-thumbs">${thumbs}</div>` : ''}
         </div>
 
-        ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
-      </div>
-    `;
+        <!-- ── RIGHT: info ── -->
+        <div class="modal-info-col">
+          <div class="product-modal-body">
+            <div class="product-modal-brand">
+              ${[p.brand, p.category, p.subcategory].filter(Boolean).map(escHtml).join(' · ')}
+            </div>
+            <div class="product-modal-name">${escHtml(p.name)}</div>
+
+            <div class="modal-meta-pills">
+              <span class="modal-sku-pill">SKU: ${escHtml(p.sku||'')}</span>
+              ${p.age_min ? `<span class="modal-age-pill">${p.age_min}+</span>` : ''}
+              <span class="modal-stock-pill" style="background:${sColor}18;color:${sColor}">
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${sColor};margin-right:4px;vertical-align:middle"></span>
+                ${sLabel}
+              </span>
+            </div>
+
+            <div class="product-modal-price">
+              ${rub(p.price)}<small> / шт</small>
+              ${discPct > 0 ? `<span class="modal-price-old">${rub(p.price_old)}</span>
+                               <span class="modal-discount-badge">−${discPct}%</span>` : ''}
+            </div>
+
+            <div class="product-modal-wholesale">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+              <div><strong>Оптовые условия:</strong> мин. заказ ${minQty} шт · счёт по запросу</div>
+            </div>
+
+            ${p.description ? `<div class="product-modal-desc">${escHtml(p.description)}</div>` : ''}
+
+            <div class="product-modal-add">
+              <div class="qty-row">
+                <button onclick="adjustModalQty(-1)">−</button>
+                <input id="modalQty" type="number" value="${minQty}" min="${minQty}" max="9999">
+                <button onclick="adjustModalQty(1)">+</button>
+              </div>
+              <button class="btn-primary" style="flex:1" ${isOut?'disabled':''}
+                onclick="addToCart(${p.id},parseInt($('modalQty').value)||${minQty});closeProductModal()">
+                ${isOut ? 'Нет в наличии' : inCart ? '✓ Ещё в корзину' : 'В корзину'}
+              </button>
+            </div>
+
+            ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
+          </div>
+        </div>
+      </div>`;
+
+    // Init touch swipe on gallery
+    _initModalSwipe();
+
   } catch(e) {
-    $('modalInner').innerHTML = `<div style="padding:40px;text-align:center;color:#999">Ошибка загрузки</div>`;
+    $('modalInner').innerHTML = `
+      <div style="padding:60px 20px;text-align:center;color:#999">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <p style="margin-top:12px">Ошибка загрузки</p>
+        <button class="btn-primary" style="margin-top:16px;padding:10px 20px;font-size:13px" onclick="openProduct(${id})">Повторить</button>
+      </div>`;
+    console.error('openProduct:', e);
   }
+}
+
+// ── Modal gallery navigation ──────────────────────────────────────────────────
+function modalGoto(idx) {
+  const total = window._mTotal || 1;
+  idx = ((idx % total) + total) % total; // wrap around
+  if (idx === window._mIdx) return;
+  window._mIdx = idx;
+
+  // Slide strip
+  const strip = $('mgal-strip');
+  if (strip) {
+    strip.style.transition = 'transform .3s cubic-bezier(.4,0,.2,1)';
+    strip.style.transform  = `translateX(-${idx * 100}%)`;
+  }
+
+  // Thumbs
+  document.querySelectorAll('.mgal-thumb').forEach((t,i) => t.classList.toggle('active', i===idx));
+
+  // Scroll active thumb into view
+  const activeThumb = document.getElementById('mthumb-' + idx);
+  if (activeThumb) activeThumb.scrollIntoView({behavior:'smooth', block:'nearest', inline:'center'});
+
+  // Counter
+  const counter = $('mgal-counter');
+  if (counter) counter.textContent = `${idx+1} / ${total}`;
+}
+
+function _initModalSwipe() {
+  const main = $('mgal-main');
+  if (!main || (window._mTotal||1) < 2) return;
+  let sx=0, sy=0, moved=false;
+  main.addEventListener('touchstart', e=>{sx=e.touches[0].clientX;sy=e.touches[0].clientY;moved=false;},{passive:true});
+  main.addEventListener('touchmove',  ()=>{moved=true;},{passive:true});
+  main.addEventListener('touchend', e=>{
+    const dx=e.changedTouches[0].clientX-sx, dy=e.changedTouches[0].clientY-sy;
+    if(!moved||Math.abs(dx)<30||Math.abs(dx)<Math.abs(dy)*1.3) return;
+    modalGoto((window._mIdx||0)+(dx<0?1:-1));
+  },{passive:true});
 }
 
 function adjustModalQty(d) {
   const el = $('modalQty');
-  if (el) el.value = Math.max(1, (parseInt(el.value)||1) + d);
+  if (!el) return;
+  el.value = Math.max(parseInt(el.min)||1, (parseInt(el.value)||1) + d);
 }
 
 function closeProductModal() {
@@ -1000,7 +1118,7 @@ function updateAuthBtn() {
       const initStr = c ? (((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'')).toUpperCase() : '';
       btn.innerHTML = initStr
         ? `<span style="color:#fff;font-size:12px;font-weight:900">${initStr}</span>`
-        : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+        : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
     }
     btn.title = c ? (c.first_name + ' ' + c.last_name).trim() : 'Admin';
     btn.onclick = () => navigate(State.user.role === 'admin' ? 'admin' : 'profile');
@@ -1035,7 +1153,7 @@ function renderProfile() {
   const c = State.user.customer;
   const orders = c?.orders || [];
 
-  const avatarLetter = isAdmin ? '🛡' : (initials(c) || '?');
+  const avatarLetter = isAdmin ? '' : (initials(c) || '?');
   const displayName  = isAdmin ? 'Администратор' : `${escHtml(c?.first_name||'')} ${escHtml(c?.last_name||'')}`.trim();
   const displayEmail = isAdmin ? 'admin' : escHtml(c?.email || '');
 
@@ -1425,11 +1543,11 @@ async function renderAdmin() {
 }
 
 async function renderAddProductForm() {
+  window._uploadedImgs = [];
   let cats = []; let brands = [];
   try { cats = await API.categories(); } catch(e){}
   try { brands = await API.get('/api/brands'); } catch(e){}
   const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
-  const brandOpts = brands.map(b=>`<option value="${escHtml(b.name)}">${escHtml(b.name)}</option>`).join('');
   const brandOptsDatalist = brands.map(b=>`<option value="${escHtml(b.name)}"></option>`).join('');
   return `
   <div class="admin-section">
@@ -1442,54 +1560,53 @@ async function renderAddProductForm() {
       <button onclick="migrateImages()" class="btn-migrate">Заменить на заглушки</button>
     </div>
 
-    <div class="img-upload-area" id="imgUploadArea" onclick="$('imgFile').click()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-      <p>Нажмите чтобы загрузить фото<br><small>или вставьте URL ниже</small></p>
-      <input type="file" id="imgFile" accept="image/*" onchange="previewUpload(this)">
+    <!-- Multi-image upload 1-5 -->
+    <div class="multi-img-label">Фотографии <span class="multi-img-hint">мин. 1 · макс. 5</span></div>
+    <div class="multi-img-grid" id="multiImgGrid">
+      <div class="img-slot img-slot-main" id="imgSlot0" onclick="triggerImgSlot(0)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <span>Главное фото</span>
+        <input type="file" id="imgFileSlot0" accept="image/*" style="display:none" onchange="handleImgSlot(0,this)">
+      </div>
+      ${[1,2,3,4].map(i=>`
+      <div class="img-slot" id="imgSlot${i}" onclick="triggerImgSlot(${i})">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>Фото ${i+1}</span>
+        <input type="file" id="imgFileSlot${i}" accept="image/*" style="display:none" onchange="handleImgSlot(${i},this)">
+      </div>`).join('')}
     </div>
-
-    <!-- Images hidden - use upload only -->
     <input type="hidden" id="fimg" value="">
+    <input type="hidden" id="fimgs" value="[]">
+
     <div class="form-grid">
       <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
       <div class="field"><label>Артикул *</label><input id="fsku" type="text" placeholder="10201"></div>
     </div>
     <div class="form-grid">
       <div class="field"><label>Цена (₽) *</label><input id="fprice" type="number" step="0.01" placeholder="999.99"></div>
-      <div class="field"><label>Старая цена (₽) <small style="color:#aaa">необязательно</small></label><input id="fprice-old" type="number" step="0.01" placeholder="1500.00"></div>
+      <div class="field"><label>Старая цена (₽)</label><input id="fprice-old" type="number" step="0.01" placeholder="1500.00"></div>
     </div>
     <div class="form-grid">
       <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
       <div class="field"><label>Мин. заказ (шт)</label><input id="fminorder" type="number" value="1" min="1"></div>
     </div>
     <div class="form-grid">
-      <div class="field">
-        <label>Категория *</label>
-        <select id="fcat" onchange="loadSubcatsAdmin(this.value)">${catOpts}</select>
-      </div>
-      <div class="field">
-        <label>Подраздел</label>
-        <select id="fsubcat"><option value="">— выберите категорию —</option></select>
-      </div>
+      <div class="field"><label>Категория *</label><select id="fcat" onchange="loadSubcatsAdmin(this.value)">${catOpts}</select></div>
+      <div class="field"><label>Подраздел</label><select id="fsubcat"><option value="">— выберите —</option></select></div>
     </div>
     <div class="form-grid">
       <div class="field">
         <label>Бренд</label>
-        <div class="brand-input-wrap" style="position:relative">
-          <input id="fbrand" type="text" placeholder="Введите или выберите бренд..."
-                 list="fbrand-list"
-                 oninput="filterBrandList(this.value)"
-                 autocomplete="off">
-          <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
-        </div>
-        <div class="brand-chips" id="brandChips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
+        <input id="fbrand" type="text" placeholder="Введите или выберите..." list="fbrand-list" autocomplete="off">
+        <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
+        <div class="brand-chips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
       </div>
       <div class="field"><label>Возраст от (лет)</label><input id="fagemin" type="number" value="3" min="0" max="18"></div>
     </div>
     <div class="form-grid full">
       <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
     </div>
-    <button class="btn-primary" onclick="submitProduct()">
+    <button class="btn-primary" onclick="submitProduct()" style="min-width:200px">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Добавить товар
     </button>
@@ -1716,37 +1833,104 @@ async function saveBrandIfNew(name) {
 }
 
 async function submitProduct() {
+  const name     = $('fn')?.value?.trim();
+  const sku      = $('fsku')?.value?.trim();
+  const price    = parseFloat($('fprice')?.value || 0);
+  const priceOld = parseFloat($('fprice-old')?.value) || null;
+  const qty      = parseInt($('fqty')?.value || 0);
+  const minOrder = parseInt($('fminorder')?.value || 1);
+  const category = $('fcat')?.value;
+  const subcat   = $('fsubcat')?.value || '';
+  const brand    = $('fbrand')?.value?.trim() || '';
+  const desc     = $('fdesc')?.value || '';
+  const ageMin   = parseInt($('fagemin')?.value || 3);
+  const imgMain  = $('fimg')?.value || '';
+
+  let imgsArr = [];
+  try { imgsArr = JSON.parse($('fimgs')?.value || '[]'); } catch(e){}
+  if (!imgsArr.length && imgMain) imgsArr = [imgMain];
+
+  if (!name)             { toast('Укажите название товара', 'err'); return; }
+  if (!sku)              { toast('Укажите артикул', 'err'); return; }
+  if (!price || price<=0){ toast('Укажите цену', 'err'); return; }
+  if (!category)         { toast('Выберите категорию', 'err'); return; }
+  if (!imgsArr.length)   { toast('Загрузите хотя бы одно фото', 'err'); return; }
+
+  const stock = qty > 10 ? 'ok' : qty > 0 ? 'low' : 'out';
   const body = {
-    name:        $('fn')?.value?.trim(),
-    sku:         $('fsku')?.value?.trim(),
-    price:       parseFloat($('fprice')?.value || 0),
-    price_old:   parseFloat($('fprice-old')?.value) || null,
-    stock_qty:   parseInt($('fqty')?.value || 0),
-    category:    $('fcat')?.value,
-    subcategory: $('fsubcat')?.value || '',
-    brand:       $('fbrand')?.value,
-    image:       $('fimg')?.value || '',
-    description: $('fdesc')?.value || '',
-    min_order:   parseInt($('fminorder')?.value || 1),
-    stock: parseInt($('fqty')?.value||0) > 10 ? 'ok' : parseInt($('fqty')?.value||0) > 0 ? 'low' : 'out',
-    age_min: parseInt($('fagemin')?.value || 3),
+    name, sku, price, price_old: priceOld,
+    stock_qty: qty, category, subcategory: subcat,
+    brand, image: imgsArr[0]||'', images: imgsArr,
+    description: desc, min_order: minOrder,
+    age_min: ageMin, stock,
   };
-  if (!body.name)  { toast('Укажите название товара', 'err'); return; }
-  if (!body.sku)   { toast('Укажите артикул (SKU)', 'err'); return; }
-  if (!body.price || body.price <= 0) { toast('Укажите цену', 'err'); return; }
-  if (!body.category) { toast('Выберите категорию', 'err'); return; }
-  if (!body.image) { toast('Загрузите хотя бы одно фото', 'err'); return; }
+
   try {
     await API.post('/api/products', body);
-    await saveBrandIfNew(body.brand);
+    await saveBrandIfNew(brand);
+    window._uploadedImgs = [];
     toast('Товар успешно добавлен!');
     renderAdmin();
   } catch(e) {
-    const det = e?.detail || e?.message || String(e);
-    toast('Ошибка: ' + det, 'err');
+    toast('Ошибка: ' + (e?.detail || e?.message || e), 'err');
     console.error('submitProduct:', e);
   }
 }
+
+// ── Multi-image upload (admin add product) ────────────────────────────────────
+window._uploadedImgs = [];
+
+function triggerImgSlot(slotIdx) {
+  document.getElementById(`imgFileSlot${slotIdx}`)?.click();
+}
+
+async function handleImgSlot(slotIdx, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const slot = document.getElementById(`imgSlot${slotIdx}`);
+  if (!slot) return;
+  slot.innerHTML = `<div class="slot-loading"><div class="slot-spinner"></div></div>
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  let url = '';
+  try {
+    const d = await API.uploadImage(file);
+    url = d.url;
+  } catch(e) {
+    url = await new Promise(res => { const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsDataURL(file); });
+  }
+  window._uploadedImgs = window._uploadedImgs.filter(x=>x.slot!==slotIdx);
+  window._uploadedImgs.push({slot:slotIdx, url});
+  window._uploadedImgs.sort((a,b)=>a.slot-b.slot);
+  slot.className = `img-slot${slotIdx===0?' img-slot-main':''} has-img`;
+  slot.innerHTML = `<img src="${url}" alt="photo ${slotIdx+1}" onclick="event.stopPropagation()">
+    <button class="slot-remove" onclick="event.stopPropagation();removeImgSlot(${slotIdx})">✕</button>
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  syncImgFields();
+  toast(slotIdx===0?'Главное фото загружено':`Фото ${slotIdx+1} загружено`);
+}
+
+function removeImgSlot(slotIdx) {
+  window._uploadedImgs = window._uploadedImgs.filter(x=>x.slot!==slotIdx);
+  const slot = document.getElementById(`imgSlot${slotIdx}`);
+  if (!slot) return;
+  const isMain = slotIdx===0;
+  slot.className = `img-slot${isMain?' img-slot-main':''}`;
+  slot.innerHTML = `${isMain
+    ?`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
+    :`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${slotIdx+1}</span>`}
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  slot.onclick = ()=>triggerImgSlot(slotIdx);
+  syncImgFields();
+}
+
+function syncImgFields() {
+  const imgs = window._uploadedImgs;
+  const me = document.getElementById('fimg');  const ie = document.getElementById('fimgs');
+  if (me) me.value = imgs[0]?.url||'';
+  if (ie) ie.value = JSON.stringify(imgs.map(x=>x.url));
+}
+
+async function previewUpload(input) { await handleImgSlot(0, input); }
 
 function renderCustomersTable(customers) {
   if (!customers.length) return `<div class="admin-section"><h3>Клиенты</h3><p style="color:#999;font-size:14px">Нет зарегистрированных клиентов</p></div>`;
