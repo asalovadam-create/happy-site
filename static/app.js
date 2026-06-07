@@ -123,9 +123,32 @@ const API = {
   adminCustomers(){ return this.get('/api/admin/customers'); },
 
   async uploadImage(file) {
-    const form = new FormData();
-    form.append('file', file);
-    return this.req('POST', '/api/upload-image', form, true);
+    // Direct upload to Cloudinary — bypasses our server entirely
+    // This means: no server load, no file size limits from us, faster upload
+    try {
+      const sig = await this.get('/api/cloudinary-signature');
+      const form = new FormData();
+      form.append('file', file);
+      form.append('api_key', sig.api_key);
+      form.append('timestamp', sig.timestamp);
+      form.append('signature', sig.signature);
+      form.append('folder', sig.folder);
+      form.append('eager', sig.eager);
+      const res = await fetch(
+        `https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`,
+        { method: 'POST', body: form }
+      );
+      if (!res.ok) throw new Error('Cloudinary error');
+      const data = await res.json();
+      // Use the eager transformed version (800x800, auto quality)
+      const url = (data.eager && data.eager[0]) ? data.eager[0].secure_url : data.secure_url;
+      return { url, public_id: data.public_id };
+    } catch(e) {
+      // Fallback to server-side upload if direct fails
+      const form = new FormData();
+      form.append('file', file);
+      return this.req('POST', '/api/upload-image', form, true);
+    }
   },
 };
 
@@ -2190,11 +2213,26 @@ function navigate(page) {
   const btn = $(`bn-${page}`);
   if (btn) btn.classList.add('active');
 
-  if (!$('mainContent')) return;
-  if (page === 'home')    renderHome();
-  if (page === 'catalog') { State.category = null; State.search = ''; renderCatalog(); }
-  if (page === 'profile') renderProfile();
-  if (page === 'admin')   renderAdmin();
+  const mc = $('mainContent');
+  if (!mc) return;
+
+  // Show skeleton IMMEDIATELY on click — before any network requests
+  const skel = (h=80) => `<div class="skeleton" style="height:${h}px;border-radius:16px;margin-bottom:12px"></div>`;
+  if (page === 'home') {
+    mc.innerHTML = `<div style="padding:16px">${skel(180)}${skel(40)}${skel(200)}${skel(200)}</div>`;
+  } else if (page === 'catalog') {
+    mc.innerHTML = `<div style="padding:16px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">${Array(9).fill(`<div class="skeleton" style="height:90px;border-radius:16px"></div>`).join('')}</div></div>`;
+  } else if (page === 'profile' || page === 'admin') {
+    mc.innerHTML = `<div style="padding:16px">${skel(80)}${skel(120)}${skel(120)}</div>`;
+  }
+
+  // Then render real content
+  requestAnimationFrame(() => {
+    if (page === 'home')    renderHome();
+    if (page === 'catalog') { State.category = null; State.search = ''; renderCatalog(); }
+    if (page === 'profile') renderProfile();
+    if (page === 'admin')   renderAdmin();
+  });
 }
 
 // ── Events ────────────────────────────────────────────────────────────────────
