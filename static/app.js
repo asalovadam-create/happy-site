@@ -25,6 +25,8 @@ const State = {
 
 // ── Session persistence ───────────────────────────────────────────────────────
 const _SK = 'ht_sess_v1';
+const _CK = 'ht_cart_v2';
+
 function saveSession() {
   try {
     State.user
@@ -32,6 +34,18 @@ function saveSession() {
       : localStorage.removeItem(_SK);
   } catch(e) {}
 }
+
+function loadCartFromStorage() {
+  try {
+    const raw = localStorage.getItem(_CK) || localStorage.getItem('ht_cart');
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved && typeof saved === 'object') {
+      State.cart = saved;
+    }
+  } catch(e) {}
+}
+
 async function loadSession() {
   try {
     const s = JSON.parse(localStorage.getItem(_SK) || 'null');
@@ -207,6 +221,7 @@ function addToCart(id, qty = 1) {
   } else {
     State.cart[id] = { product: p, qty };
   }
+  saveCart();
   renderCart();
   toast(`${p.name.slice(0,30)} добавлен в корзину`);
   updateCartBadge();
@@ -214,6 +229,7 @@ function addToCart(id, qty = 1) {
 
 function removeFromCart(id) {
   delete State.cart[id];
+  saveCart();
   renderCart();
   updateCartBadge();
 }
@@ -221,15 +237,17 @@ function removeFromCart(id) {
 function adjustQty(id, delta) {
   if (!State.cart[id]) return;
   State.cart[id].qty = Math.max(1, State.cart[id].qty + delta);
+  saveCart();
   renderCart();
 }
 
 function saveCart() {
-  try { localStorage.setItem('ht_cart', JSON.stringify(State.cart)); } catch(e){}
+  try { localStorage.setItem(_CK, JSON.stringify(State.cart)); } catch(e){}
 }
 
 function updateCartBadge() {
   const count = Object.values(State.cart).reduce((s, i) => s + i.qty, 0);
+  const total = Object.values(State.cart).reduce((s, i) => s + (i.product?.price || 0) * i.qty, 0);
   const badge = $('cartBadge');
   if (badge) {
     badge.textContent = count;
@@ -237,6 +255,16 @@ function updateCartBadge() {
   }
   const headCount = $('cartHeadCount');
   if (headCount) headCount.textContent = count;
+  // Show total below cart icon
+  const totalBadge = $('cartTotalBadge');
+  if (totalBadge) {
+    if (count > 0) {
+      totalBadge.textContent = '₽' + Math.round(total).toLocaleString('ru');
+      totalBadge.style.display = 'block';
+    } else {
+      totalBadge.style.display = 'none';
+    }
+  }
 }
 
 function toggleCart() {
@@ -278,7 +306,7 @@ function renderCart() {
         <div class="qty-row" style="margin-top:6px">
           <button onclick="adjustQty(${p.id},-1)">−</button>
           <input type="number" value="${qty}" min="1"
-            onchange="State.cart[${p.id}].qty=Math.max(1,parseInt(this.value)||1);renderCart();updateCartBadge()">
+            onchange="State.cart[${p.id}].qty=Math.max(1,parseInt(this.value)||1);saveCart();renderCart();updateCartBadge()">
           <button onclick="adjustQty(${p.id},1)">+</button>
         </div>
         <div class="cart-item-price">${rub(sub)}</div>
@@ -565,6 +593,7 @@ function clearCartConfirm() {
   if (!Object.keys(State.cart).length) return;
   showConfirm('Очистить корзину?', 'Все добавленные товары будут удалены.', () => {
     State.cart = {};
+    saveCart();
     renderCart();
     updateCartBadge();
     toast('Корзина очищена');
@@ -848,6 +877,8 @@ function renderCatalogProducts() {
 async function openProduct(id) {
   const overlay = $('productOverlay');
   overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  document.documentElement.style.overflow = 'hidden';
   // Skeleton loading state
   $('modalInner').innerHTML = `
     <div class="modal-skel-wrap">
@@ -1051,11 +1082,13 @@ function adjustModalQty(d) {
 
 function closeProductModal() {
   $('productOverlay').classList.remove('open');
+  document.body.style.overflow = '';
+  document.documentElement.style.overflow = '';
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-function openAuth()  { $('authOverlay').classList.add('open'); }
-function closeAuth() { $('authOverlay').classList.remove('open'); }
+function openAuth()  { $('authOverlay').classList.add('open'); document.body.style.overflow = 'hidden'; }
+function closeAuth() { $('authOverlay').classList.remove('open'); document.body.style.overflow = ''; }
 
 function switchTab(tab) {
   $('formLogin').style.display    = tab === 'login'    ? 'block' : 'none';
@@ -1519,7 +1552,12 @@ async function renderAdmin() {
   </div>`;
 
   try {
-    const [stats, carts, customers] = await Promise.all([API.adminStats(), API.adminCarts(), API.adminCustomers()]);
+    const [stats, carts, customers, visitorsData] = await Promise.all([
+      API.adminStats(),
+      API.adminCarts(),
+      API.adminCustomers(),
+      API.get('/api/admin/visitors').catch(() => ({visitors:[]}))
+    ]);
     $('adminStats').innerHTML = `
       <div class="stat-card"><div class="stat-label">Товаров</div><div class="stat-val">${stats.total_products}</div></div>
       <div class="stat-card"><div class="stat-label">Мало</div><div class="stat-val" style="color:var(--yellow)">${stats.low_stock}</div></div>
@@ -1527,11 +1565,12 @@ async function renderAdmin() {
       <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
       <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
 
-    let visitors = [];
-    try { const vd = await API.get('/api/admin/visitors'); visitors = vd.visitors || []; } catch(e){}
-    const formHtml    = await renderAddProductForm();
-    const editHtml    = await renderEditProducts();
-    const catalogHtml = await renderCatalogManager();
+    const visitors = visitorsData.visitors || [];
+    const [formHtml, editHtml, catalogHtml] = await Promise.all([
+      renderAddProductForm(),
+      renderEditProducts(),
+      renderCatalogManager()
+    ]);
     const visitorsHtml = renderVisitorsTable(visitors);
     $('adminBody').innerHTML = formHtml + editHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []) + visitorsHtml;
     // Pre-load subcats for first category
@@ -1555,10 +1594,6 @@ async function renderAddProductForm() {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
       Добавить товар
     </h3>
-    <div class="admin-notice">
-      ⚠️ Если картинки не грузятся без VPN —
-      <button onclick="migrateImages()" class="btn-migrate">Заменить на заглушки</button>
-    </div>
 
     <!-- Multi-image upload 1-5 -->
     <div class="multi-img-label">Фотографии <span class="multi-img-hint">мин. 1 · макс. 5</span></div>
@@ -1869,8 +1904,34 @@ async function submitProduct() {
     await API.post('/api/products', body);
     await saveBrandIfNew(brand);
     window._uploadedImgs = [];
-    toast('Товар успешно добавлен!');
-    renderAdmin();
+    toast('Товар успешно добавлен! ✓');
+    // Reset form fields without reloading entire admin page
+    const fields = ['fn','fsku','fprice','fprice-old','fqty','fminorder','fbrand','fdesc'];
+    fields.forEach(id => { const el = $(id); if (el) el.value = el.type === 'number' && id === 'fminorder' ? '1' : id === 'fagemin' ? '3' : ''; });
+    // Reset image slots
+    window._uploadedImgs = [];
+    for (let i = 0; i < 5; i++) {
+      const slot = document.getElementById(`imgSlot${i}`);
+      if (!slot) continue;
+      const isMain = i === 0;
+      slot.className = `img-slot${isMain?' img-slot-main':''}`;
+      slot.innerHTML = `${isMain
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${i+1}</span>`}
+        <input type="file" id="imgFileSlot${i}" accept="image/*" style="display:none" onchange="handleImgSlot(${i},this)">`;
+      slot.onclick = () => triggerImgSlot(i);
+    }
+    syncImgFields();
+    // Refresh only the product list section
+    try {
+      const editHtml = await renderEditProducts();
+      const editSection = document.querySelector('#adminBody .admin-section:nth-child(2)');
+      if (editSection) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = editHtml;
+        editSection.replaceWith(tmp.firstElementChild);
+      }
+    } catch(e2) {}
   } catch(e) {
     toast('Ошибка: ' + (e?.detail || e?.message || e), 'err');
     console.error('submitProduct:', e);
@@ -2101,6 +2162,8 @@ document.addEventListener('DOMContentLoaded', () => {
   if (backdrop) backdrop.classList.remove('show');
   State.cartOpen = false;
 
+  // Load cart from localStorage (persists across reloads)
+  loadCartFromStorage();
   updateCartBadge();
 
   loadSession().then(() => {
