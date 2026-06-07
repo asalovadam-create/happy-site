@@ -310,49 +310,31 @@ NAMES = [
 ]
 
 async def _seed_if_empty():
-    """Seed DB with demo data on first run."""
-    count = await db_fetchrow("SELECT COUNT(*) FROM products")
-    if count[0] > 0:
-        print(f"✅ DB has {count[0]} products, skipping seed")
-        return
-
-    # Seed catalog
-    for cat, subs in DEFAULT_CATALOG.items():
-        await db_execute(
-            "INSERT INTO catalog(category, subcategory) VALUES($1,'') ON CONFLICT DO NOTHING",
-            cat
-        )
-        for sub in subs:
+    """Seed catalog structure and brands only. Never auto-fills demo products."""
+    # Seed catalog categories/subcategories if empty
+    cat_count = await db_fetchrow("SELECT COUNT(*) FROM catalog")
+    if cat_count[0] == 0:
+        for cat, subs in DEFAULT_CATALOG.items():
             await db_execute(
-                "INSERT INTO catalog(category, subcategory) VALUES($1,$2) ON CONFLICT DO NOTHING",
-                cat, sub
+                "INSERT INTO catalog(category, subcategory) VALUES($1,'') ON CONFLICT DO NOTHING",
+                cat
             )
+            for sub in subs:
+                await db_execute(
+                    "INSERT INTO catalog(category, subcategory) VALUES($1,$2) ON CONFLICT DO NOTHING",
+                    cat, sub
+                )
+        print("✅ Catalog structure seeded")
 
-    # Seed brands
-    for b in DEFAULT_BRANDS:
-        await db_execute("INSERT INTO brands(name) VALUES($1) ON CONFLICT DO NOTHING", b)
+    # Seed brands if empty
+    brand_count = await db_fetchrow("SELECT COUNT(*) FROM brands")
+    if brand_count[0] == 0:
+        for b in DEFAULT_BRANDS:
+            await db_execute("INSERT INTO brands(name) VALUES($1) ON CONFLICT DO NOTHING", b)
+        print("✅ Brands seeded")
 
-    # Seed 200 demo products
-    all_subs = [(cat, sub) for cat, subs in DEFAULT_CATALOG.items() for sub in subs]
-    for i in range(1, 201):
-        sv = random.random()
-        stock = "ok" if sv > 0.6 else ("low" if sv > 0.25 else "out")
-        cat, sub = all_subs[(i-1) % len(all_subs)]
-        tags = random.sample(["Новинка","Хит","Акция","Эксклюзив"], k=random.randint(0,2))
-        name = NAMES[(i-1) % len(NAMES)] + (f" #{i}" if i >= len(NAMES) else "")
-        await db_execute("""
-            INSERT INTO products(name,sku,price,brand,category,subcategory,image,stock,stock_qty,
-                                 description,min_order,age_min,tags)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-            ON CONFLICT DO NOTHING""",
-            name, str(10000+i), round(random.uniform(3.5,149.99),2),
-            DEFAULT_BRANDS[(i-1)%len(DEFAULT_BRANDS)], cat, sub,
-            _toy_img((i-1) % 12), stock,
-            random.randint(1,500) if stock!="out" else 0,
-            "Высококачественная игрушка. Соответствует стандартам CE и EN71.",
-            random.choice([1,2,6,12]), random.choice([1,3,5,6,8]), tags
-        )
-    print("✅ Demo data seeded")
+    prod_count = await db_fetchrow("SELECT COUNT(*) FROM products")
+    print(f"✅ DB ready — {prod_count[0]} products")
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
 def make_token(sub, role="customer"):
