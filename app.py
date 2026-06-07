@@ -54,17 +54,17 @@ async def get_db():
 
 async def db_fetch(query: str, *args):
     pool = await get_db()
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=10) as conn:
         return await conn.fetch(query, *args)
 
 async def db_fetchrow(query: str, *args):
     pool = await get_db()
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=10) as conn:
         return await conn.fetchrow(query, *args)
 
 async def db_execute(query: str, *args):
     pool = await get_db()
-    async with pool.acquire() as conn:
+    async with pool.acquire(timeout=10) as conn:
         return await conn.execute(query, *args)
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
@@ -147,11 +147,12 @@ async def startup():
 
         _db_pool = await asyncpg.create_pool(
             db_url,
-            min_size=1,
-            max_size=5,
-            command_timeout=60,
+            min_size=2,
+            max_size=20,
+            command_timeout=30,
             ssl=ssl_ctx,
             statement_cache_size=0,  # Required for PgBouncer/Neon pooler
+            max_inactive_connection_lifetime=300,
         )
         print("✅ Neon pool created, initializing tables...")
         await _create_tables()
@@ -567,13 +568,19 @@ async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
 
     if _cloudinary_ok:
         import cloudinary.uploader
-        result = cloudinary.uploader.upload(
-            content,
-            folder="happy-toys/products",
-            resource_type="image",
-            transformation=[
-                {"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"},
-            ]
+        import functools
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            functools.partial(
+                cloudinary.uploader.upload,
+                content,
+                folder="happy-toys/products",
+                resource_type="image",
+                transformation=[
+                    {"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"},
+                ]
+            )
         )
         return {"url": result["secure_url"], "public_id": result["public_id"]}
     else:
@@ -588,37 +595,33 @@ async def categories():
     if not _db_pool:
         return [{"name": cat, "count": 0, "subcategories": subs}
                 for cat, subs in DEFAULT_CATALOG.items()]
-    rows = await db_fetch("""
-        SELECT c.category, c.subcategory,
-               COUNT(p.id) as product_count
-        FROM catalog c
-        LEFT JOIN products p ON p.category=c.category
-            AND (c.subcategory='' OR p.subcategory=c.subcategory)
-            AND p.is_active=TRUE
-        WHERE c.subcategory=''
-        GROUP BY c.category, c.subcategory
-        ORDER BY c.category
+
+    # Single query for all product counts per category
+    cat_counts = await db_fetch("""
+        SELECT category, COUNT(*) as cnt FROM products
+        WHERE is_active=TRUE GROUP BY category
     """)
-    # Get subcategories
+    cnt_map = {r["category"]: r["cnt"] for r in cat_counts}
+
+    cats = await db_fetch("SELECT DISTINCT category FROM catalog WHERE subcategory='' ORDER BY category")
     result = []
-    for row in rows:
+    for row in cats:
         cat = row["category"]
         sub_rows = await db_fetch(
             "SELECT subcategory FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory",
             cat
         )
-        count_row = await db_fetchrow(
-            "SELECT COUNT(*) FROM products WHERE category=$1 AND is_active=TRUE", cat
-        )
         result.append({
             "name": cat,
-            "count": count_row[0],
+            "count": cnt_map.get(cat, 0),
             "subcategories": [r["subcategory"] for r in sub_rows]
         })
     return result
 
 @app.get("/api/categories/{cat}/subcategories")
 async def subcategories(cat: str):
+    from urllib.parse import unquote
+    cat = unquote(cat)
     if not _db_pool:
         subs = DEFAULT_CATALOG.get(cat, [])
         return [{"name": s, "count": 0, "image": ""} for s in subs]
@@ -626,14 +629,13 @@ async def subcategories(cat: str):
         "SELECT subcategory, image_url FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory",
         cat
     )
-    result = []
-    for row in rows:
-        count_row = await db_fetchrow(
-            "SELECT COUNT(*) FROM products WHERE category=$1 AND subcategory=$2 AND is_active=TRUE",
-            cat, row["subcategory"]
-        )
-        result.append({"name": row["subcategory"], "count": count_row[0], "image": row["image_url"] or ""})
-    return result
+    # Single query for all counts
+    counts = await db_fetch(
+        "SELECT subcategory, COUNT(*) as cnt FROM products WHERE category=$1 AND is_active=TRUE GROUP BY subcategory",
+        cat
+    )
+    cnt_map = {r["subcategory"]: r["cnt"] for r in counts}
+    return [{"name": r["subcategory"], "count": cnt_map.get(r["subcategory"], 0), "image": r["image_url"] or ""} for r in rows]
 
 # ── Admin catalog management ──────────────────────────────────────────────────
 @app.post("/api/admin/categories")
@@ -831,6 +833,19 @@ async def admin_visitors(_=Depends(require_admin)):
 @app.get("/api/admin/catalog")
 async def admin_catalog(_=Depends(require_admin)):
     if not _db_pool: return []
+    # Single query: all categories + subcategories with product counts
+    cat_counts = await db_fetch("""
+        SELECT category, COUNT(*) FILTER (WHERE is_active) as cnt
+        FROM products GROUP BY category
+    """)
+    cat_cnt_map = {r["category"]: r["cnt"] for r in cat_counts}
+
+    sub_counts = await db_fetch("""
+        SELECT category, subcategory, COUNT(*) FILTER (WHERE is_active) as cnt
+        FROM products WHERE subcategory != '' GROUP BY category, subcategory
+    """)
+    sub_cnt_map = {(r["category"], r["subcategory"]): r["cnt"] for r in sub_counts}
+
     cats = await db_fetch("SELECT DISTINCT category FROM catalog WHERE subcategory='' ORDER BY category")
     result = []
     for cat_row in cats:
@@ -838,12 +853,8 @@ async def admin_catalog(_=Depends(require_admin)):
         subs = await db_fetch(
             "SELECT subcategory, image_url FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory", cat
         )
-        cnt = await db_fetchrow("SELECT COUNT(*) FROM products WHERE category=$1 AND is_active=TRUE", cat)
-        sub_list = []
-        for s in subs:
-            sc = await db_fetchrow("SELECT COUNT(*) FROM products WHERE category=$1 AND subcategory=$2 AND is_active=TRUE", cat, s["subcategory"])
-            sub_list.append({"name": s["subcategory"], "count": sc[0]})
-        result.append({"name": cat, "count": cnt[0], "subcategories": sub_list})
+        sub_list = [{"name": s["subcategory"], "count": sub_cnt_map.get((cat, s["subcategory"]), 0)} for s in subs]
+        result.append({"name": cat, "count": cat_cnt_map.get(cat, 0), "subcategories": sub_list})
     return result
 
 # ── PWA files ─────────────────────────────────────────────────────────────────
