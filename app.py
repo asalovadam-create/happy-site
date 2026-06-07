@@ -936,6 +936,17 @@ async def admin_products_list(
     return {"items": [dict(r) for r in rows], "total": total,
             "page": page, "pages": max(1,(total+per_page-1)//per_page)}
 
+@app.delete("/api/admin/products/all")
+async def delete_all_products(_=Depends(require_admin)):
+    """Delete ALL products from the database. Irreversible!"""
+    if not _db_pool:
+        raise HTTPException(503, "DB not available")
+    deleted = (await db_fetchrow("SELECT COUNT(*) FROM products"))[0]
+    await db_execute("DELETE FROM products")
+    # Reset the ID sequence so new products start from 1
+    await db_execute("ALTER SEQUENCE products_id_seq RESTART WITH 1")
+    return {"deleted": deleted, "message": f"Удалено {deleted} товаров"}
+
 @app.post("/api/admin/migrate-images")
 async def migrate_images(_=Depends(require_admin)):
     """One-time migration: replace unsplash URLs with placeholders."""
