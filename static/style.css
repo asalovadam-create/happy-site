@@ -309,9 +309,13 @@ body {
   font-size: 10px;
   font-family: 'Nunito', sans-serif;
   font-weight: 700;
-  transition: color .2s;
+  transition: color .15s;
   padding-bottom: env(safe-area-inset-bottom, 0px);
   position: relative;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 .bn-btn svg { width: 22px; height: 22px; transition: transform .2s; }
 .bn-btn.active { color: var(--accent); }
