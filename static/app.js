@@ -50,17 +50,13 @@ async function loadSession() {
   try {
     const s = JSON.parse(localStorage.getItem(_SK) || 'null');
     if (!s?.token) return;
-    // Restore from cache immediately — don't block page render on network
     State.user = { token: s.token, role: s.role, customer: s.customer };
     if (s.role === 'admin') { State.adminToken = s.token; const b = $('bn-admin'); if (b) b.style.display = 'flex'; }
     updateAuthBtn();
-    // Validate token silently in background after page is already visible
-    API.me().then(me => {
+    try {
+      const me = await API.me();
       if (me.customer) { State.user.customer = me.customer; saveSession(); updateAuthBtn(); }
-    }).catch(() => {
-      State.user = null; State.adminToken = null;
-      localStorage.removeItem(_SK); updateAuthBtn();
-    });
+    } catch(e) { State.user = null; State.adminToken = null; localStorage.removeItem(_SK); updateAuthBtn(); }
   } catch(e) {}
 }
 
@@ -607,7 +603,13 @@ function clearCartConfirm() {
 
 // ── Home page ─────────────────────────────────────────────────────────────────
 async function renderHome() {
-  // Render skeleton immediately — don't block on categories fetch
+  let cats = [];
+  try { cats = await API.categories(); } catch(e){}
+
+  const catPills = cats.map(c =>
+    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');selectCatalogCategory('${escHtml(c.name)}');">${escHtml(c.name)} <small>${c.count}</small></button>`
+  ).join('');
+
   $('mainContent').innerHTML = `
     <div class="home-hero">
       <div class="hero-wholesale-row">
@@ -646,9 +648,9 @@ async function renderHome() {
       </div>
     </div>
 
-    <div class="cat-scroll" id="catScrollHome">
+    <div class="cat-scroll">
       <button class="cat-pill active" data-cat="" onclick="navigate('catalog');setCategory(null)">Все товары</button>
-      <span style="color:#ccc;font-size:13px;padding:0 8px">...</span>
+      ${catPills}
     </div>
 
     <div class="section-title">
@@ -684,15 +686,6 @@ async function renderHome() {
       <button class="btn-primary" style="margin-top:12px;padding:10px 20px;font-size:13px" onclick="loadProducts()">Повторить</button>
     </div>`;
   });
-  // Load categories in background after page is visible
-  API.categories().then(cats => {
-    const scroll = $('catScrollHome');
-    if (!scroll) return;
-    const pills = cats.map(c =>
-      `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');selectCatalogCategory('${escHtml(c.name)}');">${escHtml(c.name)} <small>${c.count}</small></button>`
-    ).join('');
-    scroll.innerHTML = `<button class="cat-pill active" data-cat="" onclick="navigate('catalog');setCategory(null)">Все товары</button>${pills}`;
-  }).catch(() => {});
 }
 
 // ── Catalog page ──────────────────────────────────────────────────────────────
@@ -722,29 +715,16 @@ function catMeta(name) {
 }
 
 async function renderCatalog() {
-  // If a category is already selected — show products view immediately
-  if (State.category) {
-    // Load categories in background for context, show products now
-    API.categories().then(cats => renderCatalogProducts(cats)).catch(() => renderCatalogProducts([]));
-    return;
-  }
-
-  // Show skeleton grid immediately, then fill with real categories
-  $('mainContent').innerHTML = `
-    <div class="catalog-page">
-      <div class="catalog-header">
-        <h2 class="catalog-title">Каталог</h2>
-        <span class="catalog-subtitle">Выберите категорию</span>
-      </div>
-      <div class="cat-grid" id="catGridMain">
-        ${Array(8).fill('<div class="skeleton" style="height:90px;border-radius:16px"></div>').join('')}
-      </div>
-    </div>
-  `;
-
   let cats = [];
   try { cats = await API.categories(); } catch(e){}
 
+  // If a category is already selected — show products view
+  if (State.category) {
+    renderCatalogProducts(cats);
+    return;
+  }
+
+  // ── Category grid view ────────────────────────────────────────────────────
   const catCards = cats.map(c => {
     const m = catMeta(c.name);
     return `
@@ -763,8 +743,18 @@ async function renderCatalog() {
       <div class="cat-card-icon">🛍️</div>
     </div>`;
 
-  const grid = $('catGridMain');
-  if (grid) grid.innerHTML = allCard + catCards;
+  $('mainContent').innerHTML = `
+    <div class="catalog-page">
+      <div class="catalog-header">
+        <h2 class="catalog-title">Каталог</h2>
+        <span class="catalog-subtitle">Выберите категорию</span>
+      </div>
+      <div class="cat-grid">
+        ${allCard}
+        ${catCards}
+      </div>
+    </div>
+  `;
 }
 
 // ── Level 2: show subcategories of a category ────────────────────────────────
@@ -1580,39 +1570,70 @@ async function renderAdmin() {
     return;
   }
 
+  // Show full skeleton structure immediately — no waiting
+  const skel = (h) => `<div class="skeleton" style="height:${h}px;border-radius:14px;margin-bottom:12px"></div>`;
   mc.innerHTML = `<div class="admin-page">
     <div class="admin-stats" id="adminStats">${[1,2,3,4,5].map(() => `<div class="stat-card skeleton" style="height:80px"></div>`).join('')}</div>
-    <div id="adminBody"></div>
+    <div id="adminBody">
+      <div class="admin-section" id="sec-addprod">${skel(40)}${skel(120)}${skel(120)}${skel(44)}</div>
+      <div class="admin-section" id="sec-editprod">${skel(40)}${skel(60)}${skel(60)}${skel(60)}</div>
+      <div class="admin-section" id="sec-catalog">${skel(40)}${skel(80)}${skel(80)}</div>
+      <div class="admin-section" id="sec-customers">${skel(40)}${skel(60)}${skel(60)}</div>
+      <div class="admin-section" id="sec-carts">${skel(40)}${skel(60)}</div>
+    </div>
   </div>`;
 
-  try {
-    const [stats, carts, customers, visitorsData] = await Promise.all([
-      API.adminStats(),
-      API.adminCarts(),
-      API.adminCustomers(),
-      API.get('/api/admin/visitors').catch(() => ({visitors:[]}))
-    ]);
-    $('adminStats').innerHTML = `
+  // Load stats first (fastest single query)
+  API.adminStats().then(stats => {
+    const el = $('adminStats');
+    if (!el) return;
+    el.innerHTML = `
       <div class="stat-card"><div class="stat-label">Товаров</div><div class="stat-val">${stats.total_products}</div></div>
       <div class="stat-card"><div class="stat-label">Мало</div><div class="stat-val" style="color:var(--yellow)">${stats.low_stock}</div></div>
       <div class="stat-card"><div class="stat-label">Нет</div><div class="stat-val" style="color:var(--red)">${stats.out_of_stock}</div></div>
       <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
       <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
+  }).catch(() => {});
 
-    const visitors = visitorsData.visitors || [];
-    const [formHtml, editHtml, catalogHtml] = await Promise.all([
-      renderAddProductForm(),
-      renderEditProducts(),
-      renderCatalogManager()
-    ]);
-    const visitorsHtml = renderVisitorsTable(visitors);
-    $('adminBody').innerHTML = formHtml + editHtml + catalogHtml + renderCustomersTable(customers.customers || []) + renderAdminCarts(carts.carts || []) + visitorsHtml;
-    // Pre-load subcats for first category
-    const firstCat = $('fcat');
-    if (firstCat?.value) loadSubcatsAdmin(firstCat.value);
-  } catch(e) {
-    $('adminBody').innerHTML = `<p style="color:#999">Ошибка загрузки</p>`;
-  }
+  // Load add-product form (needs categories + brands)
+  renderAddProductForm().then(html => {
+    const el = $('sec-addprod');
+    if (el) { el.outerHTML = html; const fc = $('fcat'); if (fc?.value) loadSubcatsAdmin(fc.value); }
+  }).catch(() => { const el = $('sec-addprod'); if (el) el.innerHTML = '<p style="color:#bbb;font-size:13px">Форма недоступна</p>'; });
+
+  // Load product list
+  renderEditProducts().then(html => {
+    const el = $('sec-editprod');
+    if (el) el.outerHTML = html;
+  }).catch(() => { const el = $('sec-editprod'); if (el) el.innerHTML = '<p style="color:#bbb;font-size:13px">Список товаров недоступен</p>'; });
+
+  // Load catalog manager
+  renderCatalogManager().then(html => {
+    const el = $('sec-catalog');
+    if (el) el.outerHTML = html;
+  }).catch(() => { const el = $('sec-catalog'); if (el) el.innerHTML = ''; });
+
+  // Load customers
+  API.adminCustomers().then(customers => {
+    const el = $('sec-customers');
+    if (el) el.outerHTML = renderCustomersTable(customers.customers || []);
+  }).catch(() => {});
+
+  // Load carts + visitors (lowest priority)
+  Promise.all([
+    API.adminCarts().catch(() => ({carts:[]})),
+    API.get('/api/admin/visitors').catch(() => ({visitors:[]}))
+  ]).then(([carts, visitorsData]) => {
+    const ec = $('sec-carts');
+    if (ec) ec.outerHTML = renderAdminCarts(carts.carts || []);
+    // Append visitors after carts section
+    const body = $('adminBody');
+    if (body) {
+      const vDiv = document.createElement('div');
+      vDiv.innerHTML = renderVisitorsTable(visitorsData.visitors || []);
+      body.appendChild(vDiv.firstChild || vDiv);
+    }
+  }).catch(() => {});
 }
 
 async function renderAddProductForm() {
