@@ -560,8 +560,31 @@ async def delete_product(pid: int, _=Depends(require_admin)):
     await db_execute("UPDATE products SET is_active=FALSE WHERE id=$1", pid)
 
 # ── Image upload (Cloudinary) ─────────────────────────────────────────────────
+@app.get("/api/cloudinary-signature")
+async def cloudinary_signature(_=Depends(require_admin)):
+    """Return a short-lived signed upload token so browser can upload directly to Cloudinary."""
+    if not _cloudinary_ok:
+        raise HTTPException(503, "Cloudinary not configured")
+    import cloudinary
+    import hashlib
+    ts = int(time.time())
+    folder = "happy-toys/products"
+    eager = "c_limit,w_800,h_800,q_auto:good"
+    params_str = f"eager={eager}&folder={folder}&timestamp={ts}"
+    api_secret = cloudinary.config().api_secret
+    signature = hashlib.sha1((params_str + api_secret).encode()).hexdigest()
+    return {
+        "signature": signature,
+        "timestamp": ts,
+        "api_key": cloudinary.config().api_key,
+        "cloud_name": cloudinary.config().cloud_name,
+        "folder": folder,
+        "eager": eager,
+    }
+
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
+    """Fallback server-side upload (used only if direct upload fails)."""
     content = await file.read()
     if len(content) > 15*1024*1024:
         raise HTTPException(400, "File too large (max 15MB)")
@@ -577,14 +600,11 @@ async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
                 content,
                 folder="happy-toys/products",
                 resource_type="image",
-                transformation=[
-                    {"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"},
-                ]
+                transformation=[{"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"}]
             )
         )
         return {"url": result["secure_url"], "public_id": result["public_id"]}
     else:
-        # Fallback: base64 (works without Cloudinary)
         media_type = file.content_type or "image/jpeg"
         b64 = base64.b64encode(content).decode()
         return {"url": f"data:{media_type};base64,{b64}", "filename": file.filename}
