@@ -881,14 +881,13 @@ async def manifest_json():
     return r
 
 SW_INLINE = (
-    "self.addEventListener('install',e=>self.skipWaiting());"
+    "self.addEventListener('install',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))));self.skipWaiting()});"
     "self.addEventListener('activate',e=>self.clients.claim());"
     "self.addEventListener('fetch',e=>{"
     "if(e.request.method!=='GET')return;"
     "const u=e.request.url;"
-    "if(u.includes('/api/')||u.includes('app.js')||u.includes('style.css')){e.respondWith(fetch(e.request));return;}"
-    "e.respondWith(caches.open('ht-v4').then(c=>c.match(e.request).then(r=>r||fetch(e.request)"
-    ".then(nr=>{if(nr.ok)c.put(e.request,nr.clone());return nr;}))).catch(()=>caches.match('/')));"
+    "if(u.includes('/api/')||u.includes('/static/')){e.respondWith(fetch(e.request));return;}"
+    "e.respondWith(fetch(e.request));"
     "});"
 )
 
