@@ -123,6 +123,8 @@ const API = {
   adminCustomers(){ return this.get('/api/admin/customers'); },
 
   async uploadImage(file) {
+    // Check size before upload — fail fast, don't waste time uploading
+    if (file.size > 2 * 1024 * 1024) throw new Error('Файл слишком большой (макс. 2MB)');
     // Direct upload to Cloudinary — bypasses our server entirely
     // This means: no server load, no file size limits from us, faster upload
     try {
