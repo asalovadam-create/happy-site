@@ -108,6 +108,7 @@ const API = {
     if (p.category) q.set('category', p.category);
     return this.get('/api/admin/products?' + q);
   },
+  deleteAllProducts() { return this.req('DELETE', '/api/admin/products/all'); },
   updateProduct(id, data) { return this.req('PATCH', `/api/products/${id}`, data); },
   addCategory(name) { return this.post('/api/admin/categories', {name}, State.user?.token); },
   delCategory(name) { return this.req('DELETE', `/api/admin/categories/${encodeURIComponent(name)}`); },
@@ -1500,6 +1501,29 @@ async function loadSubcatsAdmin(catName) {
   }
 }
 
+async function deleteAllProductsConfirm() {
+  showConfirm(
+    '⚠️ Удалить ВСЕ товары?',
+    'Это действие необратимо. Все товары из базы данных будут удалены навсегда.',
+    async () => {
+      try {
+        const r = await API.deleteAllProducts();
+        toast(`✅ Удалено ${r.deleted} товаров`, 'ok');
+        // Refresh only the product list section
+        const editHtml = await renderEditProducts();
+        const editSection = document.querySelector('#adminBody .admin-section:nth-child(2)');
+        if (editSection) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = editHtml;
+          editSection.replaceWith(tmp.firstElementChild);
+        }
+      } catch(e) {
+        toast('Ошибка удаления: ' + (e?.detail || e?.message || e), 'err');
+      }
+    }
+  );
+}
+
 async function adminAddCategory() {
   const name = prompt('Название новой категории:');
   if (!name?.trim()) return;
@@ -1680,6 +1704,10 @@ async function renderEditProducts() {
     <h3>
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
       Редактировать товары <span class="orders-count-badge">${data.total}</span>
+      <button onclick="deleteAllProductsConfirm()" style="margin-left:auto;background:#fff5f5;color:#e53935;border:1.5px solid #fecaca;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:5px;white-space:nowrap;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        Удалить все
+      </button>
     </h3>
     <input type="text" class="field input" placeholder="🔍 Поиск товара..." style="margin-bottom:12px;width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none"
       oninput="searchAdminProducts(this.value)">
