@@ -3165,6 +3165,8 @@ img {
 
 /* ── iOS / Android PWA ───────────────────────────────────────────────────── */
 button, a, input, select, textarea, label { touch-action: manipulation; }
+/* Prevent iOS Safari from zooming on input focus (requires font-size >= 16px) */
+input, select, textarea { font-size: 16px !important; }
 
 @supports (padding-bottom: env(safe-area-inset-bottom)) {
   .bottom-nav {
