@@ -305,5 +305,23 @@
     // app.js calls window.__replayNav() at the end of init
   </script>
   <script src="/static/app.js?v=1779780019"></script>
+<script>
+// iOS Safari: reset zoom after keyboard closes
+(function(){
+  var inputs = document.querySelectorAll('input,select,textarea');
+  function resetZoom(){
+    var m = document.querySelector('meta[name=viewport]');
+    if(!m) return;
+    var c = m.content;
+    m.content = c + ',maximum-scale=1';
+    setTimeout(function(){ m.content = c; }, 300);
+  }
+  document.addEventListener('focusout', function(e){
+    if(['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)){
+      resetZoom();
+    }
+  });
+})();
+</script>
 </body>
 </html>
