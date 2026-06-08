@@ -1807,70 +1807,244 @@ async function searchAdminProducts(q) {
 
 async function openEditProduct(id) {
   let p;
-  try { p = await API.product(id); } catch(e){ toast('Ошибка', 'err'); return; }
+  try { p = await API.product(id); } catch(e){ toast('Ошибка загрузки товара', 'err'); return; }
 
-  const cats = await API.categories().catch(()=>[]);
-  const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}" ${p.category===c.name?'selected':''}>${escHtml(c.name)}</option>`).join('');
+  const [cats, brands] = await Promise.all([
+    API.categories().catch(()=>[]),
+    API.get('/api/brands').catch(()=>[])
+  ]);
 
-  showConfirm('', '', () => {});  // Close any open confirm
-  $('confirmOverlay').classList.remove('open');
+  const catOpts = `<option value="">— без категории —</option>` +
+    cats.map(c=>`<option value="${escHtml(c.name)}" ${p.category===c.name?'selected':''}>${escHtml(c.name)}</option>`).join('');
 
-  // Open edit in a custom modal
+  // Get subcategories for current category
+  let subOpts = '<option value="">— без подкатегории —</option>';
+  if (p.category) {
+    const subs = await API.get(`/api/categories/${encodeURIComponent(p.category)}/subcategories`).catch(()=>[]);
+    subOpts = `<option value="">— без подкатегории —</option>` +
+      subs.map(s=>`<option value="${escHtml(s.name)}" ${p.subcategory===s.name?'selected':''}>${escHtml(s.name)}</option>`).join('');
+  }
+
+  const brandOpts = brands.map(b=>`<option value="${escHtml(b.name||b)}">`).join('');
+
+  // Images
+  const imgs = [...new Set((Array.isArray(p.images)&&p.images.length?p.images:(p.image?[p.image]:[])).filter(Boolean))];
+  const imgSlots = Array.from({length:5},(_,i) => {
+    const src = imgs[i] || '';
+    return `<div class="ep-img-slot ${src?'has-img':''}" id="ep-slot-${i}" onclick="epImgSlotClick(${i})">
+      ${src
+        ? `<img src="${escHtml(cdnImg(src,200))}" data-full="${escHtml(src)}">
+           <button class="ep-img-del" onclick="event.stopPropagation();epRemoveImg(${i})">✕</button>`
+        : `<div class="ep-img-plus">+</div><div class="ep-img-label">Фото ${i+1}</div>`
+      }
+      <input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">
+    </div>`;
+  }).join('');
+
+  $('confirmOverlay')?.classList.remove('open');
+
   const overlay = document.createElement('div');
   overlay.className = 'overlay open';
   overlay.id = 'editProductOverlay';
-  overlay.innerHTML = `<div class="modal product-modal" onclick="event.stopPropagation()" style="padding:0">
+  overlay.innerHTML = `
+  <div class="modal ep-modal" onclick="event.stopPropagation()">
     <button class="modal-x" onclick="document.getElementById('editProductOverlay').remove()">✕</button>
-    <div style="padding:20px">
-      <h3 style="font-family:'Nunito',sans-serif;font-size:18px;font-weight:900;margin-bottom:16px">
-        Редактировать товар #${id}
-      </h3>
-      <div class="field"><label>Название *</label><input id="ep-name" value="${escHtml(p.name)}"></div>
-      <div class="form-grid">
-        <div class="field"><label>Цена (₽) *</label><input id="ep-price" type="number" step="0.01" value="${p.price}"></div>
-        <div class="field"><label>Цена без скидки (₽)</label><input id="ep-price-old" type="number" step="0.01" value="${p.price_old||''}"></div>
+
+    <div class="ep-header">
+      <div class="ep-title">Редактировать товар</div>
+      <div class="ep-subtitle">ID: ${id} · Арт: ${escHtml(p.sku||'—')}</div>
+    </div>
+
+    <div class="ep-body">
+
+      <!-- ФОТОГРАФИИ -->
+      <div class="ep-section-label">Фотографии <span style="color:#bbb;font-weight:500">(мин. 1 · макс. 5)</span></div>
+      <div class="ep-img-grid">${imgSlots}</div>
+      <div id="ep-imgs-data" style="display:none">${escHtml(JSON.stringify(imgs))}</div>
+
+      <!-- ОСНОВНОЕ -->
+      <div class="ep-section-label">Основное</div>
+      <div class="ep-field">
+        <label>Название *</label>
+        <input id="ep-name" value="${escHtml(p.name)}" placeholder="Название товара">
       </div>
-      <div class="form-grid">
-        <div class="field"><label>Категория</label><select id="ep-cat">${catOpts}</select></div>
-        <div class="field"><label>Остаток</label><input id="ep-qty" type="number" value="${p.stock_qty||0}"></div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Артикул</label>
+          <input id="ep-sku" value="${escHtml(p.sku||'')}" placeholder="SKU / Арт.">
+        </div>
+        <div class="ep-field">
+          <label>Бренд</label>
+          <input id="ep-brand" value="${escHtml(p.brand||'')}" list="ep-brand-list" placeholder="Бренд">
+          <datalist id="ep-brand-list">${brandOpts}</datalist>
+        </div>
       </div>
-      <div class="form-grid">
-        <div class="field"><label>Статус</label>
+
+      <!-- ЦЕНЫ -->
+      <div class="ep-section-label">Цены</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Цена (₽) *</label>
+          <input id="ep-price" type="number" step="0.01" value="${p.price}" placeholder="0">
+        </div>
+        <div class="ep-field">
+          <label>Цена без скидки (₽)</label>
+          <input id="ep-price-old" type="number" step="0.01" value="${p.price_old||''}" placeholder="0">
+        </div>
+        <div class="ep-field">
+          <label>Мин. заказ (шт)</label>
+          <input id="ep-minorder" type="number" value="${p.min_order||1}" min="1">
+        </div>
+      </div>
+
+      <!-- ОСТАТОК -->
+      <div class="ep-section-label">Наличие</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Статус</label>
           <select id="ep-stock">
-            <option value="ok" ${p.stock==='ok'?'selected':''}>В наличии</option>
-            <option value="low" ${p.stock==='low'?'selected':''}>Мало</option>
-            <option value="out" ${p.stock==='out'?'selected':''}>Нет</option>
+            <option value="ok"  ${p.stock==='ok' ?'selected':''}>✅ В наличии</option>
+            <option value="low" ${p.stock==='low'?'selected':''}>⚠️ Мало</option>
+            <option value="out" ${p.stock==='out'?'selected':''}>❌ Нет</option>
           </select>
         </div>
-        <div class="field"><label>Бренд</label><input id="ep-brand" value="${escHtml(p.brand||'')}"></div>
+        <div class="ep-field">
+          <label>Остаток (шт)</label>
+          <input id="ep-qty" type="number" value="${p.stock_qty||0}" min="0">
+        </div>
       </div>
-      <div class="field"><label>Описание</label><textarea id="ep-desc" rows="2">${escHtml(p.description||'')}</textarea></div>
-      <button class="btn-primary full" onclick="saveEditProduct(${id})" style="margin-top:8px">
-        💾 Сохранить изменения
-      </button>
+
+      <!-- КАТЕГОРИЯ -->
+      <div class="ep-section-label">Категория</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Категория</label>
+          <select id="ep-cat" onchange="epLoadSubcats(this.value)">${catOpts}</select>
+        </div>
+        <div class="ep-field">
+          <label>Подкатегория</label>
+          <select id="ep-subcat">${subOpts}</select>
+        </div>
+      </div>
+
+      <!-- ДОП -->
+      <div class="ep-section-label">Дополнительно</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Возраст от (лет)</label>
+          <input id="ep-age" type="number" value="${p.age_min||''}" min="0" max="18" placeholder="0">
+        </div>
+        <div class="ep-field">
+          <label>Теги</label>
+          <input id="ep-tags" value="${escHtml((p.tags||[]).join(', '))}" placeholder="Хит, Новинка, Акция">
+        </div>
+      </div>
+      <div class="ep-field">
+        <label>Описание</label>
+        <textarea id="ep-desc" rows="3" placeholder="Описание товара...">${escHtml(p.description||'')}</textarea>
+      </div>
+
+    </div>
+
+    <div class="ep-footer">
+      <button class="ep-btn-cancel" onclick="document.getElementById('editProductOverlay').remove()">Отмена</button>
+      <button class="ep-btn-save" onclick="saveEditProduct(${id})">💾 Сохранить</button>
     </div>
   </div>`;
+
   document.body.appendChild(overlay);
   overlay.onclick = e => { if(e.target===overlay) overlay.remove(); };
+  // Store images array
+  window._epImgs = [...imgs];
+}
+
+async function epLoadSubcats(cat) {
+  const sel = document.getElementById('ep-subcat');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Загрузка...</option>';
+  const subs = await API.get(`/api/categories/${encodeURIComponent(cat)}/subcategories`).catch(()=>[]);
+  sel.innerHTML = '<option value="">— без подкатегории —</option>' +
+    subs.map(s=>`<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`).join('');
+}
+
+function epImgSlotClick(i) {
+  document.getElementById(`ep-file-${i}`)?.click();
+}
+
+async function epHandleFile(i, input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 2*1024*1024) { toast('Файл слишком большой (макс. 2MB)', 'err'); return; }
+
+  const slot = document.getElementById(`ep-slot-${i}`);
+  slot.innerHTML = `<div class="skeleton" style="width:100%;height:100%;border-radius:10px"></div>`;
+
+  try {
+    const data = await API.uploadImage(file);
+    window._epImgs = window._epImgs || [];
+    window._epImgs[i] = data.url;
+    slot.className = 'ep-img-slot has-img';
+    slot.innerHTML = `
+      <img src="${escHtml(cdnImg(data.url,200))}" data-full="${escHtml(data.url)}">
+      <button class="ep-img-del" onclick="event.stopPropagation();epRemoveImg(${i})">✕</button>
+      <input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">`;
+    toast('Фото загружено ✓');
+  } catch(e) {
+    slot.className = 'ep-img-slot';
+    slot.innerHTML = `<div class="ep-img-plus">+</div><div class="ep-img-label">Фото ${i+1}</div><input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">`;
+    toast('Ошибка загрузки фото', 'err');
+  }
+}
+
+function epRemoveImg(i) {
+  if (window._epImgs) window._epImgs[i] = null;
+  const slot = document.getElementById(`ep-slot-${i}`);
+  if (slot) {
+    slot.className = 'ep-img-slot';
+    slot.innerHTML = `<div class="ep-img-plus">+</div><div class="ep-img-label">Фото ${i+1}</div><input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">`;
+  }
 }
 
 async function saveEditProduct(id) {
+  const name = document.getElementById('ep-name')?.value?.trim();
+  if (!name) { toast('Введите название', 'err'); return; }
+  const price = parseFloat(document.getElementById('ep-price')?.value);
+  if (!price || price <= 0) { toast('Введите цену', 'err'); return; }
+
+  const images = (window._epImgs||[]).filter(Boolean);
+  const tagsRaw = document.getElementById('ep-tags')?.value || '';
+  const tags = tagsRaw.split(',').map(t=>t.trim()).filter(Boolean);
+
+  const btn = document.querySelector('.ep-btn-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
+
   const body = {
-    name:      document.getElementById('ep-name')?.value?.trim(),
-    price:     parseFloat(document.getElementById('ep-price')?.value),
-    price_old: parseFloat(document.getElementById('ep-price-old')?.value) || null,
-    category:  document.getElementById('ep-cat')?.value,
-    stock:     document.getElementById('ep-stock')?.value,
-    stock_qty: parseInt(document.getElementById('ep-qty')?.value) || 0,
-    brand:     document.getElementById('ep-brand')?.value,
-    description: document.getElementById('ep-desc')?.value,
+    name,
+    price,
+    price_old:   parseFloat(document.getElementById('ep-price-old')?.value) || null,
+    sku:         document.getElementById('ep-sku')?.value?.trim() || null,
+    category:    document.getElementById('ep-cat')?.value || null,
+    subcategory: document.getElementById('ep-subcat')?.value || null,
+    stock:       document.getElementById('ep-stock')?.value,
+    stock_qty:   parseInt(document.getElementById('ep-qty')?.value) || 0,
+    brand:       document.getElementById('ep-brand')?.value?.trim() || null,
+    description: document.getElementById('ep-desc')?.value?.trim() || null,
+    age_min:     parseInt(document.getElementById('ep-age')?.value) || null,
+    min_order:   parseInt(document.getElementById('ep-minorder')?.value) || 1,
+    tags,
+    images,
+    image:       images[0] || null,
   };
+
   try {
     await API.updateProduct(id, body);
-    toast('Сохранено! ✓');
+    toast('Сохранено ✓');
     document.getElementById('editProductOverlay')?.remove();
     renderAdmin();
-  } catch(e) { toast('Ошибка сохранения', 'err'); }
+  } catch(e) {
+    toast('Ошибка сохранения', 'err');
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; }
+  }
 }
 
 async function toggleProductActive(id, currentActive) {
