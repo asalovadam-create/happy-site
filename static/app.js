@@ -364,10 +364,13 @@ function renderProductCard(p) {
   const tags = (p.tags||[]).slice(0,2)
     .map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
 
-  // Images — deduplicate
-  const imgs = [...new Set(
-    (Array.isArray(p.images) && p.images.length ? p.images : (p.image?[p.image]:[])).filter(Boolean)
-  )];
+  // Images — deduplicate + fallback placeholder if no images at all
+  const PLACEHOLDER = 'https://placehold.co/400x400/f5f5f5/ccc?text=%F0%9F%A7%B8';
+  const rawImgs = [
+    ...(Array.isArray(p.images) ? p.images : []),
+    p.image
+  ].filter(Boolean);
+  const imgs = rawImgs.length ? [...new Set(rawImgs)] : [PLACEHOLDER];
   const hasMulti = imgs.length > 1;
 
   const cartItem = State.cart[p.id];
@@ -517,8 +520,13 @@ function renderSkeletons(n = 8) {
 }
 
 // ── Load products ─────────────────────────────────────────────────────────────
+let _loadAbort = null;
 async function loadProducts() {
-  if (State.loading) return;
+  // Cancel any in-flight request — navigate can trigger a new load before previous finishes
+  if (_loadAbort) _loadAbort.abort();
+  _loadAbort = new AbortController();
+  const signal = _loadAbort.signal;
+
   State.loading = true;
   const grid = $('productsGrid');
   if (grid) grid.innerHTML = renderSkeletons(8);
@@ -542,6 +550,16 @@ async function loadProducts() {
              <h3>Ничего не найдено</h3><p>Попробуйте изменить фильтры</p></div>`;
       // Init touch swipe on cards with multiple images
       grid.querySelectorAll('.product-card[data-imgs]').forEach(initCardTouchSwipe);
+
+      // Fix: if image already in browser cache — onload never fires, stays opacity:0
+      requestAnimationFrame(() => {
+        grid.querySelectorAll('.cstrip-slide img').forEach(img => {
+          if (img.complete) {
+            img.classList.add('loaded');
+            img.previousElementSibling?.remove();
+          }
+        });
+      });
     }
 
     const countEl = $('productCount');
@@ -549,6 +567,7 @@ async function loadProducts() {
 
     renderPagination(data.page, data.pages);
   } catch (e) {
+    if (e && e.name === 'AbortError') return; // cancelled by navigate — silent
     console.error('loadProducts error:', e);
     toast('Ошибка: ' + (e.message || e), 'err');
     if (grid) grid.innerHTML = `<div class="empty-state">
@@ -956,9 +975,9 @@ async function openProduct(id) {
         <div class="skeleton" id="msk-${i}" style="position:absolute;inset:0;border-radius:0;z-index:1"></div>
         <img src="${escHtml(cdnImg(src, 800))}" alt="${escHtml(p.name)} фото ${i+1}"
              loading="${i===0?'eager':'lazy'}" decoding="async"
-             style="width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:2"
-             onload="document.getElementById('msk-${i}')?.remove()"
-             onerror="document.getElementById('msk-${i}')?.remove()">
+             style="width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:2;opacity:0;transition:opacity .3s ease"
+             onload="document.getElementById('msk-${i}')?.remove();this.style.opacity=1;if(this.complete)this.style.opacity=1"
+             onerror="document.getElementById('msk-${i}')?.remove();this.style.opacity=1">
       </div>`).join('');
 
     // Thumb strip
@@ -1058,6 +1077,14 @@ async function openProduct(id) {
 
     // Init touch swipe on gallery
     _initModalSwipe();
+
+    // Fix: force-show any images already in cache (onload won't fire for them)
+    requestAnimationFrame(() => {
+      const strip = $('mgal-strip');
+      if (strip) strip.querySelectorAll('img').forEach(img => {
+        if (img.complete) { img.style.opacity = 1; img.previousElementSibling?.remove(); }
+      });
+    });
 
   } catch(e) {
     $('modalInner').innerHTML = `
