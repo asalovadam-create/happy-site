@@ -377,11 +377,14 @@ class ProductIn(BaseModel):
 class ProductPatch(BaseModel):
     name: Optional[str]=None; price: Optional[float]=None
     price_old: Optional[float]=None
+    sku: Optional[str]=None
     stock: Optional[str]=None; stock_qty: Optional[int]=None
     description: Optional[str]=None; is_active: Optional[bool]=None
     image: Optional[str]=None; images: Optional[List[str]]=None
     category: Optional[str]=None; subcategory: Optional[str]=None
     brand: Optional[str]=None
+    min_order: Optional[int]=None; age_min: Optional[int]=None
+    tags: Optional[List[str]]=None
 
 class ShareIn(BaseModel):
     items: List[dict]; comment: str = ""; store_name: str = ""
@@ -515,7 +518,7 @@ async def search_products(q: str, limit: int = 8):
 @app.get("/api/products/{pid}")
 async def get_product(pid: int):
     if not _db_pool: raise HTTPException(503)
-    row = await db_fetchrow("SELECT * FROM products WHERE id=$1 AND is_active=TRUE", pid)
+    row = await db_fetchrow("SELECT * FROM products WHERE id=$1", pid)
     if not row: raise HTTPException(404)
     p = dict(row)
     similar_rows = await db_fetch(
@@ -528,30 +531,43 @@ async def get_product(pid: int):
 @app.post("/api/products", status_code=201)
 async def create_product(b: ProductIn, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
-    row = await db_fetchrow("""
-        INSERT INTO products(name,sku,price,price_old,brand,category,subcategory,
-                             image,images,stock,stock_qty,description,min_order,age_min,tags)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-        RETURNING *""",
-        b.name, b.sku, b.price, b.price_old,
-        b.brand or "", b.category, b.subcategory or "",
-        b.image, b.images or [], b.stock, b.stock_qty,
-        b.description, b.min_order, b.age_min, []
-    )
-    return dict(row)
+    try:
+        row = await db_fetchrow("""
+            INSERT INTO products(name,sku,price,price_old,brand,category,subcategory,
+                                 image,images,stock,stock_qty,description,min_order,age_min,tags)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            RETURNING *""",
+            b.name, b.sku, b.price, b.price_old,
+            b.brand or "", b.category, b.subcategory or "",
+            b.image, b.images or [], b.stock, b.stock_qty,
+            b.description, b.min_order, b.age_min, []
+        )
+        return dict(row)
+    except Exception as e:
+        err = str(e)
+        if "unique" in err.lower() or "duplicate" in err.lower():
+            raise HTTPException(400, f"Артикул '{b.sku}' уже существует — укажите другой артикул")
+        raise HTTPException(500, f"Ошибка БД при создании товара: {err}")
 
 @app.patch("/api/products/{pid}")
 async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
-    fields = {k:v for k,v in b.dict().items() if v is not None}
+    # exclude_unset: only update fields explicitly sent (preserves is_active=False, images=[])
+    fields = b.dict(exclude_unset=True)
     if not fields: raise HTTPException(400, "No fields to update")
     sets = ", ".join(f"{k}=${i+2}" for i,k in enumerate(fields.keys()))
     vals = list(fields.values())
-    row = await db_fetchrow(
-        f"UPDATE products SET {sets} WHERE id=$1 RETURNING *",
-        pid, *vals
-    )
-    if not row: raise HTTPException(404)
+    try:
+        row = await db_fetchrow(
+            f"UPDATE products SET {sets} WHERE id=$1 RETURNING *",
+            pid, *vals
+        )
+    except Exception as e:
+        err = str(e)
+        if "unique" in err.lower() or "duplicate" in err.lower():
+            raise HTTPException(400, "Артикул уже занят другим товаром")
+        raise HTTPException(500, f"Ошибка БД: {err}")
+    if not row: raise HTTPException(404, f"Товар #{pid} не найден")
     return dict(row)
 
 @app.delete("/api/products/{pid}", status_code=204)
