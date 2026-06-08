@@ -987,63 +987,63 @@ async function openProduct(id) {
     window._mTotal = imgs.length;
 
     $('modalInner').innerHTML = `
-      <div class="modal-layout">
+      <div class="pdp-wrap">
 
-        <!-- ── LEFT: gallery ── -->
-        <div class="mgal-col">
-          <div class="mgal-main" id="mgal-main">
-            <div class="mgal-strip" id="mgal-strip">${slides}</div>
+        <!-- GALLERY -->
+        <div class="pdp-gallery">
+          <div class="pdp-main-img" id="mgal-main">
+            <div class="pdp-strip" id="mgal-strip">${slides}</div>
             ${arrows}
-            ${counter}
-            ${discPct > 0 ? `<div class="mgal-disc-pill">−${discPct}%</div>` : ''}
+            ${discPct > 0 ? `<div class="pdp-badge-disc">−${discPct}%</div>` : ''}
+            ${hasMulti ? `<div class="pdp-counter" id="mgal-counter">1 / ${imgs.length}</div>` : ''}
           </div>
-          ${hasMulti ? `<div class="mgal-thumbs" id="mgal-thumbs">${thumbs}</div>` : ''}
+          ${hasMulti ? `<div class="pdp-thumbs" id="mgal-thumbs">${thumbs}</div>` : ''}
         </div>
 
-        <!-- ── RIGHT: info ── -->
-        <div class="modal-info-col">
-          <div class="product-modal-body">
-            <div class="product-modal-brand">
-              ${[p.brand, p.category, p.subcategory].filter(Boolean).map(escHtml).join(' · ')}
-            </div>
-            <div class="product-modal-name">${escHtml(p.name)}</div>
+        <!-- INFO -->
+        <div class="pdp-info">
 
-            <div class="modal-meta-pills">
-              <span class="modal-sku-pill">SKU: ${escHtml(p.sku||'')}</span>
-              ${p.age_min ? `<span class="modal-age-pill">${p.age_min}+</span>` : ''}
-              <span class="modal-stock-pill" style="background:${sColor}18;color:${sColor}">
-                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${sColor};margin-right:4px;vertical-align:middle"></span>
-                ${sLabel}
-              </span>
-            </div>
+          <div class="pdp-breadcrumb">${[p.brand, p.category, p.subcategory].filter(Boolean).map(escHtml).join(' / ')}</div>
+          <h1 class="pdp-name">${escHtml(p.name)}</h1>
 
-            <div class="product-modal-price">
-              ${rub(p.price)}<small> / шт</small>
-              ${discPct > 0 ? `<span class="modal-price-old">${rub(p.price_old)}</span>
-                               <span class="modal-discount-badge">−${discPct}%</span>` : ''}
-            </div>
-
-            <div class="product-modal-wholesale">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
-              <div><strong>Оптовые условия:</strong> мин. заказ ${minQty} шт · счёт по запросу</div>
-            </div>
-
-            ${p.description ? `<div class="product-modal-desc">${escHtml(p.description)}</div>` : ''}
-
-            <div class="product-modal-add">
-              <div class="qty-row">
-                <button onclick="adjustModalQty(-1)">−</button>
-                <input id="modalQty" type="number" value="${minQty}" min="${minQty}" max="9999">
-                <button onclick="adjustModalQty(1)">+</button>
-              </div>
-              <button class="btn-primary" style="flex:1" ${isOut?'disabled':''}
-                onclick="addToCart(${p.id},parseInt($('modalQty').value)||${minQty});closeProductModal()">
-                ${isOut ? 'Нет в наличии' : inCart ? '✓ Ещё в корзину' : 'В корзину'}
-              </button>
-            </div>
-
-            ${similar ? `<div class="similar-title">Похожие товары</div><div class="similar-scroll">${similar}</div>` : ''}
+          <div class="pdp-pills">
+            <span class="pdp-pill pdp-pill-sku">Арт. ${escHtml(p.sku||'')}</span>
+            ${p.age_min ? `<span class="pdp-pill pdp-pill-age">${p.age_min}+</span>` : ''}
+            <span class="pdp-pill" style="background:${sColor}15;color:${sColor};border-color:${sColor}30">
+              <span class="pdp-dot" style="background:${sColor}"></span>${sLabel}
+            </span>
           </div>
+
+          <div class="pdp-price-row">
+            <span class="pdp-price">${rub(p.price)}<span class="pdp-per"> / шт</span></span>
+            ${discPct > 0 ? `<span class="pdp-old-price">${rub(p.price_old)}</span>` : ''}
+          </div>
+
+          <div class="pdp-wholesale">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+            <span><b>Оптом:</b> от ${minQty} шт · счёт по запросу</span>
+          </div>
+
+          ${p.description ? `<p class="pdp-desc">${escHtml(p.description)}</p>` : ''}
+
+          <div class="pdp-buy-row">
+            <div class="pdp-qty">
+              <button class="pdp-qty-btn" onclick="adjustModalQty(-1)">−</button>
+              <input class="pdp-qty-input" id="modalQty" type="number" value="${minQty}" min="${minQty}" max="9999">
+              <button class="pdp-qty-btn" onclick="adjustModalQty(1)">+</button>
+            </div>
+            <button class="pdp-cart-btn${isOut?' pdp-cart-btn--out':''}" ${isOut?'disabled':''}
+              onclick="addToCart(${p.id},parseInt($('modalQty').value)||${minQty});closeProductModal()">
+              ${isOut ? 'Нет в наличии' : inCart ? '✓ В корзине' : 'В корзину'}
+            </button>
+          </div>
+
+          ${similar ? `
+          <div class="pdp-similar">
+            <div class="pdp-similar-title">Похожие товары</div>
+            <div class="pdp-similar-scroll">${similar}</div>
+          </div>` : ''}
+
         </div>
       </div>`;
 
