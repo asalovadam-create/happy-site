@@ -1107,6 +1107,7 @@ body {
   opacity: 0; pointer-events: none;
   transition: opacity .25s;
   overflow: hidden;
+  padding-top: 48px;
 }
 .overlay.open { opacity: 1; pointer-events: all; }
 
@@ -1134,12 +1135,12 @@ body {
 
 /* Close button */
 .modal-x {
-  position: absolute; top: 14px; right: 14px;
+  position: absolute; top: 16px; right: 16px;
   width: 36px; height: 36px; border-radius: 50%;
-  border: none; background: rgba(255,255,255,0.95);
+  border: none; background: rgba(255,255,255,0.97);
   font-size: 16px; cursor: pointer; z-index: 30;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.2);
   backdrop-filter: blur(8px);
   color: #333; transition: background .15s, transform .15s;
 }
@@ -1215,10 +1216,11 @@ body {
 
 /* Discount badge */
 .pdp-badge-disc {
-  position: absolute; top: 14px; left: 14px;
+  position: absolute; top: 16px; left: 16px;
   background: #e53935; color: #fff;
   font-size: 13px; font-weight: 900; font-family: 'Nunito', sans-serif;
-  padding: 4px 10px; border-radius: 10px; z-index: 5;
+  padding: 5px 12px; border-radius: 10px; z-index: 5;
+  box-shadow: 0 2px 8px rgba(229,57,53,0.35);
 }
 
 /* Thumbs */
