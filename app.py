@@ -87,26 +87,31 @@ class CacheHeaders(BaseHTTPMiddleware):
             resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
         return resp
 
+# Track at most 1 visit per IP per hour — prevents DB flooding
+_visitor_cache: dict = {}  # ip -> last_saved_timestamp
+
 class VisitorTracker(BaseHTTPMiddleware):
     async def dispatch(self, req, call_next):
         resp = await call_next(req)
-        if req.method == "GET" and not req.url.path.startswith(("/api/", "/static/", "/docs")):
+        if req.method == "GET" and req.url.path == "/":
             ua = req.headers.get("user-agent", "")
-            ip = req.headers.get("x-forwarded-for", "unknown")
-            ip = ip.split(",")[0].strip()
-            device = "📱 Mobile" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) \
-                else "📲 Tablet" if ("iPad" in ua) \
-                else "💻 Desktop" if ("Mac" in ua or "Windows" in ua or "Linux" in ua) \
-                else "❓ Unknown"
-            browser = "Chrome" if ("Chrome" in ua and "Safari" in ua and "Edg" not in ua) \
-                else "Safari" if ("Safari" in ua and "Chrome" not in ua) \
-                else "Firefox" if "Firefox" in ua \
-                else "Edge" if "Edg" in ua else "Other"
-            # Store in DB asynchronously (non-blocking)
-            try:
-                asyncio.create_task(_save_visitor(ip, device, browser, ua[:120]))
-            except RuntimeError:
-                pass  # No event loop context — skip visitor tracking
+            ip = req.headers.get("x-forwarded-for", "unknown").split(",")[0].strip()
+            now = time.time()
+            # Only save once per IP per hour
+            if now - _visitor_cache.get(ip, 0) > 3600:
+                _visitor_cache[ip] = now
+                device = "📱 Mobile" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) \
+                    else "📲 Tablet" if "iPad" in ua \
+                    else "💻 Desktop" if ("Mac" in ua or "Windows" in ua or "Linux" in ua) \
+                    else "❓ Unknown"
+                browser = "Chrome" if ("Chrome" in ua and "Safari" in ua and "Edg" not in ua) \
+                    else "Safari" if ("Safari" in ua and "Chrome" not in ua) \
+                    else "Firefox" if "Firefox" in ua \
+                    else "Edge" if "Edg" in ua else "Other"
+                try:
+                    asyncio.create_task(_save_visitor(ip, device, browser, ua[:120]))
+                except RuntimeError:
+                    pass
         return resp
 
 async def _save_visitor(ip, device, browser, ua):
@@ -116,7 +121,7 @@ async def _save_visitor(ip, device, browser, ua):
             ip, device, browser, ua, datetime.utcnow()
         )
     except Exception:
-        pass  # Non-critical
+        pass
 
 app.add_middleware(CacheHeaders)
 app.add_middleware(VisitorTracker)
@@ -263,6 +268,17 @@ async def _create_tables():
         created_at TIMESTAMPTZ DEFAULT NOW()
     )""")
 
+    # Indexes for fast product queries
+    for idx_sql in [
+        "CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active) WHERE is_active=TRUE",
+        "CREATE INDEX IF NOT EXISTS idx_products_category ON products(category) WHERE is_active=TRUE",
+        "CREATE INDEX IF NOT EXISTS idx_products_search ON products USING gin(to_tsvector('russian', name))",
+        "CREATE INDEX IF NOT EXISTS idx_visitors_ip ON visitors(ip, created_at)",
+    ]:
+        try:
+            await db_execute(idx_sql)
+        except Exception:
+            pass
     print("✅ Tables ready")
 
 # ── Catalog structure (kept in memory for speed, persisted in DB) ──────────────
@@ -639,19 +655,23 @@ async def categories():
     """)
     cnt_map = {r["category"]: r["cnt"] for r in cat_counts}
 
-    cats = await db_fetch("SELECT DISTINCT category FROM catalog WHERE subcategory='' ORDER BY category")
-    result = []
-    for row in cats:
+    # Single query for all categories and subcategories
+    all_rows = await db_fetch(
+        "SELECT category, subcategory FROM catalog ORDER BY category, sort_order, subcategory"
+    )
+    # Group by category
+    cat_subs: dict = {}
+    for row in all_rows:
         cat = row["category"]
-        sub_rows = await db_fetch(
-            "SELECT subcategory FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory",
-            cat
-        )
-        result.append({
-            "name": cat,
-            "count": cnt_map.get(cat, 0),
-            "subcategories": [r["subcategory"] for r in sub_rows]
-        })
+        sub = row["subcategory"]
+        if cat not in cat_subs:
+            cat_subs[cat] = []
+        if sub:
+            cat_subs[cat].append(sub)
+    result = [
+        {"name": cat, "count": cnt_map.get(cat, 0), "subcategories": subs}
+        for cat, subs in cat_subs.items()
+    ]
     return result
 
 @app.get("/api/categories/{cat}/subcategories")
@@ -863,8 +883,18 @@ async def admin_customers(_=Depends(require_admin)):
 @app.get("/api/admin/visitors")
 async def admin_visitors(_=Depends(require_admin)):
     if not _db_pool: return {"visitors":[]}
-    rows = await db_fetch("SELECT ip,device,browser,created_at as time FROM visitors ORDER BY created_at DESC LIMIT 200")
+    rows = await db_fetch("SELECT ip,device,browser,created_at as time FROM visitors ORDER BY created_at DESC LIMIT 100")
+    # Keep visitors table lean — delete old entries beyond 500 rows
+    asyncio.create_task(_cleanup_visitors())
     return {"visitors": [dict(r) for r in rows]}
+
+async def _cleanup_visitors():
+    try:
+        await db_execute(
+            "DELETE FROM visitors WHERE id NOT IN (SELECT id FROM visitors ORDER BY created_at DESC LIMIT 500)"
+        )
+    except Exception:
+        pass
 
 @app.get("/api/admin/catalog")
 async def admin_catalog(_=Depends(require_admin)):
