@@ -1122,6 +1122,7 @@ body {
   max-height: 94vh;
   overflow-y: auto;
   position: relative;
+  overflow: hidden;
 }
 @media (min-width: 600px) {
   .overlay { align-items: center; }
@@ -1143,20 +1144,20 @@ body {
 }
 
 .modal-x {
-  position: sticky;
-  top: 14px;
-  float: right;
-  margin: 14px 14px 0 0;
-  width: 32px; height: 32px;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 34px; height: 34px;
   border-radius: 50%;
   border: none;
-  background: rgba(245,245,245,0.95);
-  font-size: 14px;
+  background: rgba(255,255,255,0.95);
+  font-size: 15px;
   cursor: pointer;
-  z-index: 10;
+  z-index: 20;
   display: flex; align-items: center; justify-content: center;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.18);
   backdrop-filter: blur(4px);
+  flex-shrink: 0;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════════
