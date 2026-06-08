@@ -350,6 +350,15 @@ function renderCart() {
 }
 
 // ── Product Card ──────────────────────────────────────────────────────────────
+// Optimize Cloudinary URLs — auto WebP, resize, compress
+function cdnImg(url, w=400) {
+  if (!url) return '';
+  // Only transform Cloudinary URLs
+  if (!url.includes('cloudinary.com') && !url.includes('res.cloudinary')) return url;
+  // Insert transformation before /upload/
+  return url.replace('/upload/', `/upload/f_auto,q_auto:good,w_${w},c_limit/`);
+}
+
 function renderProductCard(p) {
   const tagClass = {'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'};
   const tags = (p.tags||[]).slice(0,2)
@@ -392,7 +401,7 @@ function renderProductCard(p) {
   const stripSlides = imgs.map((src, i) => `
     <div class="cstrip-slide">
       <div class="card-img-skeleton skeleton" id="csk-${p.id}-${i}"></div>
-      <img src="${escHtml(src)}" alt="${escHtml(p.name)} фото ${i+1}"
+      <img src="${escHtml(cdnImg(src, 400))}" alt="${escHtml(p.name)} фото ${i+1}"
            loading="${i===0?'eager':'lazy'}" decoding="async"
            onload="document.getElementById('csk-${p.id}-${i}')?.remove();this.classList.add('loaded')"
            onerror="document.getElementById('csk-${p.id}-${i}')?.remove();this.classList.add('loaded')">
@@ -945,7 +954,7 @@ async function openProduct(id) {
     const slides = imgs.map((src, i) => `
       <div class="mgal-slide">
         <div class="skeleton" id="msk-${i}" style="position:absolute;inset:0;border-radius:0;z-index:1"></div>
-        <img src="${escHtml(src)}" alt="${escHtml(p.name)} фото ${i+1}"
+        <img src="${escHtml(cdnImg(src, 800))}" alt="${escHtml(p.name)} фото ${i+1}"
              loading="${i===0?'eager':'lazy'}" decoding="async"
              style="width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:2"
              onload="document.getElementById('msk-${i}')?.remove()"
@@ -956,7 +965,7 @@ async function openProduct(id) {
     const thumbs = hasMulti ? imgs.map((src,i) => `
       <button class="mgal-thumb ${i===0?'active':''}" id="mthumb-${i}"
               onclick="modalGoto(${i})" title="Фото ${i+1}">
-        <img src="${escHtml(src)}" alt="фото ${i+1}" loading="lazy">
+        <img src="${escHtml(cdnImg(src, 120))}" alt="фото ${i+1}" loading="lazy">
       </button>`).join('') : '';
 
     // Nav arrows
