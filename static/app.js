@@ -1,1221 +1,2702 @@
-"""
-Happy Toys — Wholesale Catalog v4
-FastAPI + Neon PostgreSQL + Cloudinary
-All secrets via environment variables only — never hardcoded!
-"""
+/* ============================================================
+   Happy Toys — app.js v2
+   ============================================================ */
+'use strict';
 
-from fastapi import FastAPI, HTTPException, Depends, Request, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, Response, FileResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime, timedelta
-from starlette.middleware.base import BaseHTTPMiddleware
-import jwt, hashlib, random, string, time, os, base64, uuid, json, asyncio
-
-app = FastAPI(title="Happy Toys API", version="4.0.0", docs_url="/api/docs")
-app.add_middleware(GZipMiddleware, minimum_size=500)
-
-# ── Environment variables (set in Render Dashboard → Environment) ─────────────
-# NEVER put real values here — only os.getenv() calls!
-DATABASE_URL    = os.getenv("DATABASE_URL")          # Neon PostgreSQL URL
-CLOUDINARY_URL  = os.getenv("CLOUDINARY_URL")        # cloudinary://key:secret@cloud
-JWT_SECRET      = os.getenv("JWT_SECRET", "change-me-in-render-env")
-ADMIN_USER      = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS      = os.getenv("ADMIN_PASS", "admin123")
-
-# ── Cloudinary setup (only if env var is set) ─────────────────────────────────
-_cloudinary_ok = False
-if CLOUDINARY_URL:
-    try:
-        import cloudinary
-        import cloudinary.uploader
-        cloudinary.config(cloudinary_url=CLOUDINARY_URL)
-        _cloudinary_ok = True
-        print("✅ Cloudinary connected")
-    except ImportError:
-        print("⚠️  cloudinary package not installed")
-else:
-    print("⚠️  CLOUDINARY_URL not set — image upload will use base64 fallback")
-
-# ── Neon PostgreSQL setup ─────────────────────────────────────────────────────
-_db_pool = None
-
-async def get_db():
-    """Get database connection from pool."""
-    global _db_pool
-    if _db_pool is None:
-        raise HTTPException(503, "Database not connected")
-    return _db_pool
-
-async def db_fetch(query: str, *args):
-    pool = await get_db()
-    async with pool.acquire(timeout=10) as conn:
-        return await conn.fetch(query, *args)
-
-async def db_fetchrow(query: str, *args):
-    pool = await get_db()
-    async with pool.acquire(timeout=10) as conn:
-        return await conn.fetchrow(query, *args)
-
-async def db_execute(query: str, *args):
-    pool = await get_db()
-    async with pool.acquire(timeout=10) as conn:
-        return await conn.execute(query, *args)
-
-# ── Middleware ─────────────────────────────────────────────────────────────────
-class CacheHeaders(BaseHTTPMiddleware):
-    async def dispatch(self, req, call_next):
-        resp = await call_next(req)
-        p = req.url.path
-        if p in ('/sw.js', '/static/sw.js'):
-            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            resp.headers['Service-Worker-Allowed'] = '/'
-        elif p in ('/manifest.json', '/static/manifest.json'):
-            resp.headers['Cache-Control'] = 'no-cache'
-        elif p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
-            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            resp.headers['Pragma'] = 'no-cache'
-            resp.headers['Expires'] = '0'
-        elif p.startswith('/static/'):
-            resp.headers['Cache-Control'] = 'public, max-age=86400'
-        elif p.startswith('/api/'):
-            resp.headers['Cache-Control'] = 'no-cache, must-revalidate'
-        return resp
-
-# Track at most 1 visit per IP per hour — prevents DB flooding
-_visitor_cache: dict = {}  # ip -> last_saved_timestamp
-
-class VisitorTracker(BaseHTTPMiddleware):
-    async def dispatch(self, req, call_next):
-        resp = await call_next(req)
-        if req.method == "GET" and req.url.path == "/":
-            ua = req.headers.get("user-agent", "")
-            ip = req.headers.get("x-forwarded-for", "unknown").split(",")[0].strip()
-            now = time.time()
-            # Only save once per IP per hour
-            if now - _visitor_cache.get(ip, 0) > 3600:
-                _visitor_cache[ip] = now
-                device = "📱 Mobile" if ("iPhone" in ua or ("Android" in ua and "Mobile" in ua)) \
-                    else "📲 Tablet" if "iPad" in ua \
-                    else "💻 Desktop" if ("Mac" in ua or "Windows" in ua or "Linux" in ua) \
-                    else "❓ Unknown"
-                browser = "Chrome" if ("Chrome" in ua and "Safari" in ua and "Edg" not in ua) \
-                    else "Safari" if ("Safari" in ua and "Chrome" not in ua) \
-                    else "Firefox" if "Firefox" in ua \
-                    else "Edge" if "Edg" in ua else "Other"
-                try:
-                    asyncio.create_task(_save_visitor(ip, device, browser, ua[:120]))
-                except RuntimeError:
-                    pass
-        return resp
-
-async def _save_visitor(ip, device, browser, ua):
-    try:
-        await db_execute(
-            "INSERT INTO visitors(ip, device, browser, ua, created_at) VALUES($1,$2,$3,$4,$5)",
-            ip, device, browser, ua, datetime.utcnow()
-        )
-    except Exception:
-        pass
-
-app.add_middleware(CacheHeaders)
-app.add_middleware(VisitorTracker)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
-
-security = HTTPBearer(auto_error=False)
-
-# ── DB init / startup ─────────────────────────────────────────────────────────
-@app.on_event("startup")
-async def startup():
-    global _db_pool
-    if not DATABASE_URL:
-        print("⚠️  DATABASE_URL not set — running in memory-only mode")
-        return
-    # Clean up URL — asyncpg doesn't support channel_binding parameter
-    db_url = DATABASE_URL
-    for param in ['channel_binding=require', 'channel_binding=disable']:
-        db_url = db_url.replace('&' + param, '').replace('?' + param + '&', '?').replace('?' + param, '')
-    print(f"🔌 Connecting to DB: {db_url[:50]}...")
-    try:
-        import asyncpg, ssl as _ssl
-        # Neon requires SSL — create proper context
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = _ssl.CERT_NONE
-
-        _db_pool = await asyncpg.create_pool(
-            db_url,
-            min_size=2,
-            max_size=20,
-            command_timeout=30,
-            ssl=ssl_ctx,
-            statement_cache_size=0,  # Required for PgBouncer/Neon pooler
-            max_inactive_connection_lifetime=300,
-        )
-        print("✅ Neon pool created, initializing tables...")
-        await _create_tables()
-        await _seed_if_empty()
-        print("✅ Neon PostgreSQL connected and ready!")
-    except Exception as e:
-        print(f"❌ DB connection failed: {type(e).__name__}: {e}")
-        _db_pool = None
-        print("⚠️  Running in LIMITED mode — registration/DB features disabled")
-
-@app.on_event("shutdown")
-async def shutdown():
-    global _db_pool
-    if _db_pool:
-        await _db_pool.close()
-
-async def _create_tables():
-    """Create all tables if they don't exist."""
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS products (
-        id          SERIAL PRIMARY KEY,
-        name        TEXT NOT NULL,
-        sku         TEXT UNIQUE NOT NULL,
-        price       NUMERIC(10,2) NOT NULL,
-        price_old   NUMERIC(10,2) DEFAULT NULL,
-        brand       TEXT DEFAULT '',
-        category    TEXT DEFAULT '',
-        subcategory TEXT DEFAULT '',
-        image       TEXT DEFAULT '',
-        images      TEXT[] DEFAULT '{}',
-        stock       TEXT DEFAULT 'ok',
-        stock_qty   INTEGER DEFAULT 0,
-        description TEXT DEFAULT '',
-        min_order   INTEGER DEFAULT 1,
-        age_min     INTEGER DEFAULT 3,
-        tags        TEXT[] DEFAULT '{}',
-        is_active   BOOLEAN DEFAULT TRUE,
-        created_at  TIMESTAMPTZ DEFAULT NOW()
-    )""")
-    # Migrate existing DB — add new columns if missing
-    for col_sql in [
-        "ALTER TABLE products ADD COLUMN IF NOT EXISTS price_old NUMERIC(10,2) DEFAULT NULL",
-        "ALTER TABLE products ADD COLUMN IF NOT EXISTS images TEXT[] DEFAULT '{}'",
-    ]:
-        try:
-            await db_execute(col_sql)
-        except Exception:
-            pass
+// ── State ─────────────────────────────────────────────────────────────────────
+const State = {
+  page:       'home',
+  products:   [],
+  total:      0,
+  pageNum:    1,
+  perPage:    40,
+  category:   null,
+  subcategory: null,
+  search:     '',
+  stock:      null,
+  sort:       'default',
+  loading:    false,
+  cart:       {},
+  cartOpen:   false,
+  user:       null,   // { role, token, customer? }
+  adminToken: null,
+};
 
 
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS customers (
-        id            TEXT PRIMARY KEY,
-        first_name    TEXT DEFAULT '',
-        last_name     TEXT DEFAULT '',
-        email         TEXT UNIQUE NOT NULL,
-        phone         TEXT DEFAULT '',
-        address       TEXT DEFAULT '',
-        password_hash TEXT NOT NULL,
-        created_at    TIMESTAMPTZ DEFAULT NOW()
-    )""")
+// ── Session persistence ───────────────────────────────────────────────────────
+const _SK = 'ht_sess_v1';
+const _CK = 'ht_cart_v2';
 
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS orders (
-        id          SERIAL PRIMARY KEY,
-        code        TEXT UNIQUE NOT NULL,
-        customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
-        items       JSONB NOT NULL DEFAULT '[]',
-        total       NUMERIC(10,2) DEFAULT 0,
-        comment     TEXT DEFAULT '',
-        store_name  TEXT DEFAULT '',
-        contact     TEXT DEFAULT '',
-        created_at  TIMESTAMPTZ DEFAULT NOW()
-    )""")
-
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS catalog (
-        id          SERIAL PRIMARY KEY,
-        category    TEXT NOT NULL,
-        subcategory TEXT NOT NULL DEFAULT '',
-        image_url   TEXT DEFAULT '',
-        sort_order  INTEGER DEFAULT 0,
-        UNIQUE(category, subcategory)
-    )""")
-
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS brands (
-        name       TEXT PRIMARY KEY,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    )""")
-
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS visitors (
-        id         SERIAL PRIMARY KEY,
-        ip         TEXT,
-        device     TEXT,
-        browser    TEXT,
-        ua         TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    )""")
-
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS sessions (
-        token      TEXT PRIMARY KEY,
-        user_id    TEXT NOT NULL,
-        role       TEXT NOT NULL,
-        expires_at TIMESTAMPTZ NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    )""")
-
-    # Новые таблицы
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS admin_log (
-        id          SERIAL PRIMARY KEY,
-        action      TEXT NOT NULL,
-        entity      TEXT NOT NULL,
-        entity_id   TEXT DEFAULT '',
-        detail      TEXT DEFAULT '',
-        admin_name  TEXT DEFAULT 'admin',
-        created_at  TIMESTAMPTZ DEFAULT NOW()
-    )""")
-
-    await db_execute("""
-    CREATE TABLE IF NOT EXISTS featured_products (
-        id          SERIAL PRIMARY KEY,
-        product_id  INTEGER REFERENCES products(id) ON DELETE CASCADE,
-        position    INTEGER DEFAULT 0,
-        page        INTEGER DEFAULT 1,
-        created_at  TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(product_id)
-    )""")
-
-    # Добавляем колонку role в customers если нет
-    try:
-        await db_execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'customer'")
-        await db_execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE")
-    except Exception:
-        pass
-
-    # Indexes for fast product queries
-    for idx_sql in [
-        "CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active) WHERE is_active=TRUE",
-        "CREATE INDEX IF NOT EXISTS idx_products_category ON products(category) WHERE is_active=TRUE",
-        "CREATE INDEX IF NOT EXISTS idx_products_search ON products USING gin(to_tsvector('russian', name))",
-        "CREATE INDEX IF NOT EXISTS idx_visitors_ip ON visitors(ip, created_at)",
-    ]:
-        try:
-            await db_execute(idx_sql)
-        except Exception:
-            pass
-    print("✅ Tables ready")
-
-# ── Catalog structure (kept in memory for speed, persisted in DB) ──────────────
-DEFAULT_CATALOG = {
-    "Машинки":         ["Легковые автомобили","Грузовики и спецтехника","Гоночные машины","Радиоуправляемые","Треки и наборы"],
-    "Куклы":           ["Модные куклы","Пупсы и малыши","Принцессы","Аксессуары для кукол"],
-    "Конструкторы":    ["Классические конструкторы","LEGO серии","Магнитные конструкторы","Деревянные конструкторы","Мягкие конструкторы"],
-    "Мягкие игрушки":  ["Медведи и мишки","Единороги","Животные","Персонажи мультфильмов","Подушки-игрушки"],
-    "Настольные игры": ["Классические игры","Стратегии","Карточные игры","Игры для детей"],
-    "Развивающие":     ["Сортеры и пазлы","Обучающие наборы","Музыкальные игрушки","Для малышей 0-3 года"],
-    "Пазлы":           ["Детские пазлы","Пазлы 100-500 деталей","Пазлы 500-1000 деталей","3D пазлы"],
-    "Творчество":      ["Наборы для рисования","Лепка и пластилин","Бисер и украшения","Наборы для шитья","Слаймы"],
-    "Канцелярия":      ["Ручки и карандаши","Тетради и блокноты","Пеналы и сумки","Фломастеры и маркеры","Точилки и ластики"],
-    "Спорт и активность": ["Мячи","Велосипеды и самокаты","Скакалки и обручи","Батуты"],
-    "Для малышей":     ["Погремушки","Прорезыватели","Мобили и ночники","Развивающие коврики"],
+function saveSession() {
+  try {
+    State.user
+      ? localStorage.setItem(_SK, JSON.stringify({ token: State.user.token, role: State.user.role, customer: State.user.customer || null }))
+      : localStorage.removeItem(_SK);
+  } catch(e) {}
 }
 
-DEFAULT_BRANDS = ["LEGO","Barbie","Hot Wheels","Hasbro","Mattel","Playmobil","Fisher-Price","Ravensburger","Schleich","Funko"]
+function loadCartFromStorage() {
+  try {
+    const raw = localStorage.getItem(_CK) || localStorage.getItem('ht_cart');
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    if (saved && typeof saved === 'object') {
+      State.cart = saved;
+    }
+  } catch(e) {}
+}
 
-# Placeholder images — accessible without VPN in Russia
-# These are colored placeholders until admin uploads real product photos
-def _toy_img(seed: int) -> str:
-    """Generate a placeholder image URL that works in Russia.
-    Uses placehold.co which runs on Cloudflare — accessible everywhere."""
-    colors = [
-        ("FF6B35", "ffffff"),  # orange
-        ("1e88e5", "ffffff"),  # blue
-        ("2ECC71", "ffffff"),  # green
-        ("e53935", "ffffff"),  # red
-        ("7c3aed", "ffffff"),  # purple
-        ("FFB347", "1a1a2e"),  # yellow
-        ("FF6B9D", "ffffff"),  # pink
-        ("0891b2", "ffffff"),  # teal
-    ]
-    bg, fg = colors[seed % len(colors)]
-    emojis = ["🧸","🚗","🪆","🧱","🎲","🎨","🧩","⚽","🤖","🎁","✈️","🎵"]
-    emoji = emojis[seed % len(emojis)]
-    return f"https://placehold.co/600x600/{bg}/{fg}?text={emoji}"
+async function loadSession() {
+  try {
+    const s = JSON.parse(localStorage.getItem(_SK) || 'null');
+    if (!s?.token) return;
+    State.user = { token: s.token, role: s.role, customer: s.customer };
+    if (s.role === 'admin') { State.adminToken = s.token; const b = $('bn-admin'); if (b) b.style.display = 'flex'; }
+    updateAuthBtn();
+    try {
+      const me = await API.me();
+      if (me.customer) { State.user.customer = me.customer; saveSession(); updateAuthBtn(); }
+    } catch(e) { State.user = null; State.adminToken = null; localStorage.removeItem(_SK); updateAuthBtn(); }
+  } catch(e) {}
+}
 
-IMGS = [_toy_img(i) for i in range(12)]
-NAMES = [
-    "Кукла Барби Модница Делюкс","Конструктор City 500 дет.","Машинка Турбо X",
-    "Монополия Classic","Мишка плюшевый 45см","Пазл Природа 1000 эл.",
-    "Кукла LOL Surprise","LEGO Technic Суперкар","Hot Wheels трек Петля",
-    "Playmobil Ферма","Набор для рисования Pro","Глобус интерактивный 3D",
-]
+// ── API ───────────────────────────────────────────────────────────────────────
+const API = {
+  base: '',
 
-async def _seed_if_empty():
-    """Seed catalog structure and brands only. Never auto-fills demo products."""
-    # Seed catalog categories/subcategories if empty
-    cat_count = await db_fetchrow("SELECT COUNT(*) FROM catalog")
-    if cat_count[0] == 0:
-        for cat, subs in DEFAULT_CATALOG.items():
-            await db_execute(
-                "INSERT INTO catalog(category, subcategory) VALUES($1,'') ON CONFLICT DO NOTHING",
-                cat
-            )
-            for sub in subs:
-                await db_execute(
-                    "INSERT INTO catalog(category, subcategory) VALUES($1,$2) ON CONFLICT DO NOTHING",
-                    cat, sub
-                )
-        print("✅ Catalog structure seeded")
+  async req(method, path, body, isForm = false) {
+    const headers = {};
+    if (!isForm && method !== 'DELETE') headers['Content-Type'] = 'application/json';
+    const token = State.user?.token;
+    if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    # Seed brands if empty
-    brand_count = await db_fetchrow("SELECT COUNT(*) FROM brands")
-    if brand_count[0] == 0:
-        for b in DEFAULT_BRANDS:
-            await db_execute("INSERT INTO brands(name) VALUES($1) ON CONFLICT DO NOTHING", b)
-        print("✅ Brands seeded")
+    const opts = { method, headers };
+    if (body) opts.body = isForm ? body : JSON.stringify(body);
 
-    prod_count = await db_fetchrow("SELECT COUNT(*) FROM products")
-    print(f"✅ DB ready — {prod_count[0]} products")
+    const r = await fetch(this.base + path, opts);
+    if (!r.ok) {
+      const msg = await r.text().catch(()=>'');
+      try { throw JSON.parse(msg); } catch(e2) { throw new Error(msg||r.statusText); }
+    }
+    if (r.status === 204) return {};
+    const txt = await r.text();
+    return txt ? JSON.parse(txt) : {};
+  },
 
-# ── Auth helpers ──────────────────────────────────────────────────────────────
-def make_token(sub, role="customer"):
-    return jwt.encode(
-        {"sub": sub, "role": role, "exp": datetime.utcnow() + timedelta(days=30)},
-        JWT_SECRET, algorithm="HS256"
-    )
+  get(path)         { return this.req('GET',    path); },
+  del(path)         { return this.req('DELETE', path); },
+  post(path, body)  { return this.req('POST',   path, body); },
 
-def require_admin(creds: HTTPAuthorizationCredentials = Depends(security)):
-    if not creds: raise HTTPException(401, "Token required")
-    try:
-        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
-        if payload.get("role") != "admin": raise HTTPException(403, "Admin only")
-        return payload
-    except jwt.PyJWTError: raise HTTPException(401, "Invalid token")
+  products(params = {}) {
+    const q = new URLSearchParams({ page: State.pageNum, per_page: State.perPage });
+    if (params.category)    q.set('category',    params.category);
+    if (params.subcategory) q.set('subcategory', params.subcategory);
+    if (params.search)      q.set('search',      params.search);
+    if (params.stock)       q.set('stock',       params.stock);
+    if (params.sort && params.sort !== 'default') q.set('sort', params.sort);
+    return this.get(`/api/products?${q}`);
+  },
 
-def get_current_user(creds: HTTPAuthorizationCredentials = Depends(security)):
-    if not creds: return None
-    try: return jwt.decode(creds.credentials, JWT_SECRET, algorithms=["HS256"])
-    except: return None
+  search(q)       { return this.get(`/api/products/search?q=${encodeURIComponent(q)}&limit=8`); },
+  product(id)     { return this.get(`/api/products/${id}`); },
+  categories()    { return this.get('/api/categories'); },
+  subcategories(cat) { return this.get(`/api/categories/${encodeURIComponent(cat)}/subcategories`); },
+  adminCatalog()  { return this.get('/api/admin/catalog'); },
+  adminProducts(p={}) {
+    const q = new URLSearchParams({page: p.page||1, per_page: p.per_page||20});
+    if (p.search)   q.set('search', p.search);
+    if (p.category) q.set('category', p.category);
+    return this.get('/api/admin/products?' + q);
+  },
+  deleteAllProducts(pwd) { return this.req('DELETE', '/api/admin/products/all', {password: pwd}); },
+  updateProduct(id, data) { return this.req('PATCH', `/api/products/${id}`, data); },
+  addCategory(name) { return this.post('/api/admin/categories', {name}, State.user?.token); },
+  delCategory(name) { return this.req('DELETE', `/api/admin/categories/${encodeURIComponent(name)}`); },
+  addSubcategory(category, name) { return this.post('/api/admin/subcategories', {category, name}, State.user?.token); },
+  delSubcategory(cat, sub) { return this.req('DELETE', `/api/admin/subcategories/${encodeURIComponent(cat)}/${encodeURIComponent(sub)}`); },
+  shareCart(p)    { return this.post('/api/cart/share', p); },
+  login(u, p)     { return this.post('/api/auth/login', { username: u, password: p }); },
+  register(body)  { return this.post('/api/auth/register', body); },
+  me()            { return this.get('/api/auth/me'); },
+  adminStats()    { return this.get('/api/admin/stats'); },
+  adminCarts()    { return this.get('/api/admin/carts'); },
+  adminCustomers(){ return this.get('/api/admin/customers'); },
 
-# ── Schemas ────────────────────────────────────────────────────────────────────
-class LoginIn(BaseModel):
-    username: str; password: str
+  async uploadImage(file) {
+    // Check size before upload — fail fast, don't waste time uploading
+    if (file.size > 2 * 1024 * 1024) throw new Error('Файл слишком большой (макс. 2MB)');
+    // Direct upload to Cloudinary — bypasses our server entirely
+    // This means: no server load, no file size limits from us, faster upload
+    try {
+      const sig = await this.get('/api/cloudinary-signature');
+      const form = new FormData();
+      form.append('file', file);
+      form.append('api_key', sig.api_key);
+      form.append('timestamp', sig.timestamp);
+      form.append('signature', sig.signature);
+      form.append('folder', sig.folder);
+      form.append('eager', sig.eager);
+      const res = await fetch(
+        `https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`,
+        { method: 'POST', body: form }
+      );
+      if (!res.ok) throw new Error('Cloudinary error');
+      const data = await res.json();
+      // Use the eager transformed version (800x800, auto quality)
+      const url = (data.eager && data.eager[0]) ? data.eager[0].secure_url : data.secure_url;
+      return { url, public_id: data.public_id };
+    } catch(e) {
+      // Fallback to server-side upload if direct fails
+      const form = new FormData();
+      form.append('file', file);
+      return this.req('POST', '/api/upload-image', form, true);
+    }
+  },
+};
 
-class RegisterIn(BaseModel):
-    first_name: str; last_name: str; email: str
-    phone: str; password: str; address: Optional[str] = ""
+// ── DOM helpers ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 
-class ProductIn(BaseModel):
-    name: str; sku: str; price: float
-    price_old: Optional[float] = None
-    brand: Optional[str] = ""
-    category: str; subcategory: Optional[str] = ""
-    image: str = ""; images: Optional[List[str]] = []
-    stock: str = "ok"; stock_qty: int = 0
-    description: str = ""; min_order: int = 1; age_min: int = 3
+function rub(n) { return '₽' + parseFloat(n).toFixed(2); }
 
-class ProductPatch(BaseModel):
-    name: Optional[str]=None; price: Optional[float]=None
-    price_old: Optional[float]=None
-    sku: Optional[str]=None
-    stock: Optional[str]=None; stock_qty: Optional[int]=None
-    description: Optional[str]=None; is_active: Optional[bool]=None
-    image: Optional[str]=None; images: Optional[List[str]]=None
-    category: Optional[str]=None; subcategory: Optional[str]=None
-    brand: Optional[str]=None
-    min_order: Optional[int]=None; age_min: Optional[int]=None
-    tags: Optional[List[str]]=None
+function stockLabel(s) {
+  return s === 'ok' ? 'В наличии' : s === 'low' ? 'Мало' : 'Нет';
+}
 
-class ShareIn(BaseModel):
-    items: List[dict]; comment: str = ""; store_name: str = ""
-    contact: str = ""; customer_id: Optional[str] = None
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])
+  );
+}
 
-class CatalogCategoryIn(BaseModel):
-    name: str
+function initials(c) {
+  if (!c) return '?';
+  return ((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'');
+}
 
-class CatalogSubcategoryIn(BaseModel):
-    category: str; name: str
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'ok') {
+  const wrap = $('toastWrap');
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  wrap.appendChild(el);
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('show')));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 350); }, 3000);
+}
 
-class BrandIn(BaseModel):
-    name: str
+// ── Cart ──────────────────────────────────────────────────────────────────────
+function addToCartAnimated(btn, id) {
+  if (!btn) return;
+  btn.classList.add('add-anim');
+  // Fly animation
+  const rect = btn.getBoundingClientRect();
+  const cartBtn = $('cartBadge');
+  if (cartBtn) {
+    const cr = cartBtn.getBoundingClientRect();
+    const dot = document.createElement('div');
+    dot.className = 'cart-fly-dot';
+    dot.style.cssText = `left:${rect.left + rect.width/2}px;top:${rect.top + rect.height/2}px`;
+    document.body.appendChild(dot);
+    requestAnimationFrame(() => {
+      dot.style.transition = 'all 0.55s cubic-bezier(.4,0,.2,1)';
+      dot.style.left = (cr.left + cr.width/2) + 'px';
+      dot.style.top  = (cr.top  + cr.height/2) + 'px';
+      dot.style.transform = 'scale(0.2)';
+      dot.style.opacity = '0';
+    });
+    setTimeout(() => dot.remove(), 600);
+  }
+  setTimeout(() => btn.classList.remove('add-anim'), 400);
+  addToCart(id, 1);
+  // Refresh card to show qty controls (no toast needed)
+  setTimeout(() => refreshCard(id), 50);
+}
 
-class SubcategoryImageIn(BaseModel):
-    category: str; subcategory: str; image_url: str
+function changeCardQty(id, delta) {
+  const cur = State.cart[id]?.qty || 0;
+  const newQty = cur + delta;
+  if (newQty <= 0) {
+    delete State.cart[id];
+  } else {
+    if (State.cart[id]) State.cart[id].qty = newQty;
+  }
+  saveCart();
+  updateCartBadge();
+  renderCart();
+  refreshCard(id);
+}
 
-# ── Routes ────────────────────────────────────────────────────────────────────
-@app.get("/", response_class=HTMLResponse)
-async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+function refreshCard(id) {
+  const p = State.products.find(x => x.id === id);
+  if (!p) return;
+  const el = document.getElementById('card-' + id);
+  if (!el) return;
+  const newHtml = renderProductCard(p);
+  const tmp = document.createElement('div');
+  tmp.innerHTML = newHtml;
+  const newCard = tmp.firstElementChild;
+  if (newCard) el.replaceWith(newCard);
+}
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
-@app.post("/api/auth/login")
-async def login(b: LoginIn):
-    h = hashlib.sha256(b.password.encode()).hexdigest()
-    # Check admin
-    admin_hash = hashlib.sha256(ADMIN_PASS.encode()).hexdigest()
-    if b.username == ADMIN_USER and h == admin_hash:
-        return {"token": make_token(b.username, "admin"), "username": b.username, "role": "admin"}
-    # Check customer in DB
-    if _db_pool:
-        row = await db_fetchrow(
-            "SELECT * FROM customers WHERE (email=$1 OR email=$1) AND password_hash=$2",
-            b.username, h
-        )
-        if row:
-            c = dict(row)
-            c.pop("password_hash", None)
-            return {"token": make_token(str(c["id"]), "customer"), "customer": c, "role": "customer"}
-    raise HTTPException(401, "Invalid credentials")
+function addToCart(id, qty = 1) {
+  const p = State.products.find(x => x.id === id) || State._lastProduct;
+  if (!p || p.stock === 'out') return;
+  if (State.cart[id]) {
+    State.cart[id].qty += qty;
+  } else {
+    State.cart[id] = { product: p, qty };
+  }
+  saveCart();
+  renderCart();
+  toast(`${p.name.slice(0,30)} добавлен в корзину`);
+  updateCartBadge();
+}
 
-@app.post("/api/auth/register", status_code=201)
-async def register(b: RegisterIn):
-    if not _db_pool:
-        raise HTTPException(503, "База данных недоступна. Попробуйте позже или обратитесь к администратору.")
-    existing = await db_fetchrow("SELECT id FROM customers WHERE email=$1", b.email)
-    if existing:
-        raise HTTPException(400, "Email already registered")
-    uid = str(uuid.uuid4())
-    h = hashlib.sha256(b.password.encode()).hexdigest()
-    await db_execute(
-        """INSERT INTO customers(id,first_name,last_name,email,phone,address,password_hash)
-           VALUES($1,$2,$3,$4,$5,$6,$7)""",
-        uid, b.first_name, b.last_name, b.email, b.phone, b.address or "", h
-    )
-    row = await db_fetchrow("SELECT * FROM customers WHERE id=$1", uid)
-    c = dict(row); c.pop("password_hash", None)
-    return {"token": make_token(uid, "customer"), "customer": c, "role": "customer"}
+function removeFromCart(id) {
+  delete State.cart[id];
+  saveCart();
+  renderCart();
+  updateCartBadge();
+}
 
-@app.get("/api/auth/me")
-async def me(payload=Depends(get_current_user)):
-    if not payload: raise HTTPException(401)
-    if payload.get("role") == "admin":
-        return {"role": "admin", "username": payload["sub"]}
-    uid = payload["sub"]
-    if not _db_pool: raise HTTPException(503)
-    row = await db_fetchrow("SELECT * FROM customers WHERE id=$1", uid)
-    if not row: raise HTTPException(404)
-    c = dict(row); c.pop("password_hash", None)
-    # Get order count
-    cnt = await db_fetchrow("SELECT COUNT(*) FROM orders WHERE customer_id=$1", uid)
-    c["orders_count"] = cnt[0]
-    return {"role": "customer", "customer": c}
+function adjustQty(id, delta) {
+  if (!State.cart[id]) return;
+  State.cart[id].qty = Math.max(1, State.cart[id].qty + delta);
+  saveCart();
+  renderCart();
+}
 
-# ── Products ──────────────────────────────────────────────────────────────────
-@app.get("/api/products")
-async def products(
-    page: int = 1, per_page: int = 40,
-    category: Optional[str] = None, subcategory: Optional[str] = None,
-    brand: Optional[str] = None, search: Optional[str] = None,
-    stock: Optional[str] = None, sort: str = "default",
-):
-    if not _db_pool:
-        return {"items": [], "total": 0, "page": page, "per_page": per_page, "pages": 0}
+function saveCart() {
+  try { localStorage.setItem(_CK, JSON.stringify(State.cart)); } catch(e){}
+}
 
-    conditions = ["is_active = TRUE"]
-    args = []
-    idx = 1
+function updateCartBadge() {
+  const count = Object.values(State.cart).reduce((s, i) => s + i.qty, 0);
+  const total = Object.values(State.cart).reduce((s, i) => s + (i.product?.price || 0) * i.qty, 0);
+  const badge = $('cartBadge');
+  if (badge) {
+    badge.textContent = count;
+    badge.style.display = count > 0 ? 'flex' : 'none';
+  }
+  const headCount = $('cartHeadCount');
+  if (headCount) headCount.textContent = count;
+  // Show total below cart icon
+  const totalBadge = $('cartTotalBadge');
+  if (totalBadge) {
+    if (count > 0) {
+      totalBadge.textContent = '₽' + Math.round(total).toLocaleString('ru');
+      totalBadge.style.display = 'block';
+    } else {
+      totalBadge.style.display = 'none';
+    }
+  }
+}
 
-    if category:
-        conditions.append(f"category = ${idx}"); args.append(category); idx+=1
-    if subcategory:
-        conditions.append(f"subcategory = ${idx}"); args.append(subcategory); idx+=1
-    if brand:
-        conditions.append(f"brand = ${idx}"); args.append(brand); idx+=1
-    if stock:
-        conditions.append(f"stock = ${idx}"); args.append(stock); idx+=1
-    if search:
-        conditions.append(f"(name ILIKE ${idx} OR sku ILIKE ${idx} OR brand ILIKE ${idx})")
-        args.append(f"%{search}%"); idx+=1
+function toggleCart() {
+  State.cartOpen = !State.cartOpen;
+  $('cartDrawer').classList.toggle('open', State.cartOpen);
+  $('cartBackdrop').classList.toggle('show', State.cartOpen);
+}
 
-    where = " AND ".join(conditions)
-    order = {"price-asc":"price ASC","price-desc":"price DESC","name":"name ASC"}.get(sort,"id ASC")
+function renderCart() {
+  const list = $('cartList');
+  const foot = $('cartFoot');
+  if (!list) return;
 
-    total_row = await db_fetchrow(f"SELECT COUNT(*) FROM products WHERE {where}", *args)
-    total = total_row[0]
-    offset = (page-1)*per_page
+  const items = Object.values(State.cart);
+  if (!items.length) {
+    list.innerHTML = `<div class="cart-empty">
+      <svg viewBox="0 0 64 64" fill="none"><path d="M8 16h48l-6 28H14L8 16z" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><circle cx="22" cy="54" r="3" fill="currentColor"/><circle cx="42" cy="54" r="3" fill="currentColor"/><path d="M2 8h8l4 8" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+      <p>Корзина пуста</p></div>`;
+    if (foot) foot.style.display = 'none';
+    return;
+  }
 
-    rows = await db_fetch(
-        f"SELECT * FROM products WHERE {where} ORDER BY {order} LIMIT ${ idx} OFFSET ${idx+1}",
-        *args, per_page, offset
-    )
-    items = [dict(r) for r in rows]
-    return {
-        "items": items, "total": total, "page": page,
-        "per_page": per_page, "pages": max(1, (total+per_page-1)//per_page)
+  if (foot) foot.style.display = 'block';
+
+  let html = '';
+  let total = 0;
+  let totalQty = 0;
+
+  items.forEach(({ product: p, qty }) => {
+    const sub = p.price * qty;
+    total += sub;
+    totalQty += qty;
+    html += `
+    <div class="cart-item">
+      <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
+      <div class="cart-item-info">
+        <div class="cart-item-name">${escHtml(p.name)}</div>
+        <div class="cart-item-sku">SKU: ${escHtml(p.sku)}</div>
+        <div class="qty-row" style="margin-top:6px">
+          <button onclick="adjustQty(${p.id},-1)">−</button>
+          <input type="number" value="${qty}" min="1"
+            onchange="State.cart[${p.id}].qty=Math.max(1,parseInt(this.value)||1);saveCart();renderCart();updateCartBadge()">
+          <button onclick="adjustQty(${p.id},1)">+</button>
+        </div>
+        <div class="cart-item-price">${rub(sub)}</div>
+      </div>
+      <button class="cart-item-remove" onclick="removeFromCart(${p.id})">✕</button>
+    </div>`;
+  });
+
+  list.innerHTML = html;
+
+  const totalVal = $('cartTotalVal');
+  const totalQtyEl = $('cartTotalQty');
+  if (totalVal) totalVal.textContent = rub(total);
+  if (totalQtyEl) totalQtyEl.textContent = `${totalQty} шт`;
+}
+
+// ── Product Card ──────────────────────────────────────────────────────────────
+// Optimize Cloudinary URLs — auto WebP, resize, compress
+function cdnImg(url, w=400) {
+  if (!url) return '';
+  // Only transform Cloudinary URLs
+  if (!url.includes('cloudinary.com') && !url.includes('res.cloudinary')) return url;
+  // Insert transformation before /upload/
+  return url.replace('/upload/', `/upload/f_auto,q_auto:good,w_${w},c_limit/`);
+}
+
+function renderProductCard(p) {
+  const tagClass = {'Новинка':'tag-new','Хит':'tag-hit','Акция':'tag-sale','Эксклюзив':'tag-excl'};
+  const tags = (p.tags||[]).slice(0,2)
+    .map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
+
+  // Images — deduplicate + fallback placeholder if no images at all
+  const PLACEHOLDER = 'https://placehold.co/400x400/f5f5f5/ccc?text=%F0%9F%A7%B8';
+  const rawImgs = [
+    ...(Array.isArray(p.images) ? p.images : []),
+    p.image
+  ].filter(Boolean);
+  const imgs = rawImgs.length ? [...new Set(rawImgs)] : [PLACEHOLDER];
+  const hasMulti = imgs.length > 1;
+
+  const cartItem = State.cart[p.id];
+  const cartQty  = cartItem ? cartItem.qty : 0;
+  const isOut    = p.stock === 'out';
+
+  let discPct = 0;
+  if (p.price_old && p.price_old > p.price)
+    discPct = Math.round((1 - p.price / p.price_old) * 100);
+
+  const stockLabel = p.stock === 'ok'  ? '<span class="stock-badge stock-ok">В наличии</span>'
+                   : p.stock === 'low' ? '<span class="stock-badge stock-low">Заканчивается</span>'
+                   : '<span class="stock-badge stock-out">Нет</span>';
+
+  const ctrl = isOut
+    ? `<button class="card-add disabled" disabled>
+         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+       </button>`
+    : cartQty > 0
+      ? `<div class="card-qty-ctrl" onclick="event.stopPropagation()">
+           <button class="qty-sm-btn" onclick="changeCardQty(${p.id},-1)">−</button>
+           <span class="qty-sm-val">${cartQty}</span>
+           <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
+         </div>`
+      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})">
+           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+         </button>`;
+
+  // ── Gallery strip: ALL images rendered as a CSS scroll strip (no JS swap = no flicker) ──
+  // The strip slides horizontally via transform. Each image fills 100% of the wrap width.
+  const stripSlides = imgs.map((src, i) => `
+    <div class="cstrip-slide">
+      <div class="card-img-skeleton skeleton" id="csk-${p.id}-${i}"></div>
+      <img src="${escHtml(cdnImg(src, 400))}" alt="${escHtml(p.name)} фото ${i+1}"
+           loading="${i===0?'eager':'lazy'}" decoding="async"
+           onload="document.getElementById('csk-${p.id}-${i}')?.remove();this.classList.add('loaded')"
+           onerror="document.getElementById('csk-${p.id}-${i}')?.remove();this.classList.add('loaded')">
+    </div>`).join('');
+
+  // Dot indicators
+  const dots = hasMulti
+    ? `<div class="card-dots" id="cdots-${p.id}">
+        ${imgs.map((_,i)=>`<span class="card-dot${i===0?' active':''}"></span>`).join('')}
+       </div>` : '';
+
+  // Hover zone strips (desktop) — thin divs that call cardGoto on mouseenter
+  const hoverZones = hasMulti
+    ? `<div class="card-hover-zones">
+        ${imgs.map((_,i)=>`<div onmouseenter="cardGoto(${p.id},${i},false)"></div>`).join('')}
+       </div>` : '';
+
+  // Encode images for data attribute (safe JSON, avoid ' issues)
+  const imgsData = hasMulti ? ` data-imgs="${escHtml(JSON.stringify(imgs))}"` : '';
+
+  return `
+  <div class="product-card" id="card-${p.id}"${imgsData} data-cidx="0"
+       onclick="if(this._noclick){this._noclick=false;return;}openProduct(${p.id})">
+
+    <div class="card-img-wrap">
+      <!-- CSS strip slider — NO JS image swap, zero flicker -->
+      <div class="card-strip" id="cstrip-${p.id}">
+        ${stripSlides}
+      </div>
+
+      ${hoverZones}
+      ${tags ? `<div class="card-tags">${tags}</div>` : ''}
+      ${discPct > 0 ? `<div class="card-disc-badge">-${discPct}%</div>` : ''}
+      ${dots}
+      <div class="card-stock-wrap">${stockLabel}</div>
+    </div>
+
+    <div class="card-body">
+      <div class="card-name">${escHtml(p.name)}</div>
+      ${p.brand ? `<div class="card-brand">${escHtml(p.brand)}</div>` : ''}
+      ${p.min_order && p.min_order > 1 ? `<div class="card-moq">Мин. заказ: ${p.min_order} шт</div>` : ''}
+    </div>
+
+    <div class="card-price-row">
+      <div class="card-price-block">
+        <div class="card-price">${rub(p.price)}<span class="card-per"> / шт</span></div>
+        ${discPct > 0 ? `<div class="card-price-old">${rub(p.price_old)}</div>` : ''}
+      </div>
+      ${ctrl}
+    </div>
+  </div>`;
+}
+
+// ── Card gallery controller ─────────────────────────────────────────────────
+// Uses CSS transform on the strip — no image src swap, no flicker
+function cardGoto(id, idx, animate = true) {
+  const card  = document.getElementById('card-' + id);
+  const strip = document.getElementById('cstrip-' + id);
+  const dotsEl= document.getElementById('cdots-' + id);
+  if (!card || !strip) return;
+
+  const cur = parseInt(card.dataset.cidx || '0');
+  if (cur === idx) return;
+
+  let total = 1;
+  try { total = JSON.parse(card.dataset.imgs || '[]').length || 1; } catch(e){}
+  if (idx < 0 || idx >= total) return;
+
+  card.dataset.cidx = idx;
+  strip.style.transition = animate ? 'transform .28s cubic-bezier(.4,0,.2,1)' : 'none';
+  strip.style.transform  = `translateX(-${idx * 100}%)`;
+
+  if (dotsEl) {
+    dotsEl.querySelectorAll('.card-dot').forEach((d,i) => d.classList.toggle('active', i === idx));
+  }
+}
+
+// Touch swipe on card — attach once after grid render
+function initCardTouchSwipe(card) {
+  if (card._swipeInited) return;
+  card._swipeInited = true;
+
+  let sx = 0, sy = 0, moved = false;
+
+  card.addEventListener('touchstart', e => {
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+    moved = false;
+  }, {passive: true});
+
+  card.addEventListener('touchmove', e => {
+    moved = true;
+  }, {passive: true});
+
+  card.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    if (!moved || Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+
+    let imgs = [];
+    try { imgs = JSON.parse(card.dataset.imgs || '[]'); } catch(e){}
+    if (imgs.length < 2) return;
+
+    const id  = parseInt(card.id.replace('card-',''));
+    const cur = parseInt(card.dataset.cidx || '0');
+    cardGoto(id, Math.max(0, Math.min(imgs.length-1, cur + (dx < 0 ? 1 : -1))));
+    card._noclick = true; // suppress tap-to-open after swipe
+  }, {passive: true});
+}
+
+function renderSkeletons(n = 8) {
+  return Array(n).fill(0).map(() => `<div class="skeleton skel-card"></div>`).join('');
+}
+
+// ── Load products ─────────────────────────────────────────────────────────────
+let _loadAbort = null;
+async function loadProducts() {
+  // Cancel any in-flight request — navigate can trigger a new load before previous finishes
+  if (_loadAbort) _loadAbort.abort();
+  _loadAbort = new AbortController();
+  const signal = _loadAbort.signal;
+
+  State.loading = true;
+  const grid = $('productsGrid');
+  if (grid) grid.innerHTML = renderSkeletons(8);
+
+  try {
+    const data = await API.products({
+      category:    State.category,
+      subcategory: State.subcategory,
+      search:      State.search,
+      stock:       State.stock,
+      sort:        State.sort,
+    });
+    State.products = data.items;
+    State.total    = data.total;
+
+    if (grid) {
+      grid.innerHTML = State.products.length
+        ? State.products.map(renderProductCard).join('')
+        : `<div class="empty-state">
+             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+             <h3>Ничего не найдено</h3><p>Попробуйте изменить фильтры</p></div>`;
+      // Init touch swipe on cards with multiple images
+      grid.querySelectorAll('.product-card[data-imgs]').forEach(initCardTouchSwipe);
+
+      // Fix: if image already in browser cache — onload never fires, stays opacity:0
+      requestAnimationFrame(() => {
+        grid.querySelectorAll('.cstrip-slide img').forEach(img => {
+          if (img.complete) {
+            img.classList.add('loaded');
+            img.previousElementSibling?.remove();
+          }
+        });
+      });
     }
 
-@app.get("/api/products/search")
-async def search_products(q: str, limit: int = 8):
-    if len(q) < 2 or not _db_pool: return {"items": []}
-    rows = await db_fetch(
-        """SELECT * FROM products WHERE is_active=TRUE AND
-           (name ILIKE $1 OR sku ILIKE $1 OR brand ILIKE $1)
-           ORDER BY (CASE WHEN name ILIKE $1 THEN 0 ELSE 1 END) LIMIT $2""",
-        f"%{q}%", limit
-    )
-    return {"items": [dict(r) for r in rows]}
+    const countEl = $('productCount');
+    if (countEl) countEl.textContent = `${data.total} позиций`;
 
-@app.get("/api/products/{pid}")
-async def get_product(pid: int):
-    if not _db_pool: raise HTTPException(503)
-    row = await db_fetchrow("SELECT * FROM products WHERE id=$1", pid)
-    if not row: raise HTTPException(404)
-    p = dict(row)
-    similar_rows = await db_fetch(
-        "SELECT * FROM products WHERE category=$1 AND id!=$2 AND is_active=TRUE LIMIT 4",
-        p["category"], pid
-    )
-    p["similar"] = [dict(r) for r in similar_rows]
-    return p
+    renderPagination(data.page, data.pages);
+  } catch (e) {
+    if (e && e.name === 'AbortError') return; // cancelled by navigate — silent
+    console.error('loadProducts error:', e);
+    toast('Ошибка: ' + (e.message || e), 'err');
+    if (grid) grid.innerHTML = `<div class="empty-state">
+      <h3>Ошибка загрузки</h3>
+      <p style="font-size:12px;color:#aaa;margin-top:8px">${e.message || String(e)}</p>
+      <button class="btn-primary" style="margin-top:16px;padding:10px 20px;font-size:13px" onclick="loadProducts()">Повторить</button>
+    </div>`;
+  } finally {
+    State.loading = false;
+  }
+}
 
-@app.post("/api/products", status_code=201)
-async def create_product(b: ProductIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    try:
-        row = await db_fetchrow("""
-            INSERT INTO products(name,sku,price,price_old,brand,category,subcategory,
-                                 image,images,stock,stock_qty,description,min_order,age_min,tags)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-            RETURNING *""",
-            b.name, b.sku, b.price, b.price_old,
-            b.brand or "", b.category, b.subcategory or "",
-            b.image, b.images or [], b.stock, b.stock_qty,
-            b.description, b.min_order, b.age_min, []
-        )
-        product = dict(row)
-        # Логируем добавление товара
-        try:
-            await db_execute(
-                "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
-                'create', 'product', str(product['id']), f"Добавлен товар: {b.name} (арт: {b.sku})"
-            )
-        except Exception:
-            pass
-        return product
-    except Exception as e:
-        err = str(e)
-        if "unique" in err.lower() or "duplicate" in err.lower():
-            raise HTTPException(400, f"Артикул '{b.sku}' уже существует — укажите другой артикул")
-        raise HTTPException(500, f"Ошибка БД при создании товара: {err}")
+function renderPagination(page, pages) {
+  const el = $('pagination');
+  if (!el || pages <= 1) { if (el) el.innerHTML = ''; return; }
 
-@app.patch("/api/products/{pid}")
-async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    # exclude_unset: only update fields explicitly sent (preserves is_active=False, images=[])
-    fields = b.dict(exclude_unset=True)
-    if not fields: raise HTTPException(400, "No fields to update")
-    sets = ", ".join(f"{k}=${i+2}" for i,k in enumerate(fields.keys()))
-    vals = list(fields.values())
-    try:
-        row = await db_fetchrow(
-            f"UPDATE products SET {sets} WHERE id=$1 RETURNING *",
-            pid, *vals
-        )
-    except Exception as e:
-        err = str(e)
-        if "unique" in err.lower() or "duplicate" in err.lower():
-            raise HTTPException(400, "Артикул уже занят другим товаром")
-        raise HTTPException(500, f"Ошибка БД: {err}")
-    if not row: raise HTTPException(404, f"Товар #{pid} не найден")
-    return dict(row)
+  let html = '';
+  for (let i = 1; i <= Math.min(pages, 10); i++) {
+    html += `<button class="page-btn ${i === page ? 'active' : ''}" onclick="goPage(${i})">${i}</button>`;
+  }
+  el.innerHTML = html;
+}
 
-@app.delete("/api/products/{pid}", status_code=204)
-async def delete_product(pid: int, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    row = await db_fetchrow("SELECT name, sku FROM products WHERE id=$1", pid)
-    await db_execute("UPDATE products SET is_active=FALSE WHERE id=$1", pid)
-    if row:
-        try:
-            await db_execute(
-                "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
-                'delete', 'product', str(pid), f"Скрыт товар: {row['name']} (арт: {row['sku']})"
-            )
-        except Exception:
-            pass
+function goPage(n) {
+  State.pageNum = n;
+  loadProducts();
+  $('mainContent').scrollIntoView({ behavior: 'smooth' });
+}
 
-# ── Image upload (Cloudinary) ─────────────────────────────────────────────────
-@app.get("/api/cloudinary-signature")
-async def cloudinary_signature(_=Depends(require_admin)):
-    """Return a short-lived signed upload token so browser can upload directly to Cloudinary."""
-    if not _cloudinary_ok:
-        raise HTTPException(503, "Cloudinary not configured")
-    import cloudinary
-    import hashlib
-    ts = int(time.time())
-    folder = "happy-toys/products"
-    eager = "c_limit,w_800,h_800,q_auto:good"
-    params_str = f"eager={eager}&folder={folder}&timestamp={ts}"
-    api_secret = cloudinary.config().api_secret
-    signature = hashlib.sha1((params_str + api_secret).encode()).hexdigest()
-    return {
-        "signature": signature,
-        "timestamp": ts,
-        "api_key": cloudinary.config().api_key,
-        "cloud_name": cloudinary.config().cloud_name,
-        "folder": folder,
-        "eager": eager,
-    }
+// ── Filters ───────────────────────────────────────────────────────────────────
+function setCategory(cat) {
+  State.category = cat;
+  State.pageNum  = 1;
+  document.querySelectorAll('.cat-pill').forEach(b => b.classList.toggle('active', b.dataset.cat === (cat || '')));
+  loadProducts();
+}
 
-@app.post("/api/upload-image")
-async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
-    """Fallback server-side upload (used only if direct upload fails)."""
-    content = await file.read()
-    if len(content) > 2*1024*1024:
-        raise HTTPException(400, "File too large (max 2MB)")
+function setStock(s) {
+  State.stock = s;
+  State.pageNum = 1;
+  document.querySelectorAll('.filter-chip').forEach(b => b.classList.toggle('active', b.dataset.stock === (s || '')));
+  loadProducts();
+}
 
-    if _cloudinary_ok:
-        import cloudinary.uploader
-        import functools
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                cloudinary.uploader.upload,
-                content,
-                folder="happy-toys/products",
-                resource_type="image",
-                transformation=[{"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"}]
-            )
-        )
-        return {"url": result["secure_url"], "public_id": result["public_id"]}
-    else:
-        media_type = file.content_type or "image/jpeg"
-        b64 = base64.b64encode(content).decode()
-        return {"url": f"data:{media_type};base64,{b64}", "filename": file.filename}
+function setSort(v) {
+  State.sort = v;
+  State.pageNum = 1;
+  loadProducts();
+}
 
-# ── Categories ────────────────────────────────────────────────────────────────
-@app.get("/api/categories")
-async def categories():
-    if not _db_pool:
-        return [{"name": cat, "count": 0, "subcategories": subs}
-                for cat, subs in DEFAULT_CATALOG.items()]
+function clearFilters() {
+  State.category    = null;
+  State.subcategory  = null;
+  State.stock       = null;
+  State.sort     = 'default';
+  State.search   = '';
+  State.pageNum  = 1;
+  const si = $('topSearch');
+  if (si) si.value = '';
+  const btn = $('searchClearBtn');
+  if (btn) btn.style.display = 'none';
+  loadProducts();
+}
 
-    # Single query for all product counts per category
-    cat_counts = await db_fetch("""
-        SELECT category, COUNT(*) as cnt FROM products
-        WHERE is_active=TRUE GROUP BY category
-    """)
-    cnt_map = {r["category"]: r["cnt"] for r in cat_counts}
+// ── Confirm dialog ─────────────────────────────────────────────────────────────
+function showConfirm(title, msg, onOk) {
+  $('confirmTitle').textContent = title;
+  $('confirmMsg').textContent = msg;
+  $('confirmOkBtn').onclick = () => { closeConfirm(); onOk(); };
+  $('confirmOverlay').classList.add('open');
+}
+function closeConfirm() {
+  $('confirmOverlay').classList.remove('open');
+}
 
-    # Single query for all categories and subcategories
-    all_rows = await db_fetch(
-        "SELECT category, subcategory FROM catalog ORDER BY category, sort_order, subcategory"
-    )
-    # Group by category
-    cat_subs: dict = {}
-    for row in all_rows:
-        cat = row["category"]
-        sub = row["subcategory"]
-        if cat not in cat_subs:
-            cat_subs[cat] = []
-        if sub:
-            cat_subs[cat].append(sub)
-    result = [
-        {"name": cat, "count": cnt_map.get(cat, 0), "subcategories": subs}
-        for cat, subs in cat_subs.items()
-    ]
-    return result
+function clearCartConfirm() {
+  if (!Object.keys(State.cart).length) return;
+  showConfirm('Очистить корзину?', 'Все добавленные товары будут удалены.', () => {
+    State.cart = {};
+    saveCart();
+    renderCart();
+    updateCartBadge();
+    toast('Корзина очищена');
+  });
+}
 
-@app.get("/api/categories/{cat}/subcategories")
-async def subcategories(cat: str):
-    from urllib.parse import unquote
-    cat = unquote(cat)
-    if not _db_pool:
-        subs = DEFAULT_CATALOG.get(cat, [])
-        return [{"name": s, "count": 0, "image": ""} for s in subs]
-    rows = await db_fetch(
-        "SELECT subcategory, image_url FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory",
-        cat
-    )
-    # Single query for all counts
-    counts = await db_fetch(
-        "SELECT subcategory, COUNT(*) as cnt FROM products WHERE category=$1 AND is_active=TRUE GROUP BY subcategory",
-        cat
-    )
-    cnt_map = {r["subcategory"]: r["cnt"] for r in counts}
-    return [{"name": r["subcategory"], "count": cnt_map.get(r["subcategory"], 0), "image": r["image_url"] or ""} for r in rows]
+// ── Home page ─────────────────────────────────────────────────────────────────
+async function renderHome() {
+  let cats = [];
+  try { cats = await API.categories(); } catch(e){}
 
-# ── Admin catalog management ──────────────────────────────────────────────────
-@app.post("/api/admin/categories")
-async def add_category(b: CatalogCategoryIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    try:
-        await db_execute(
-            "INSERT INTO catalog(category, subcategory) VALUES($1, '')",
-            b.name
-        )
-    except Exception:
-        raise HTTPException(400, "Category already exists")
-    return {"name": b.name}
+  const catPills = cats.map(c =>
+    `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');selectCatalogCategory('${escHtml(c.name)}');">${escHtml(c.name)} <small>${c.count}</small></button>`
+  ).join('');
 
-@app.delete("/api/admin/categories/{name}")
-async def del_category(name: str, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    from urllib.parse import unquote
-    name = unquote(name)
-    await db_execute("DELETE FROM catalog WHERE category=$1", name)
-    return {"deleted": name}
+  $('mainContent').innerHTML = `
+    <div class="home-hero">
+      <div class="hero-wholesale-row">
+        <span class="wholesale-badge">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+          Только для оптовых покупателей
+        </span>
+      </div>
+      <div class="home-hero-top">
+        <svg class="home-hero-logo" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <ellipse cx="28" cy="46" rx="22" ry="7" fill="rgba(255,255,255,0.55)"/>
+          <ellipse cx="11" cy="44" rx="9" ry="5.5" fill="rgba(255,255,255,0.45)"/>
+          <ellipse cx="45" cy="44" rx="9" ry="5.5" fill="rgba(255,255,255,0.45)"/>
+          <rect x="14" y="26" width="28" height="20" rx="2" fill="rgba(255,255,255,0.92)"/>
+          <rect x="22" y="35" width="12" height="11" rx="3" fill="#1e88e5"/>
+          <rect x="14" y="20" width="5" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="21" y="20" width="4" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="31" y="20" width="4" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="37" y="20" width="5" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
+          <rect x="20" y="14" width="16" height="15" rx="2" fill="rgba(255,255,255,0.95)"/>
+          <polygon points="28,1 35,14 21,14" fill="#e53935"/>
+          <polygon points="10,12 14,25 6,25" fill="#42A5F5"/>
+          <polygon points="46,12 50,25 42,25" fill="#42A5F5"/>
+          <rect x="24" y="18" width="8" height="8" rx="2" fill="#1e88e5"/>
+          <rect x="7" y="43" width="42" height="3" rx="1.5" fill="#66BB6A" opacity="0.9"/>
+        </svg>
+        <div class="hero-title-block">
+          <h1 class="hero-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span>&nbsp;<span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></h1>
+          <p class="hero-tagline">Лучшие игрушки для вашего магазина</p>
+        </div>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat"><strong>200+</strong><span>Товаров</span></div>
+        <div class="hero-stat"><strong>10</strong><span>Брендов</span></div>
+        <div class="hero-stat"><strong>8</strong><span>Категорий</span></div>
+      </div>
+    </div>
 
-@app.post("/api/admin/subcategories")
-async def add_subcategory(b: CatalogSubcategoryIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    try:
-        await db_execute(
-            "INSERT INTO catalog(category, subcategory) VALUES($1, $2)",
-            b.category, b.name
-        )
-    except Exception:
-        raise HTTPException(400, "Subcategory already exists")
-    return {"category": b.category, "name": b.name}
+    <div class="cat-scroll">
+      <button class="cat-pill active" data-cat="" onclick="navigate('catalog');setCategory(null)">Все товары</button>
+      ${catPills}
+    </div>
 
-@app.delete("/api/admin/subcategories/{cat}/{sub}")
-async def del_subcategory(cat: str, sub: str, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    from urllib.parse import unquote
-    cat = unquote(cat); sub = unquote(sub)
-    await db_execute("DELETE FROM catalog WHERE category=$1 AND subcategory=$2", cat, sub)
-    return {"deleted": sub}
+    <div class="section-title">
+      Популярные товары
+      <a onclick="navigate('catalog')">Все →</a>
+    </div>
 
-@app.post("/api/admin/subcategory-image")
-async def set_subcat_image(b: SubcategoryImageIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    await db_execute(
-        "UPDATE catalog SET image_url=$3 WHERE category=$1 AND subcategory=$2",
-        b.category, b.subcategory, b.image_url
-    )
-    return {"ok": True}
+    <div class="filters-row">
+      <button class="filter-chip active" data-stock="" onclick="setStock(null)">Все</button>
+      <button class="filter-chip" data-stock="ok" onclick="setStock('ok')">В наличии</button>
+      <button class="filter-chip" data-stock="low" onclick="setStock('low')">Заканчиваются</button>
+      <select class="sort-chip" onchange="setSort(this.value)">
+        <option value="default">Сортировка</option>
+        <option value="price-asc">Цена ↑</option>
+        <option value="price-desc">Цена ↓</option>
+        <option value="name">По названию</option>
+      </select>
+    </div>
 
-# ── Brands ────────────────────────────────────────────────────────────────────
-@app.get("/api/brands")
-async def brands():
-    if not _db_pool:
-        return [{"name": b, "count": 0} for b in DEFAULT_BRANDS]
-    rows = await db_fetch("""
-        SELECT b.name, COUNT(p.id) as count
-        FROM brands b
-        LEFT JOIN products p ON p.brand=b.name AND p.is_active=TRUE
-        GROUP BY b.name ORDER BY count DESC, b.name
-    """)
-    return [dict(r) for r in rows]
+    <div class="results-info">
+      <span id="productCount">Загрузка...</span>
+      <span class="reset-link" onclick="clearFilters()">Сбросить</span>
+    </div>
 
-@app.post("/api/admin/brands")
-async def add_brand(b: BrandIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    await db_execute("INSERT INTO brands(name) VALUES($1) ON CONFLICT DO NOTHING", b.name.strip())
-    return {"name": b.name}
+    <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
+    <div id="pagination" class="pagination"></div>
+  `;
 
-@app.delete("/api/admin/brands/{name}")
-async def del_brand(name: str, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    await db_execute("DELETE FROM brands WHERE name=$1", name)
-    return {"deleted": name}
+  loadProducts().catch(e => {
+    console.error('renderHome loadProducts error:', e);
+    const grid = $('productsGrid');
+    if (grid) grid.innerHTML = `<div class="empty-state"><h3>${e.message || 'Ошибка'}</h3>
+      <button class="btn-primary" style="margin-top:12px;padding:10px 20px;font-size:13px" onclick="loadProducts()">Повторить</button>
+    </div>`;
+  });
+}
 
-# ── Cart / Orders ─────────────────────────────────────────────────────────────
-@app.post("/api/cart/share")
-async def share_cart(b: ShareIn):
-    code = "".join(random.choices(string.ascii_uppercase+string.digits, k=8))
-    total = sum(i.get("price",0)*i.get("quantity",0) for i in b.items)
-    if _db_pool:
-        await db_execute("""
-            INSERT INTO orders(code,customer_id,items,total,comment,store_name,contact)
-            VALUES($1,$2,$3,$4,$5,$6,$7)""",
-            code, b.customer_id or None,
-            json.dumps(b.items, ensure_ascii=False),
-            round(total,2), b.comment, b.store_name, b.contact
-        )
-    return {"code": code, "total": round(total,2), "items": b.items}
+// ── Catalog page ──────────────────────────────────────────────────────────────
+// ── Category emoji/image map ──────────────────────────────────────────────────
+const CAT_META = {
+  'Куклы':           { emoji: '🪆', color: '#FF6B9D', bg: '#fff0f6' },
+  'Конструкторы':    { emoji: '🧱', color: '#FF6B35', bg: '#fff5f0' },
+  'Машинки':         { emoji: '🚗', color: '#1e88e5', bg: '#f0f7ff' },
+  'Мягкие игрушки':  { emoji: '🧸', color: '#b08040', bg: '#fdf6ec' },
+  'Настольные игры': { emoji: '🎲', color: '#7c3aed', bg: '#f5f0ff' },
+  'Развивающие':     { emoji: '🎨', color: '#2ECC71', bg: '#f0fdf4' },
+  'Спорт':           { emoji: '⚽', color: '#e53935', bg: '#fff5f5' },
+  'Транспорт':       { emoji: '✈️', color: '#0891b2', bg: '#f0fbff' },
+  'Роботы':          { emoji: '🤖', color: '#6366f1', bg: '#f0f0ff' },
+  'Наборы':          { emoji: '🎁', color: '#d97706', bg: '#fffbeb' },
+  'Пазлы':           { emoji: '🧩', color: '#059669', bg: '#f0fdf8' },
+  'Творчество':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff' },
+  'Музыкальные':     { emoji: '🎵', color: '#f59e0b', bg: '#fffbeb' },
+  'Интерактивные':   { emoji: '💡', color: '#3b82f6', bg: '#eff6ff' },
+  'Спорт и активность': { emoji: '🏃', color: '#e53935', bg: '#fff5f5' },
+  'Для малышей':     { emoji: '👶', color: '#ec4899', bg: '#fdf2f8' },
+  'Железные дороги': { emoji: '🚂', color: '#78716c', bg: '#f9f7f5' },
+  'Аксессуары':      { emoji: '🎀', color: '#f472b6', bg: '#fff0f8' },
+};
+function catMeta(name) {
+  return CAT_META[name] || { emoji: '🧩', color: '#FF6B35', bg: '#fff8f5' };
+}
 
-@app.get("/api/cart/{code}")
-async def get_cart(code: str, request: Request):
-    if not _db_pool: raise HTTPException(503)
-    row = await db_fetchrow("SELECT * FROM orders WHERE code=$1", code)
-    if not row: raise HTTPException(404, "Cart not found")
-    cart = dict(row)
-    cart["items"] = json.loads(cart["items"]) if isinstance(cart["items"], str) else cart["items"]
-    accept = request.headers.get("accept","")
-    if "text/html" not in accept:
-        return cart
-    # Return HTML page (same as before)
-    items = cart.get("items",[])
-    total = float(cart.get("total",0))
-    date  = (cart.get("created_at") or datetime.utcnow()).strftime("%d.%m.%Y") if cart.get("created_at") else ""
-    site_url = str(request.base_url).rstrip("/")
-    rows_html = ""
-    for it in items:
-        img = it.get("image","") or ""
-        img_tag = f'<img src="{img}" onerror="this.style.display=\'none\'">' if img else "<div>🧸</div>"
-        sub = float(it.get("price",0))*int(it.get("quantity",1))
-        rows_html += f"""<div class="item-card">
-          <div class="item-img">{img_tag}</div>
-          <div class="item-info">
-            <div class="item-name">{it.get('name','')}</div>
-            <div class="item-sku">Арт: {it.get('sku','')}</div>
-            <div class="item-price-row">
-              <span>{it.get('quantity',1)} шт × ₽{float(it.get('price',0)):.2f}</span>
-              <span class="item-sub">₽{sub:.2f}</span>
+async function renderCatalog() {
+  let cats = [];
+  try { cats = await API.categories(); } catch(e){}
+
+  // If a category is already selected — show products view
+  if (State.category) {
+    renderCatalogProducts(cats);
+    return;
+  }
+
+  // ── Category grid view ────────────────────────────────────────────────────
+  const catCards = cats.map(c => {
+    const m = catMeta(c.name);
+    return `
+      <div class="cat-card" onclick="selectCatalogCategory('${escHtml(c.name)}')" style="--cat-color:${m.color};--cat-bg:${m.bg}">
+        <div class="cat-card-name">${escHtml(c.name)}</div>
+        <div class="cat-card-count">${c.count} товаров</div>
+        <div class="cat-card-icon">${m.emoji}</div>
+      </div>`;
+  }).join('');
+
+  const totalCount = cats.reduce((s,c) => s + c.count, 0);
+  const allCard = `
+    <div class="cat-card cat-card-all" onclick="selectCatalogCategory(null)">
+      <div class="cat-card-name">Все товары</div>
+      <div class="cat-card-count" style="color:rgba(255,255,255,0.75)">${totalCount} позиций</div>
+      <div class="cat-card-icon">🛍️</div>
+    </div>`;
+
+  $('mainContent').innerHTML = `
+    <div class="catalog-page">
+      <div class="catalog-header">
+        <h2 class="catalog-title">Каталог</h2>
+        <span class="catalog-subtitle">Выберите категорию</span>
+      </div>
+      <div class="cat-grid">
+        ${allCard}
+        ${catCards}
+      </div>
+    </div>
+  `;
+}
+
+// ── Level 2: show subcategories of a category ────────────────────────────────
+async function selectCatalogCategory(name) {
+  State.category    = name;
+  State.subcategory = null;
+  State.pageNum     = 1;
+  State.stock       = null;
+  State.sort        = 'default';
+
+  if (!name) {
+    // "All products" — skip subcategories, show products directly
+    renderCatalogProducts();
+    return;
+  }
+
+  // Load subcategories
+  let subs = [];
+  try { subs = await API.subcategories(name); } catch(e){}
+
+  if (!subs.length) {
+    renderCatalogProducts();
+    return;
+  }
+
+  const m = catMeta(name);
+
+  const subItems = subs.map((s, i) => {
+    const imgHtml = s.image
+      ? `<img src="${escHtml(s.image)}" alt="${escHtml(s.name)}" class="sl-subcat-img">`
+      : `<div class="sl-subcat-emoji">${m.emoji}</div>`;
+    return `
+      <div class="sl-subcat-row" onclick="selectSubcategory('${escHtml(s.name)}')">
+        <div class="sl-subcat-icon-wrap">${imgHtml}</div>
+        <span class="sl-subcat-name">${escHtml(s.name)}</span>
+        <span class="sl-subcat-cnt">${s.count > 0 ? s.count.toLocaleString('ru') : ''}</span>
+        <svg class="sl-subcat-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+      </div>`;
+  }).join('');
+
+  const totalInCat = subs.reduce((a, s) => a + s.count, 0);
+
+  $('mainContent').innerHTML = `
+    <div class="sl-cat-page">
+      <div class="catalog-breadcrumb">
+        <button class="breadcrumb-btn" onclick="navigate('catalog')">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+          Каталог
+        </button>
+        <span class="breadcrumb-sep">›</span>
+        <span class="breadcrumb-current">${escHtml(name)}</span>
+      </div>
+
+      <div class="sl-cat-title">
+        <span class="sl-cat-emoji">${m.emoji}</span>
+        ${escHtml(name)}
+      </div>
+
+      <div class="sl-subcat-list">
+        <div class="sl-subcat-row sl-subcat-all" onclick="selectSubcategory(null)">
+          <div class="sl-subcat-icon-wrap sl-all-icon">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          </div>
+          <span class="sl-subcat-name">Все товары категории</span>
+          <span class="sl-subcat-cnt">${totalInCat > 0 ? totalInCat.toLocaleString('ru') : ''}</span>
+          <svg class="sl-subcat-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg>
+        </div>
+        ${subItems}
+      </div>
+    </div>`;
+}
+
+// ── Level 3: select subcategory → show products ───────────────────────────────
+function selectSubcategory(sub) {
+  State.subcategory = sub;
+  State.pageNum     = 1;
+  renderCatalogProducts();
+}
+
+// ── Products list within catalog ──────────────────────────────────────────────
+function renderCatalogProducts() {
+  const catName = State.category || '';
+  const subName = State.subcategory || '';
+
+  const breadcrumb = `
+    <div class="catalog-breadcrumb">
+      <button class="breadcrumb-btn" onclick="navigate('catalog')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        Каталог
+      </button>
+      ${catName ? `<span class="breadcrumb-sep">›</span>
+      <button class="breadcrumb-btn" onclick="State.subcategory=null;selectCatalogCategory('${escHtml(catName)}')">${escHtml(catName)}</button>` : ''}
+      ${subName ? `<span class="breadcrumb-sep">›</span><span class="breadcrumb-current">${escHtml(subName)}</span>` : ''}
+    </div>`;
+
+  $('mainContent').innerHTML = `
+    ${breadcrumb}
+    <div class="filters-row">
+      <button class="filter-chip ${!State.stock?'active':''}" onclick="setStock(null)">Все</button>
+      <button class="filter-chip ${State.stock==='ok'?'active':''}" onclick="setStock('ok')">В наличии</button>
+      <button class="filter-chip ${State.stock==='low'?'active':''}" onclick="setStock('low')">Мало</button>
+      <select class="sort-chip" onchange="setSort(this.value)">
+        <option value="default">Сортировка</option>
+        <option value="price-asc">Цена ↑</option>
+        <option value="price-desc">Цена ↓</option>
+        <option value="name">А-Я</option>
+      </select>
+    </div>
+    <div class="results-info">
+      <span id="productCount">Загрузка...</span>
+      <span class="reset-link" onclick="navigate('catalog')">← В каталог</span>
+    </div>
+    <div class="products-grid" id="productsGrid">${renderSkeletons(8)}</div>
+    <div id="pagination" class="pagination"></div>
+  `;
+  loadProducts();
+}
+
+// ── Product modal ─────────────────────────────────────────────────────────────
+// ── Product modal — full gallery + desktop two-column ────────────────────────
+async function openProduct(id) {
+  const overlay = $('productOverlay');
+  overlay.classList.add('open');
+  document.body.style.overflow = 'hidden';
+  document.documentElement.style.overflow = 'hidden';
+  // Skeleton loading state
+  $('modalInner').innerHTML = `
+    <div class="modal-skel-wrap">
+      <div class="skeleton modal-skel-img"></div>
+      <div class="modal-skel-body">
+        <div class="skeleton" style="height:12px;width:35%;border-radius:6px;margin-bottom:10px"></div>
+        <div class="skeleton" style="height:24px;width:85%;border-radius:8px;margin-bottom:8px"></div>
+        <div class="skeleton" style="height:24px;width:60%;border-radius:8px;margin-bottom:16px"></div>
+        <div class="skeleton" style="height:36px;width:40%;border-radius:10px;margin-bottom:12px"></div>
+        <div class="skeleton" style="height:52px;border-radius:12px"></div>
+      </div>
+    </div>`;
+
+  try {
+    const p = await API.product(id);
+    State._lastProduct = p;
+
+    // Images
+    const imgs = [...new Set(
+      (Array.isArray(p.images) && p.images.length ? p.images : (p.image?[p.image]:[])).filter(Boolean)
+    )];
+    const hasMulti = imgs.length > 1;
+
+    // Discount
+    let discPct = 0;
+    if (p.price_old && p.price_old > p.price)
+      discPct = Math.round((1-p.price/p.price_old)*100);
+
+    const inCart  = !!State.cart[id];
+    const isOut   = p.stock === 'out';
+    const minQty  = p.min_order || 1;
+
+    // Stock indicator
+    const stockMap = {ok:['В наличии','#2ECC71'],low:['Заканчивается','#f59e0b'],out:['Нет в наличии','#E74C3C']};
+    const [sLabel, sColor] = stockMap[p.stock] || stockMap.out;
+
+    // ── Gallery: CSS strip slider (same technique as card — zero flicker) ──
+    const slides = imgs.map((src, i) => `
+      <div class="mgal-slide">
+        <div class="skeleton" id="msk-${i}" style="position:absolute;inset:0;border-radius:0;z-index:1"></div>
+        <img src="${escHtml(cdnImg(src, 800))}" alt="${escHtml(p.name)} фото ${i+1}"
+             loading="${i===0?'eager':'lazy'}" decoding="async"
+             style="width:100%;height:100%;object-fit:contain;display:block;position:relative;z-index:2;opacity:0;transition:opacity .3s ease"
+             onload="document.getElementById('msk-${i}')?.remove();this.style.opacity=1;if(this.complete)this.style.opacity=1"
+             onerror="document.getElementById('msk-${i}')?.remove();this.style.opacity=1">
+      </div>`).join('');
+
+    // Thumb strip
+    const thumbs = hasMulti ? imgs.map((src,i) => `
+      <button class="mgal-thumb ${i===0?'active':''}" id="mthumb-${i}"
+              onclick="modalGoto(${i})" title="Фото ${i+1}">
+        <img src="${escHtml(cdnImg(src, 120))}" alt="фото ${i+1}" loading="lazy">
+      </button>`).join('') : '';
+
+    // Nav arrows
+    const arrows = hasMulti ? `
+      <button class="mgal-arrow mgal-prev" onclick="modalGoto(window._mIdx-1)" aria-label="Назад">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button class="mgal-arrow mgal-next" onclick="modalGoto(window._mIdx+1)" aria-label="Вперёд">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>` : '';
+
+    // Dot counter "2 / 5"
+    const counter = hasMulti
+      ? `<div class="mgal-counter" id="mgal-counter">1 / ${imgs.length}</div>` : '';
+
+    // Similar products
+    const similar = (p.similar||[]).map(s => `
+      <div class="similar-card" onclick="openProduct(${s.id})">
+        <img src="${escHtml(s.image||s.images?.[0]||'')}" alt="${escHtml(s.name)}" loading="lazy">
+        <div class="similar-card-info">
+          <div class="similar-card-name">${escHtml(s.name)}</div>
+          <div class="similar-card-price">${rub(s.price)}</div>
+        </div>
+      </div>`).join('');
+
+    window._mImgs  = imgs;
+    window._mIdx   = 0;
+    window._mTotal = imgs.length;
+
+    $('modalInner').innerHTML = `
+      <div class="pdp-wrap">
+
+        <!-- GALLERY -->
+        <div class="pdp-gallery">
+          <div class="pdp-main-img" id="mgal-main">
+            <div class="pdp-strip" id="mgal-strip">${slides}</div>
+            ${arrows}
+            ${discPct > 0 ? `<div class="pdp-badge-disc">−${discPct}%</div>` : ''}
+            ${hasMulti ? `<div class="pdp-counter" id="mgal-counter">1 / ${imgs.length}</div>` : ''}
+          </div>
+          ${hasMulti ? `<div class="pdp-thumbs" id="mgal-thumbs">${thumbs}</div>` : ''}
+        </div>
+
+        <!-- INFO -->
+        <div class="pdp-info">
+
+          <div class="pdp-breadcrumb">${[p.brand, p.category, p.subcategory].filter(Boolean).map(escHtml).join(' / ')}</div>
+          <h1 class="pdp-name">${escHtml(p.name)}</h1>
+
+          <div class="pdp-pills">
+            <span class="pdp-pill pdp-pill-sku">Арт. ${escHtml(p.sku||'')}</span>
+            ${p.age_min ? `<span class="pdp-pill pdp-pill-age">${p.age_min}+</span>` : ''}
+            <span class="pdp-pill" style="background:${sColor}15;color:${sColor};border-color:${sColor}30">
+              <span class="pdp-dot" style="background:${sColor}"></span>${sLabel}
+            </span>
+          </div>
+
+          <div class="pdp-price-row">
+            <span class="pdp-price">${rub(p.price)}<span class="pdp-per"> / шт</span></span>
+            ${discPct > 0 ? `<span class="pdp-old-price">${rub(p.price_old)}</span>` : ''}
+          </div>
+
+          <div class="pdp-wholesale">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 7H4a2 2 0 00-2 2v10a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2z"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>
+            <span><b>Оптом:</b> от ${minQty} шт · счёт по запросу</span>
+          </div>
+
+          ${p.description ? `<p class="pdp-desc">${escHtml(p.description)}</p>` : ''}
+
+          <div class="pdp-buy-row">
+            <div class="pdp-qty">
+              <button class="pdp-qty-btn" onclick="adjustModalQty(-1)">−</button>
+              <input class="pdp-qty-input" id="modalQty" type="number" value="${minQty}" min="${minQty}" max="9999">
+              <button class="pdp-qty-btn" onclick="adjustModalQty(1)">+</button>
             </div>
-          </div></div>"""
-    html = f"""<!DOCTYPE html><html lang="ru"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Заказ {code} — Happy Toys</title>
-<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap" rel="stylesheet">
-<style>*{{margin:0;padding:0;box-sizing:border-box}}body{{font-family:'Nunito',sans-serif;background:#f5f5f5;color:#1a1a2e;padding:20px;max-width:640px;margin:0 auto}}
-.back-bar{{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}}.btn{{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:12px;font-size:14px;font-weight:800;cursor:pointer;text-decoration:none;border:none}}
-.back-btn{{background:#FF6B35;color:#fff}}.print-btn{{background:#fff;color:#FF6B35;border:2px solid #FF6B35}}
-.card{{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,.06)}}
-.item-card{{display:flex;gap:12px;margin-bottom:10px;background:#fff;border-radius:14px;padding:12px;box-shadow:0 1px 4px rgba(0,0,0,.05)}}
-.item-img{{width:80px;height:80px;border-radius:10px;overflow:hidden;background:#f5f5f5;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:30px}}
-.item-img img{{width:100%;height:100%;object-fit:contain}}.item-info{{flex:1}}.item-name{{font-weight:700;font-size:14px;margin-bottom:3px}}
-.item-sku{{font-size:11px;color:#bbb;margin-bottom:6px}}.item-price-row{{display:flex;justify-content:space-between}}.item-sub{{font-weight:900;color:#FF6B35}}
-.total-val{{font-size:24px;font-weight:900;color:#FF6B35}}.title{{font-size:20px;font-weight:900;margin-bottom:4px}}
-@media print{{.back-bar{{display:none}}}}</style></head><body>
-<div class="back-bar">
-  <a class="btn back-btn" href="{site_url}">← Вернуться в каталог</a>
-  <button class="btn print-btn" onclick="window.print()">🖨 Печать / PDF</button>
-</div>
-<div class="card"><div class="title">Заказ #{code}</div><div style="color:#aaa;font-size:13px">{date}</div></div>
-{rows_html}
-<div class="card" style="display:flex;justify-content:space-between;align-items:center">
-  <span style="font-weight:700">Итого</span><span class="total-val">₽{total:.2f}</span>
-</div>
-</body></html>"""
-    from fastapi.responses import HTMLResponse as _HR
-    return _HR(content=html)
+            <button class="pdp-cart-btn${isOut?' pdp-cart-btn--out':''}" ${isOut?'disabled':''}
+              onclick="addToCart(${p.id},parseInt($('modalQty').value)||${minQty});closeProductModal()">
+              ${isOut ? 'Нет в наличии' : inCart ? '✓ В корзине' : 'В корзину'}
+            </button>
+          </div>
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
-@app.get("/api/admin/stats")
-async def stats(_=Depends(require_admin)):
-    if not _db_pool:
-        return {"total_products":0,"low_stock":0,"out_of_stock":0,"total_carts":0,"total_customers":0,"total_categories":0,"total_visitors":0,"today_visits":0}
-    p_stats = await db_fetchrow("""
-        SELECT
-          COUNT(*) FILTER(WHERE is_active) as total,
-          COUNT(*) FILTER(WHERE stock='low' AND is_active) as low,
-          COUNT(*) FILTER(WHERE stock='out' AND is_active) as out_of_stock
-        FROM products""")
-    carts     = await db_fetchrow("SELECT COUNT(*) FROM orders")
-    customers = await db_fetchrow("SELECT COUNT(*) FROM customers")
-    cats      = await db_fetchrow("SELECT COUNT(DISTINCT category) FROM catalog WHERE subcategory=''")
-    vis_total = await db_fetchrow("SELECT COUNT(*) FROM visitors")
-    vis_today = await db_fetchrow("SELECT COUNT(*) FROM visitors WHERE created_at::date=CURRENT_DATE")
-    return {
-        "total_products": p_stats[0], "low_stock": p_stats[1],
-        "out_of_stock": p_stats[2], "total_carts": carts[0],
-        "total_customers": customers[0], "total_categories": cats[0],
-        "total_visitors": vis_total[0], "today_visits": vis_today[0],
-    }
+          ${similar ? `
+          <div class="pdp-similar">
+            <div class="pdp-similar-title">Похожие товары</div>
+            <div class="pdp-similar-scroll">${similar}</div>
+          </div>` : ''}
 
-@app.get("/api/admin/carts")
-async def admin_carts(_=Depends(require_admin)):
-    if not _db_pool: return {"carts":[]}
-    rows = await db_fetch("SELECT * FROM orders ORDER BY created_at DESC LIMIT 50")
-    carts = []
-    for r in rows:
-        d = dict(r)
-        d["items"] = json.loads(d["items"]) if isinstance(d["items"],str) else d["items"]
-        carts.append(d)
-    return {"carts": carts}
+        </div>
+      </div>`;
 
-@app.get("/api/admin/customers")
-async def admin_customers(_=Depends(require_admin)):
-    if not _db_pool: return {"customers":[]}
-    rows = await db_fetch("SELECT id,first_name,last_name,email,phone,address,created_at FROM customers ORDER BY created_at DESC")
-    return {"customers": [dict(r) for r in rows]}
+    // Init touch swipe on gallery
+    _initModalSwipe();
 
-@app.get("/api/admin/visitors")
-async def admin_visitors(_=Depends(require_admin)):
-    if not _db_pool: return {"visitors":[]}
-    rows = await db_fetch("SELECT ip,device,browser,created_at as time FROM visitors ORDER BY created_at DESC LIMIT 100")
-    # Keep visitors table lean — delete old entries beyond 500 rows
-    asyncio.create_task(_cleanup_visitors())
-    return {"visitors": [dict(r) for r in rows]}
+    // Fix: force-show any images already in cache (onload won't fire for them)
+    requestAnimationFrame(() => {
+      const strip = $('mgal-strip');
+      if (strip) strip.querySelectorAll('img').forEach(img => {
+        if (img.complete) { img.style.opacity = 1; img.previousElementSibling?.remove(); }
+      });
+    });
 
-async def _cleanup_visitors():
-    try:
-        await db_execute(
-            "DELETE FROM visitors WHERE id NOT IN (SELECT id FROM visitors ORDER BY created_at DESC LIMIT 500)"
-        )
-    except Exception:
-        pass
-
-@app.get("/api/admin/catalog")
-async def admin_catalog(_=Depends(require_admin)):
-    if not _db_pool: return []
-    # Single query: all categories + subcategories with product counts
-    cat_counts = await db_fetch("""
-        SELECT category, COUNT(*) FILTER (WHERE is_active) as cnt
-        FROM products GROUP BY category
-    """)
-    cat_cnt_map = {r["category"]: r["cnt"] for r in cat_counts}
-
-    sub_counts = await db_fetch("""
-        SELECT category, subcategory, COUNT(*) FILTER (WHERE is_active) as cnt
-        FROM products WHERE subcategory != '' GROUP BY category, subcategory
-    """)
-    sub_cnt_map = {(r["category"], r["subcategory"]): r["cnt"] for r in sub_counts}
-
-    cats = await db_fetch("SELECT DISTINCT category FROM catalog WHERE subcategory='' ORDER BY category")
-    result = []
-    for cat_row in cats:
-        cat = cat_row["category"]
-        subs = await db_fetch(
-            "SELECT subcategory, image_url FROM catalog WHERE category=$1 AND subcategory!='' ORDER BY sort_order, subcategory", cat
-        )
-        sub_list = [{"name": s["subcategory"], "count": sub_cnt_map.get((cat, s["subcategory"]), 0)} for s in subs]
-        result.append({"name": cat, "count": cat_cnt_map.get(cat, 0), "subcategories": sub_list})
-    return result
-
-# ── PWA files ─────────────────────────────────────────────────────────────────
-MANIFEST_DATA = {
-    "name":"Happy Toys — Оптовый каталог","short_name":"Happy Toys",
-    "start_url":"/","scope":"/","display":"standalone",
-    "background_color":"#ffffff","theme_color":"#FF6B35",
-    "lang":"ru",
-    "icons":[
-        {"src":"/static/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any maskable"},
-        {"src":"/static/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"},
-    ]
+  } catch(e) {
+    $('modalInner').innerHTML = `
+      <div style="padding:60px 20px;text-align:center;color:#999">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <p style="margin-top:12px">Ошибка загрузки</p>
+        <button class="btn-primary" style="margin-top:16px;padding:10px 20px;font-size:13px" onclick="openProduct(${id})">Повторить</button>
+      </div>`;
+    console.error('openProduct:', e);
+  }
 }
 
-@app.get("/manifest.json", include_in_schema=False)
-@app.get("/static/manifest.json", include_in_schema=False)
-async def manifest_json():
-    path = "static/manifest.json"
-    if os.path.exists(path):
-        r = FileResponse(path, media_type="application/manifest+json")
-    else:
-        r = Response(json.dumps(MANIFEST_DATA), media_type="application/manifest+json")
-    r.headers["Cache-Control"] = "no-cache"
-    return r
+// ── Modal gallery navigation ──────────────────────────────────────────────────
+function modalGoto(idx) {
+  const total = window._mTotal || 1;
+  idx = ((idx % total) + total) % total; // wrap around
+  if (idx === window._mIdx) return;
+  window._mIdx = idx;
 
-SW_INLINE = (
-    "self.addEventListener('install',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.map(k=>caches.delete(k)))));self.skipWaiting()});"
-    "self.addEventListener('activate',e=>self.clients.claim());"
-    "self.addEventListener('fetch',e=>{"
-    "if(e.request.method!=='GET')return;"
-    "const u=e.request.url;"
-    "if(u.includes('/api/')||u.includes('/static/')){e.respondWith(fetch(e.request));return;}"
-    "e.respondWith(fetch(e.request));"
-    "});"
-)
+  // Slide strip
+  const strip = $('mgal-strip');
+  if (strip) {
+    strip.style.transition = 'transform .3s cubic-bezier(.4,0,.2,1)';
+    strip.style.transform  = `translateX(-${idx * 100}%)`;
+  }
 
-def _sw_response():
-    sw_path = "static/sw.js"
-    content = open(sw_path).read() if os.path.exists(sw_path) else SW_INLINE
-    r = Response(content=content, media_type="application/javascript")
-    r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    r.headers["Service-Worker-Allowed"] = "/"
-    return r
+  // Thumbs
+  document.querySelectorAll('.mgal-thumb').forEach((t,i) => t.classList.toggle('active', i===idx));
 
-@app.get("/sw.js", include_in_schema=False)
-async def sw_root(): return _sw_response()
+  // Scroll active thumb into view
+  const activeThumb = document.getElementById('mthumb-' + idx);
+  if (activeThumb) activeThumb.scrollIntoView({behavior:'smooth', block:'nearest', inline:'center'});
 
-@app.get("/static/sw.js", include_in_schema=False)
-async def sw_static(): return _sw_response()
+  // Counter
+  const counter = $('mgal-counter');
+  if (counter) counter.textContent = `${idx+1} / ${total}`;
+}
 
-@app.get("/api/admin/products")
-async def admin_products_list(
-    page: int = 1, per_page: int = 20,
-    search: Optional[str] = None,
-    category: Optional[str] = None,
-    _=Depends(require_admin)
-):
-    if not _db_pool: return {"items": [], "total": 0}
-    conds = ["TRUE"]; args = []; idx = 1
-    if search:
-        conds.append(f"(name ILIKE ${idx} OR sku ILIKE ${idx})")
-        args.append(f"%{search}%"); idx += 1
-    if category:
-        conds.append(f"category = ${idx}"); args.append(category); idx += 1
-    where = " AND ".join(conds)
-    total = (await db_fetchrow(f"SELECT COUNT(*) FROM products WHERE {where}", *args))[0]
-    rows = await db_fetch(
-        f"SELECT * FROM products WHERE {where} ORDER BY id DESC LIMIT ${idx} OFFSET ${idx+1}",
-        *args, per_page, (page-1)*per_page
-    )
-    return {"items": [dict(r) for r in rows], "total": total,
-            "page": page, "pages": max(1,(total+per_page-1)//per_page)}
+function _initModalSwipe() {
+  const main = $('mgal-main');
+  if (!main || (window._mTotal||1) < 2) return;
+  let sx=0, sy=0, moved=false;
+  main.addEventListener('touchstart', e=>{sx=e.touches[0].clientX;sy=e.touches[0].clientY;moved=false;},{passive:true});
+  main.addEventListener('touchmove',  ()=>{moved=true;},{passive:true});
+  main.addEventListener('touchend', e=>{
+    const dx=e.changedTouches[0].clientX-sx, dy=e.changedTouches[0].clientY-sy;
+    if(!moved||Math.abs(dx)<30||Math.abs(dx)<Math.abs(dy)*1.3) return;
+    modalGoto((window._mIdx||0)+(dx<0?1:-1));
+  },{passive:true});
+}
 
-class DeleteAllIn(BaseModel):
-    password: str
+function adjustModalQty(d) {
+  const el = $('modalQty');
+  if (!el) return;
+  el.value = Math.max(parseInt(el.min)||1, (parseInt(el.value)||1) + d);
+}
 
-@app.delete("/api/admin/products/all")
-async def delete_all_products(b: DeleteAllIn, _=Depends(require_admin)):
-    """Delete ALL products. Requires special password."""
-    if not _db_pool:
-        raise HTTPException(503, "DB not available")
-    if b.password != "2636":
-        raise HTTPException(403, "Неверный пароль подтверждения")
-    deleted = (await db_fetchrow("SELECT COUNT(*) FROM products"))[0]
-    await db_execute("DELETE FROM products")
-    await db_execute("ALTER SEQUENCE products_id_seq RESTART WITH 1")
-    try:
-        await db_execute(
-            "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
-            'delete_all', 'products', '0', f"Удалены все товары ({deleted} шт)"
-        )
-    except Exception:
-        pass
-    return {"deleted": deleted, "message": f"Удалено {deleted} товаров"}
+function closeProductModal() {
+  $('productOverlay').classList.remove('open');
+  document.body.style.overflow = '';
+  document.documentElement.style.overflow = '';
+}
 
-@app.post("/api/admin/migrate-images")
-async def migrate_images(_=Depends(require_admin)):
-    """One-time migration: replace unsplash URLs with placeholders."""
-    if not _db_pool:
-        raise HTTPException(503, "DB not available")
-    updated = 0
-    rows = await db_fetch("SELECT id, image FROM products WHERE image LIKE '%unsplash%'")
-    for i, row in enumerate(rows):
-        new_img = _toy_img(i % 12)
-        await db_execute("UPDATE products SET image=$1, images='{}' WHERE id=$2",
-                         new_img, row["id"])
-        updated += 1
-    return {"updated": updated, "message": f"Replaced {updated} unsplash images with placeholders"}
+// ── Auth ──────────────────────────────────────────────────────────────────────
+function openAuth()  { $('authOverlay').classList.add('open'); document.body.style.overflow = 'hidden'; }
+function closeAuth() { $('authOverlay').classList.remove('open'); document.body.style.overflow = ''; }
 
-@app.get("/api/health")
-async def health():
-    db_ok = False
-    db_error = None
-    if _db_pool:
-        try:
-            await db_fetchrow("SELECT 1")
-            db_ok = True
-        except Exception as e:
-            db_error = str(e)
-    return {
-        "status": "ok",
-        "db_connected": db_ok,
-        "db_pool": _db_pool is not None,
-        "db_error": db_error,
-        "cloudinary": _cloudinary_ok,
-        "ts": datetime.utcnow().isoformat()
+function switchTab(tab) {
+  $('formLogin').style.display    = tab === 'login'    ? 'block' : 'none';
+  $('formRegister').style.display = tab === 'register' ? 'block' : 'none';
+  $('tabLogin').classList.toggle('active',    tab === 'login');
+  $('tabRegister').classList.toggle('active', tab === 'register');
+}
+
+async function doLogin() {
+  const u = $('loginEmail')?.value.trim();
+  const p = $('loginPass')?.value;
+  if (!u || !p) return toast('Заполните все поля', 'err');
+  try {
+    const data = await API.login(u, p);
+    State.user = { token: data.token, role: data.role, customer: data.customer };
+    if (data.role === 'admin') State.adminToken = data.token;
+    saveSession(); closeAuth(); toast('Добро пожаловать!'); updateAuthBtn();
+    if (data.role === 'admin') $('bn-admin').style.display = 'flex';
+  } catch(e) {
+    toast('Неверные данные', 'err');
+  }
+}
+
+async function doRegister() {
+  const first = $('regFirst')?.value.trim();
+  const last  = $('regLast')?.value.trim();
+  const email = $('regEmail')?.value.trim();
+  const phone = $('regPhone')?.value.trim();
+  const addr  = $('regAddr')?.value.trim();
+  const pass  = $('regPass')?.value;
+  if (!first||!last||!email||!phone||!pass) return toast('Заполните все поля', 'err');
+  if (pass.length < 6) return toast('Пароль минимум 6 символов', 'err');
+  try {
+    const data = await API.register({ first_name: first, last_name: last, email, phone, address: addr, password: pass });
+    State.user = { token: data.token, role: 'customer', customer: data.customer };
+    saveSession(); closeAuth(); toast(`Добро пожаловать, ${first}!`); updateAuthBtn();
+  } catch(e) {
+    const msg = e.message.includes('already') ? 'Email уже зарегистрирован' : 'Ошибка регистрации';
+    toast(msg, 'err');
+  }
+}
+
+function doLogout() {
+  State.user = null; State.adminToken = null; saveSession();
+  $('bn-admin').style.display = 'none';
+  updateAuthBtn();
+  navigate('home');
+  toast('Вы вышли из аккаунта');
+}
+
+function updateAuthBtn() {
+  const btn = $('authBtn');
+  if (!btn) return;
+  if (State.user) {
+    const c = State.user.customer;
+    btn.style.cssText = 'background:var(--accent);border-radius:50%;color:#fff;font-size:12px;font-weight:900;font-family:Nunito,sans-serif;display:flex;align-items:center;justify-content:center;';
+    if (State.user.role === 'admin') {
+      btn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/></svg>`;
+    } else {
+      const initStr = c ? (((c.first_name||'')[0]||'') + ((c.last_name||'')[0]||'')).toUpperCase() : '';
+      btn.innerHTML = initStr
+        ? `<span style="color:#fff;font-size:12px;font-weight:900">${initStr}</span>`
+        : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
     }
+    btn.title = c ? (c.first_name + ' ' + c.last_name).trim() : 'Admin';
+    btn.onclick = () => navigate(State.user.role === 'admin' ? 'admin' : 'profile');
+  } else {
+    btn.style.cssText = '';
+    btn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
+    btn.title = '';
+    btn.onclick = openAuth;
+  }
+}
 
-@app.get("/api/debug/db")
-async def debug_db():
-    """Live DB connection test — shows exact error."""
-    if not DATABASE_URL:
-        return {"error": "DATABASE_URL env var not set"}
+// ── Profile page ──────────────────────────────────────────────────────────────
+function renderProfile() {
+  const mc = $('mainContent');
+  if (!mc) return;
 
-    # Clean URL same way as startup
-    db_url = DATABASE_URL
-    for param in ['channel_binding=require', 'channel_binding=disable']:
-        db_url = db_url.replace('&' + param, '').replace('?' + param + '&', '?').replace('?' + param, '')
+  if (!State.user) {
+    mc.innerHTML = `
+      <div class="empty-auth-page">
+        <div class="empty-auth-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </div>
+        <h2>Войдите в аккаунт</h2>
+        <p>Просматривайте историю заказов,<br>управляйте профилем и данными</p>
+        <button class="btn-primary" onclick="openAuth()">Войти / Регистрация</button>
+      </div>`;
+    return;
+  }
 
-    masked = db_url[:45] + "..." if len(db_url) > 45 else db_url
+  // Admin видит профиль + ссылку на панель
+  const isAdmin = State.user.role === 'admin';
+  const c = State.user.customer;
+  const orders = c?.orders || [];
 
-    # Try connecting right now
-    result = {"url_preview": masked, "pool_active": _db_pool is not None}
-    try:
-        import asyncpg, ssl as _ssl
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = _ssl.CERT_NONE
+  const avatarLetter = isAdmin ? '' : (initials(c) || '?');
+  const displayName  = isAdmin ? 'Администратор' : `${escHtml(c?.first_name||'')} ${escHtml(c?.last_name||'')}`.trim();
+  const displayEmail = isAdmin ? 'admin' : escHtml(c?.email || '');
 
-        conn = await asyncpg.connect(db_url, ssl=ssl_ctx, timeout=15,
-                                     statement_cache_size=0)
-        ver = await conn.fetchval("SELECT version()")
-        await conn.close()
-        result["live_test"] = "✅ SUCCESS"
-        result["pg_version"] = ver[:60]
-    except Exception as e:
-        result["live_test"] = "❌ FAILED"
-        result["error_type"] = type(e).__name__
-        result["error_msg"] = str(e)
+  const adminBanner = isAdmin ? `
+    <div class="profile-admin-banner" onclick="navigate('admin')">
+      <div class="pab-left">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <div>
+          <div class="pab-title">Панель администратора</div>
+          <div class="pab-sub">Товары, клиенты, корзины</div>
+        </div>
+      </div>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+    </div>` : '';
 
-    return result
+  const contactCard = !isAdmin ? `
+    <div class="profile-card">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        Контактные данные
+      </h3>
+      <div class="info-row"><span>Телефон</span><span>${escHtml(c?.phone||'—')}</span></div>
+      <div class="info-row"><span>Email</span><span>${escHtml(c?.email||'—')}</span></div>
+      <div class="info-row"><span>Адрес доставки</span><span>${escHtml(c?.address||'—')}</span></div>
+      <div class="info-row"><span>Зарегистрирован</span><span>${c?.created_at?.slice(0,10)||'—'}</span></div>
+    </div>` : '';
+
+  const ordersCard = !isAdmin ? `
+    <div class="profile-card">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+        История заказов ${orders.length ? `<span class="orders-count-badge">${orders.length}</span>` : ''}
+      </h3>
+      ${orders.length
+        ? orders.map(o => `
+          <div class="order-row" onclick="window.open('/api/cart/${o.code}','_blank')">
+            <div>
+              <div class="order-code">#${o.code}</div>
+              <div class="order-meta">${(o.date||'').slice(0,10)} · ${o.items_count} позиций</div>
+            </div>
+            <div class="order-right">
+              <div class="order-total">${rub(o.total)}</div>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#ccc" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </div>
+          </div>`).join('')
+        : `<div class="orders-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#ddd" stroke-width="1.5" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+            <p>Заказов пока нет</p>
+            <button class="btn-primary" onclick="navigate('catalog')" style="margin-top:12px;font-size:13px;padding:10px 20px">Перейти в каталог</button>
+          </div>`
+      }
+    </div>` : '';
+
+  mc.innerHTML = `
+    <div class="profile-page">
+      <div class="profile-hero">
+        <div class="profile-avatar-lg ${isAdmin ? 'admin-avatar' : ''}">${avatarLetter}</div>
+        <div class="profile-hero-info">
+          <div class="profile-name">${displayName}</div>
+          <div class="profile-email">${displayEmail}</div>
+          ${isAdmin ? '<div class="profile-role-badge">Администратор</div>' : ''}
+        </div>
+      </div>
+
+      ${adminBanner}
+      ${contactCard}
+      ${ordersCard}
+
+      <button class="btn-logout" onclick="doLogout()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Выйти из аккаунта
+      </button>
+    </div>`;
+}
 
 
-# ── История действий ─────────────────────────────────────────────────────────
-@app.get("/api/admin/log")
-async def admin_log(_=Depends(require_admin)):
-    if not _db_pool: return {"log": []}
-    rows = await db_fetch("SELECT * FROM admin_log ORDER BY created_at DESC LIMIT 200")
-    return {"log": [dict(r) for r in rows]}
+// ── PDF ───────────────────────────────────────────────────────────────────────
+function downloadCartPDF() {
+  const items = Object.values(State.cart);
+  if (!items.length) { toast('Корзина пуста', 'err'); return; }
+  const c = State.user?.customer;
+  const name    = c ? `${c.first_name||''} ${c.last_name||''}`.trim() : 'Гость';
+  const phone   = c?.phone   || '—';
+  const address = c?.address || '—';
+  const comment = $('cartComment')?.value?.trim() || '';
+  const date    = new Date().toLocaleDateString('ru-RU');
+  const siteUrl = window.location.origin;
+  let total = 0, qty2 = 0;
+  const rows = items.map(({product:p, qty}) => {
+    const sub = p.price * qty; total += sub; qty2 += qty;
+    return `<tr>
+      <td class="ti"><img src="${p.image}" onerror="this.style.display='none'"></td>
+      <td class="tn"><div class="pn">${escHtml(p.name)}</div><div class="ps">Арт: ${escHtml(p.sku)}</div><div class="ps">Мин: ${p.min_order||1} шт</div></td>
+      <td class="tr2">${rub(p.price)}</td>
+      <td class="tr2">${qty} шт</td>
+      <td class="tr2 bold">${rub(sub)}</td>
+    </tr>`;
+  }).join('');
+  const html = `<!DOCTYPE html><html lang="ru"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Заказ Happy Toys — ${date}</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700;900&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Nunito',Arial,sans-serif;color:#1a1a2e;background:#fff;padding:32px;max-width:900px;margin:0 auto}
+/* ── Back button — visible only on screen, hidden in print ── */
+.back-bar{display:flex;align-items:center;justify-content:space-between;
+  background:#fff;padding:12px 0 20px;border-bottom:1px solid #f0f0f0;margin-bottom:24px}
+.back-btn{display:inline-flex;align-items:center;gap:8px;background:#FF6B35;color:#fff;
+  border:none;border-radius:12px;padding:11px 20px;font-size:14px;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif;text-decoration:none;transition:background .15s}
+.back-btn:hover{background:#e05a25}
+.back-btn svg{flex-shrink:0}
+.print-btn{display:inline-flex;align-items:center;gap:7px;background:#fff;color:#FF6B35;
+  border:2px solid #FF6B35;border-radius:12px;padding:10px 18px;font-size:14px;font-weight:800;
+  cursor:pointer;font-family:'Nunito',sans-serif}
+.print-btn:hover{background:#fff5f0}
+/* ── Header ── */
+.hdr{display:flex;align-items:center;gap:16px;padding-bottom:20px;border-bottom:3px solid #FF6B35;margin-bottom:24px}
+.logo-circle{width:52px;height:52px;background:#FF6B35;border-radius:14px;
+  display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0}
+.lt{font-size:22px;font-weight:900;color:#FF6B35;line-height:1}
+.ls{font-size:12px;color:#aaa;margin-top:3px}
+.dtitle{margin-left:auto;text-align:right}
+.dtitle h1{font-size:18px;font-weight:900}
+.dt{font-size:12px;color:#aaa}
+/* ── Info grid ── */
+.ig{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:24px}
+.ib{background:#f8f9ff;border-radius:12px;padding:14px 18px}
+.ibt{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:#FF6B35;font-weight:700;margin-bottom:10px}
+.ibr{display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px}
+.ibr span:first-child{color:#888}.ibr span:last-child{font-weight:700;text-align:right;max-width:60%}
+/* ── Table ── */
+table{width:100%;border-collapse:collapse;margin-bottom:24px}
+thead tr{background:#FF6B35;color:#fff}
+thead th{padding:11px 13px;font-size:12px;text-transform:uppercase;font-weight:700;text-align:left}
+thead th.tr2{text-align:right}
+tbody tr{border-bottom:1px solid #f0f0f0}
+tbody tr:nth-child(even){background:#fafafa}
+tbody td{vertical-align:middle;padding:10px 13px}
+.ti{width:120px!important;padding:10px!important}
+.ti img{width:110px;height:110px;object-fit:contain;border-radius:10px;background:#f5f5f5;display:block}
+.tn{padding:12px 13px}
+.pn{font-weight:700;font-size:14px;margin-bottom:3px}
+.ps{font-size:11px;color:#aaa;margin-top:2px}
+.tr2{text-align:right;white-space:nowrap}
+.bold{font-weight:900;color:#FF6B35;font-size:15px}
+/* ── Total ── */
+.totbox{display:flex;justify-content:flex-end;margin-bottom:20px}
+.tot{background:linear-gradient(135deg,#FF6B35,#ff8c5a);color:#fff;border-radius:16px;padding:18px 28px;min-width:260px}
+.tr3{display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;opacity:.9}
+.tr3.big{font-size:20px;font-weight:900;opacity:1;border-top:1px solid rgba(255,255,255,.3);padding-top:10px;margin-top:6px}
+.cmt{background:#fffbf0;border:1px solid #ffe0b2;border-radius:12px;padding:14px 18px;
+  font-size:13px;color:#555;margin-bottom:20px;line-height:1.5}
+.ftr{text-align:center;font-size:11px;color:#ccc;padding-top:16px;border-top:1px solid #eee}
+/* ── Print ── */
+@media print{
+  .back-bar{display:none!important}
+  body{padding:12px}
+  .hdr{padding-bottom:14px;margin-bottom:18px}
+}
+@media(max-width:600px){
+  body{padding:16px}
+  .ig{grid-template-columns:1fr}
+  .back-bar{flex-wrap:wrap;gap:8px}
+}
+</style></head><body>
 
-# ── Выдача прав администратора по телефону ────────────────────────────────────
-class GrantAdminIn(BaseModel):
-    phone: str
+<div class="back-bar">
+  <a class="back-btn" href="${siteUrl}">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <path d="M19 12H5"/><path d="M12 5l-7 7 7 7"/>
+    </svg>
+    Вернуться в каталог
+  </a>
+  <button class="print-btn" onclick="window.print()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/>
+      <rect x="6" y="14" width="12" height="8"/>
+    </svg>
+    Распечатать / PDF
+  </button>
+</div>
 
-@app.post("/api/admin/grant-admin")
-async def grant_admin(b: GrantAdminIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    phone = b.phone.strip().replace(" ", "").replace("-", "")
-    row = await db_fetchrow("SELECT id, first_name, last_name, email FROM customers WHERE phone LIKE $1", f"%{phone[-10:]}%")
-    if not row:
-        raise HTTPException(404, f"Пользователь с телефоном {b.phone} не найден")
-    await db_execute("UPDATE customers SET role='admin' WHERE id=$1", row["id"])
-    try:
-        await db_execute(
-            "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
-            'grant_admin', 'customer', str(row["id"]), f"Выдан доступ админа: {row['first_name']} {row['last_name']} ({row['email']})"
-        )
-    except Exception:
-        pass
-    return {"ok": True, "customer": dict(row), "message": f"Права администратора выданы {row['first_name']} {row['last_name']}"}
+<div class="hdr">
+  <div class="logo-circle">🧸</div>
+  <div><div class="lt">Happy Toys</div><div class="ls">Оптовый каталог</div></div>
+  <div class="dtitle"><h1>Заказ</h1><div class="dt">${date}</div></div>
+</div>
 
-@app.post("/api/admin/revoke-admin")
-async def revoke_admin(b: GrantAdminIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    phone = b.phone.strip().replace(" ", "").replace("-", "")
-    row = await db_fetchrow("SELECT id, first_name, last_name FROM customers WHERE phone LIKE $1", f"%{phone[-10:]}%")
-    if not row:
-        raise HTTPException(404, "Пользователь не найден")
-    await db_execute("UPDATE customers SET role='customer' WHERE id=$1", row["id"])
-    return {"ok": True, "message": f"Права администратора отозваны у {row['first_name']} {row['last_name']}"}
+<div class="ig">
+  <div class="ib">
+    <div class="ibt">👤 Клиент</div>
+    <div class="ibr"><span>Имя</span><span>${escHtml(name)}</span></div>
+    <div class="ibr"><span>Телефон</span><span>${escHtml(phone)}</span></div>
+    <div class="ibr"><span>Адрес</span><span>${escHtml(address)}</span></div>
+  </div>
+  <div class="ib">
+    <div class="ibt">📦 Сводка</div>
+    <div class="ibr"><span>Позиций</span><span>${items.length}</span></div>
+    <div class="ibr"><span>Штук</span><span>${qty2}</span></div>
+    <div class="ibr"><span>Дата</span><span>${date}</span></div>
+  </div>
+</div>
 
-# ── Товары на главной ─────────────────────────────────────────────────────────
-class FeaturedIn(BaseModel):
-    product_id: int
-    position: int = 0
-    page: int = 1
+<table>
+  <thead><tr>
+    <th style="width:130px"></th>
+    <th>Товар</th>
+    <th class="tr2">Цена/шт</th>
+    <th class="tr2">Кол-во</th>
+    <th class="tr2">Сумма</th>
+  </tr></thead>
+  <tbody>${rows}</tbody>
+</table>
 
-@app.get("/api/featured")
-async def get_featured():
-    if not _db_pool: return {"items": []}
-    rows = await db_fetch("""
-        SELECT f.id, f.product_id, f.position, f.page, p.name, p.price, p.price_old,
-               p.image, p.images, p.sku, p.brand, p.category, p.stock, p.stock_qty, p.min_order
-        FROM featured_products f
-        JOIN products p ON p.id = f.product_id AND p.is_active = TRUE
-        ORDER BY f.page, f.position
-    """)
-    return {"items": [dict(r) for r in rows]}
+<div class="totbox"><div class="tot">
+  <div class="tr3"><span>Позиций</span><span>${items.length}</span></div>
+  <div class="tr3"><span>Штук всего</span><span>${qty2}</span></div>
+  <div class="tr3 big"><span>Итого</span><span>${rub(total)}</span></div>
+</div></div>
 
-@app.post("/api/admin/featured")
-async def add_featured(b: FeaturedIn, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    try:
-        await db_execute(
-            "INSERT INTO featured_products(product_id, position, page) VALUES($1,$2,$3) ON CONFLICT(product_id) DO UPDATE SET position=$2, page=$3",
-            b.product_id, b.position, b.page
-        )
-    except Exception as e:
-        raise HTTPException(400, str(e))
-    return {"ok": True}
+${comment ? `<div class="cmt">💬 <strong>Комментарий:</strong> ${escHtml(comment)}</div>` : ''}
 
-@app.delete("/api/admin/featured/{product_id}")
-async def remove_featured(product_id: int, _=Depends(require_admin)):
-    if not _db_pool: raise HTTPException(503)
-    await db_execute("DELETE FROM featured_products WHERE product_id=$1", product_id)
-    return {"ok": True}
+<div class="ftr">Happy Toys · Оптовый каталог · ${date} · ${siteUrl}</div>
 
-@app.get("/api/admin/featured")
-async def admin_get_featured(_=Depends(require_admin)):
-    if not _db_pool: return {"items": []}
-    rows = await db_fetch("""
-        SELECT f.id, f.product_id, f.position, f.page, p.name, p.sku, p.image, p.price
-        FROM featured_products f
-        JOIN products p ON p.id = f.product_id
-        ORDER BY f.page, f.position
-    """)
-    return {"items": [dict(r) for r in rows]}
+</body></html>`;
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+  // Open in same tab — no popup needed
+  const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
+  const url  = URL.createObjectURL(blob);
+  window.location.href = url;
+}
+
+// ── Share modal ───────────────────────────────────────────────────────────────
+async function openShareModal() {
+  const items = Object.values(State.cart);
+  if (!items.length) { toast('Корзина пуста', 'err'); return; }
+
+  $('shareOverlay').classList.add('open');
+
+  const rows = items.map(({product:p, qty}) => `
+    <div class="share-summary-row">
+      <span>${escHtml(p.name.slice(0,35))} ×${qty}</span>
+      <span>${rub(p.price * qty)}</span>
+    </div>`).join('');
+
+  const total = items.reduce((s,{product:p,qty}) => s + p.price*qty, 0);
+  $('shareSummary').innerHTML = rows + `<div class="share-summary-row" style="font-weight:900;border-top:1px solid #eee;padding-top:8px;margin-top:4px"><span>Итого</span><span>${rub(total)}</span></div>`;
+  $('shareUrlSpan').textContent = 'Генерация...';
+
+  try {
+    const payload = {
+      items: items.map(({product:p,qty}) => ({ id:p.id, name:p.name, sku:p.sku, price:p.price, quantity:qty })),
+      comment: $('cartComment')?.value || '',
+      customer_id: State.user?.customer?.id || null,
+    };
+    const data = await API.shareCart(payload);
+    $('shareUrlSpan').textContent = `${location.origin}/api/cart/${data.code}`;
+  } catch(e) {
+    $('shareUrlSpan').textContent = 'Ошибка генерации';
+  }
+}
+
+function closeShareModal() { $('shareOverlay').classList.remove('open'); }
+
+function copyShareLink() {
+  const url = $('shareUrlSpan').textContent;
+  navigator.clipboard.writeText(url)
+    .then(() => toast('Ссылка скопирована!'))
+    .catch(() => toast('Скопируйте вручную', 'info'));
+}
+
+function shareWhatsApp() {
+  const items = Object.values(State.cart);
+  if (!items.length) return;
+  const c = State.user?.customer;
+  const name    = c ? `${c.first_name||''} ${c.last_name||''}`.trim() : 'Гость';
+  const phone   = c?.phone   || '';
+  const address = c?.address || '';
+  const comment = $('cartComment')?.value?.trim() || '';
+  let msg = `🧸 *Заказ Happy Toys*\n━━━━━━━━━━━━━━━━━\n👤 *Клиент:* ${name}\n`;
+  if (phone)   msg += `📞 *Тел:* ${phone}\n`;
+  if (address) msg += `📍 *Адрес:* ${address}\n`;
+  msg += `━━━━━━━━━━━━━━━━━\n`;
+  let total = 0, qty2 = 0;
+  items.forEach(({ product: p, qty }) => {
+    const sub = p.price * qty; total += sub; qty2 += qty;
+    msg += `• ${p.name}\n  SKU: ${p.sku} | ${qty} шт × ${rub(p.price)} = *${rub(sub)}*\n`;
+  });
+  msg += `━━━━━━━━━━━━━━━━━\n💰 *Итого: ${rub(total)}* (${qty2} шт)\n`;
+  if (comment) msg += `💬 ${comment}\n`;
+  const url = $('shareUrlSpan')?.textContent || '';
+  if (url && !url.includes('Генерац') && !url.includes('Ошибка')) msg += `\n🔗 ${url}`;
+  window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
+}
+
+// ── Admin page ────────────────────────────────────────────────────────────────
+// ── Admin: load subcats for form dropdown ────────────────────────────────────
+async function loadSubcatsAdmin(catName) {
+  const sel = $('fsubcat');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Загрузка...</option>';
+  try {
+    const subs = await API.subcategories(catName);
+    sel.innerHTML = '<option value="">— без подраздела —</option>' +
+      subs.map(s => `<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`).join('');
+  } catch(e) {
+    sel.innerHTML = '<option value="">— без подраздела —</option>';
+  }
+}
+
+async function deleteAllProductsConfirm() {
+  const pwd = prompt('🔒 Введите пароль подтверждения для удаления ВСЕХ товаров:');
+  if (!pwd) return;
+  if (pwd !== '2636') { toast('❌ Неверный пароль', 'err'); return; }
+  showConfirm(
+    '⚠️ Удалить ВСЕ товары?',
+    'Это действие необратимо. Все товары из базы данных будут удалены навсегда.',
+    async () => {
+      try {
+        const r = await API.deleteAllProducts(pwd);
+        toast(`✅ Удалено ${r.deleted} товаров`, 'ok');
+        // Refresh only the product list section
+        const editHtml = await renderEditProducts();
+        const editSection = document.querySelector('#adminBody .admin-section:nth-child(2)');
+        if (editSection) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = editHtml;
+          editSection.replaceWith(tmp.firstElementChild);
+        }
+      } catch(e) {
+        toast('Ошибка удаления: ' + (e?.detail || e?.message || e), 'err');
+      }
+    }
+  );
+}
+
+async function adminAddCategory() {
+  const name = prompt('Название новой категории:');
+  if (!name?.trim()) return;
+  try {
+    await API.addCategory(name.trim());
+    toast('Категория добавлена!');
+    renderAdmin();
+  } catch(e) { toast(e.detail || 'Ошибка', 'err'); }
+}
+
+async function adminDelCategory(name) {
+  showConfirm('Удалить категорию?', `«${name}» будет удалена.`, async () => {
+    try { await API.delCategory(name); toast('Удалено'); renderAdmin(); }
+    catch(e) { toast('Ошибка', 'err'); }
+  });
+}
+
+async function adminAddSubcategory(cat) {
+  const name = prompt(`Название подраздела в «${cat}»:`);
+  if (!name?.trim()) return;
+  try {
+    await API.addSubcategory(cat, name.trim());
+    toast('Подраздел добавлен!');
+    renderAdmin();
+  } catch(e) { toast(e.detail || 'Ошибка', 'err'); }
+}
+
+async function adminDelSubcategory(cat, sub) {
+  showConfirm('Удалить подраздел?', `«${sub}» будет удалён.`, async () => {
+    try { await API.delSubcategory(cat, sub); toast('Удалено'); renderAdmin(); }
+    catch(e) { toast('Ошибка', 'err'); }
+  });
+}
+
+async function renderAdmin() {
+  const mc = $('mainContent');
+
+  if (!State.user || State.user.role !== 'admin') {
+    mc.innerHTML = `
+      <div style="padding:40px 20px;text-align:center">
+        <p style="margin-bottom:16px;color:#999">Только для администратора</p>
+        <button class="btn-primary" onclick="openAuth()" style="display:inline-flex">Войти</button>
+      </div>`;
+    return;
+  }
+
+  // Show full skeleton structure immediately — no waiting
+  const skel = (h) => `<div class="skeleton" style="height:${h}px;border-radius:14px;margin-bottom:12px"></div>`;
+  mc.innerHTML = `<div class="admin-page">
+    <div class="admin-stats" id="adminStats">${[1,2,3,4,5].map(() => `<div class="stat-card skeleton" style="height:80px"></div>`).join('')}</div>
+    <div id="adminBody">
+      <div class="admin-section" id="sec-addprod">${skel(40)}${skel(120)}${skel(120)}${skel(44)}</div>
+      <div class="admin-section" id="sec-editprod">${skel(40)}${skel(60)}${skel(60)}${skel(60)}</div>
+      <div class="admin-section" id="sec-catalog">${skel(40)}${skel(80)}${skel(80)}</div>
+      <div class="admin-section" id="sec-customers">${skel(40)}${skel(60)}${skel(60)}</div>
+      <div class="admin-section" id="sec-carts">${skel(40)}${skel(60)}</div>
+    </div>
+  </div>`;
+
+  // Load stats first (fastest single query)
+  API.adminStats().then(stats => {
+    const el = $('adminStats');
+    if (!el) return;
+    el.innerHTML = `
+      <div class="stat-card"><div class="stat-label">Товаров</div><div class="stat-val">${stats.total_products}</div></div>
+      <div class="stat-card"><div class="stat-label">Мало</div><div class="stat-val" style="color:var(--yellow)">${stats.low_stock}</div></div>
+      <div class="stat-card"><div class="stat-label">Нет</div><div class="stat-val" style="color:var(--red)">${stats.out_of_stock}</div></div>
+      <div class="stat-card"><div class="stat-label">Корзин</div><div class="stat-val">${stats.total_carts}</div></div>
+      <div class="stat-card"><div class="stat-label">Клиентов</div><div class="stat-val">${stats.total_customers}</div></div>`;
+  }).catch(() => {});
+
+  // Load add-product form (needs categories + brands)
+  renderAddProductForm().then(html => {
+    const el = $('sec-addprod');
+    if (el) { el.outerHTML = html; const fc = $('fcat'); if (fc?.value) loadSubcatsAdmin(fc.value); }
+  }).catch(() => { const el = $('sec-addprod'); if (el) el.innerHTML = '<p style="color:#bbb;font-size:13px">Форма недоступна</p>'; });
+
+  // Load product list
+  renderEditProducts().then(html => {
+    const el = $('sec-editprod');
+    if (el) el.outerHTML = html;
+  }).catch(() => { const el = $('sec-editprod'); if (el) el.innerHTML = '<p style="color:#bbb;font-size:13px">Список товаров недоступен</p>'; });
+
+  // Load catalog manager
+  renderCatalogManager().then(html => {
+    const el = $('sec-catalog');
+    if (el) el.outerHTML = html;
+  }).catch(() => { const el = $('sec-catalog'); if (el) el.innerHTML = ''; });
+
+  // Load customers
+  API.adminCustomers().then(customers => {
+    const el = $('sec-customers');
+    if (el) el.outerHTML = renderCustomersTable(customers.customers || []);
+  }).catch(() => {});
+
+  // Load carts + visitors (lowest priority)
+  Promise.all([
+    API.adminCarts().catch(() => ({carts:[]})),
+    API.get('/api/admin/visitors').catch(() => ({visitors:[]})),
+    API.get('/api/admin/log').catch(() => ({log:[]})),
+    API.get('/api/admin/featured').catch(() => ({items:[]}))
+  ]).then(([carts, visitorsData, logData, featuredData]) => {
+    const ec = $('sec-carts');
+    if (ec) ec.outerHTML = renderAdminCarts(carts.carts || []);
+    // Append sections
+    const body = $('adminBody');
+    if (body) {
+      // Visitors
+      const vDiv = document.createElement('div');
+      vDiv.innerHTML = renderVisitorsTable(visitorsData.visitors || []);
+      body.appendChild(vDiv.firstChild || vDiv);
+      // Featured products manager
+      const fDiv = document.createElement('div');
+      fDiv.innerHTML = renderFeaturedManager(featuredData.items || []);
+      body.appendChild(fDiv.firstChild || fDiv);
+      // Admin log
+      const lDiv = document.createElement('div');
+      lDiv.innerHTML = renderAdminLog(logData.log || []);
+      body.appendChild(lDiv.firstChild || lDiv);
+      // Grant admin
+      const gDiv = document.createElement('div');
+      gDiv.innerHTML = renderGrantAdminSection();
+      body.appendChild(gDiv.firstChild || gDiv);
+    }
+  }).catch(() => {});
+}
+
+async function renderAddProductForm() {
+  window._uploadedImgs = [];
+  let cats = []; let brands = [];
+  try { cats = await API.categories(); } catch(e){}
+  try { brands = await API.get('/api/brands'); } catch(e){}
+  const catOpts = cats.map(c=>`<option value="${escHtml(c.name)}">${escHtml(c.name)}</option>`).join('');
+  const brandOptsDatalist = brands.map(b=>`<option value="${escHtml(b.name)}"></option>`).join('');
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Добавить товар
+    </h3>
+
+    <!-- Multi-image upload 1-5 -->
+    <div class="multi-img-label">Фотографии <span class="multi-img-hint">мин. 1 · макс. 5</span></div>
+    <div class="multi-img-grid" id="multiImgGrid">
+      <div class="img-slot img-slot-main" id="imgSlot0" onclick="triggerImgSlot(0)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        <span>Главное фото</span>
+        <input type="file" id="imgFileSlot0" accept="image/*" style="display:none" onchange="handleImgSlot(0,this)">
+      </div>
+      ${[1,2,3,4].map(i=>`
+      <div class="img-slot" id="imgSlot${i}" onclick="triggerImgSlot(${i})">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <span>Фото ${i+1}</span>
+        <input type="file" id="imgFileSlot${i}" accept="image/*" style="display:none" onchange="handleImgSlot(${i},this)">
+      </div>`).join('')}
+    </div>
+    <input type="hidden" id="fimg" value="">
+    <input type="hidden" id="fimgs" value="[]">
+
+    <div class="form-grid">
+      <div class="field"><label>Название *</label><input id="fn" type="text" placeholder="Кукла Барби..."></div>
+      <div class="field"><label>Артикул *</label><input id="fsku" type="text" placeholder="10201"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Цена (₽) *</label><input id="fprice" type="number" step="0.01" placeholder="999.99"></div>
+      <div class="field"><label>Старая цена (₽)</label><input id="fprice-old" type="number" step="0.01" placeholder="1500.00"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Остаток (шт)</label><input id="fqty" type="number" placeholder="100"></div>
+      <div class="field"><label>Мин. заказ (шт)</label><input id="fminorder" type="number" value="1" min="1"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field"><label>Категория *</label><select id="fcat" onchange="loadSubcatsAdmin(this.value)">${catOpts}</select></div>
+      <div class="field"><label>Подраздел</label><select id="fsubcat"><option value="">— выберите —</option></select></div>
+    </div>
+    <div class="form-grid">
+      <div class="field">
+        <label>Бренд</label>
+        <input id="fbrand" type="text" placeholder="Введите или выберите..." list="fbrand-list" autocomplete="off">
+        <datalist id="fbrand-list">${brandOptsDatalist}</datalist>
+        <div class="brand-chips">${brands.slice(0,8).map(b=>`<button type="button" class="brand-chip" onclick="$('fbrand').value='${escHtml(b.name)}'">${escHtml(b.name)}</button>`).join('')}</div>
+      </div>
+      <div class="field"><label>Возраст от (лет)</label><input id="fagemin" type="number" value="3" min="0" max="18"></div>
+    </div>
+    <div class="form-grid full">
+      <div class="field"><label>Описание</label><textarea id="fdesc" rows="2" placeholder="Описание товара..."></textarea></div>
+    </div>
+    <button class="btn-primary" onclick="submitProduct()" style="min-width:200px">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Добавить товар
+    </button>
+  </div>`;
+}
+
+async function renderEditProducts() {
+  let data = {items:[], total:0, page:1, pages:1};
+  try { data = await API.adminProducts({per_page:20}); } catch(e){}
+
+  const rows = data.items.map(p => {
+    const active = p.is_active !== false;
+    return `<div class="edit-prod-row" id="epr-${p.id}">
+      <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}"
+           onerror="this.src='/static/icon-192.png'" alt="">
+      <div class="edit-prod-info">
+        <div class="edit-prod-name">${escHtml(p.name)}</div>
+        <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
+        <div class="edit-prod-cat" style="font-size:11px;color:#aaa">${escHtml(p.category||'')} ${p.subcategory?'› '+escHtml(p.subcategory):''}</div>
+      </div>
+      <div class="edit-prod-actions">
+        <button class="btn-edit-prod" onclick="openEditProduct(${p.id})" title="Редактировать">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="btn-del-prod" onclick="toggleProductActive(${p.id},${active})" title="${active?'Скрыть':'Показать'}">
+          ${active
+            ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>'
+            : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
+          }
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  return `<div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      Редактировать товары <span class="orders-count-badge">${data.total}</span>
+      <button onclick="deleteAllProductsConfirm()" style="margin-left:auto;background:#fff5f5;color:#e53935;border:1.5px solid #fecaca;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:800;cursor:pointer;font-family:inherit;display:flex;align-items:center;gap:5px;white-space:nowrap;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        Удалить все
+      </button>
+    </h3>
+    <input type="text" class="field input" placeholder="🔍 Поиск товара..." style="margin-bottom:12px;width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none"
+      oninput="searchAdminProducts(this.value)">
+    <div id="editProdList">${rows || '<p style="color:#bbb">Нет товаров</p>'}</div>
+  </div>`;
+}
+
+async function searchAdminProducts(q) {
+  clearTimeout(window._apTimer);
+  window._apTimer = setTimeout(async () => {
+    try {
+      const data = await API.adminProducts({search:q, per_page:20});
+      const list = $('editProdList');
+      if (!list) return;
+      list.innerHTML = data.items.map(p => {
+        const active = p.is_active !== false;
+        return `<div class="edit-prod-row" id="epr-${p.id}">
+          <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}" onerror="this.src='/static/icon-192.png'" alt="">
+          <div class="edit-prod-info">
+            <div class="edit-prod-name">${escHtml(p.name)}</div>
+            <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
+          </div>
+          <div class="edit-prod-actions">
+            <button class="btn-edit-prod" onclick="openEditProduct(${p.id})">✏️</button>
+            <button class="btn-del-prod" onclick="toggleProductActive(${p.id},${active})">${active?'🗑':'✓'}</button>
+          </div>
+        </div>`;
+      }).join('') || '<p style="color:#bbb">Ничего не найдено</p>';
+    } catch(e){}
+  }, 300);
+}
+
+async function openEditProduct(id) {
+  let p;
+  try { p = await API.product(id); } catch(e){ toast('Ошибка загрузки товара', 'err'); return; }
+
+  const [cats, brands] = await Promise.all([
+    API.categories().catch(()=>[]),
+    API.get('/api/brands').catch(()=>[])
+  ]);
+
+  const catOpts = `<option value="">— без категории —</option>` +
+    cats.map(c=>`<option value="${escHtml(c.name)}" ${p.category===c.name?'selected':''}>${escHtml(c.name)}</option>`).join('');
+
+  // Get subcategories for current category
+  let subOpts = '<option value="">— без подкатегории —</option>';
+  if (p.category) {
+    const subs = await API.get(`/api/categories/${encodeURIComponent(p.category)}/subcategories`).catch(()=>[]);
+    subOpts = `<option value="">— без подкатегории —</option>` +
+      subs.map(s=>`<option value="${escHtml(s.name)}" ${p.subcategory===s.name?'selected':''}>${escHtml(s.name)}</option>`).join('');
+  }
+
+  const brandOpts = brands.map(b=>`<option value="${escHtml(b.name||b)}">`).join('');
+
+  // Images
+  const imgs = [...new Set((Array.isArray(p.images)&&p.images.length?p.images:(p.image?[p.image]:[])).filter(Boolean))];
+  const imgSlots = Array.from({length:5},(_,i) => {
+    const src = imgs[i] || '';
+    return `<div class="ep-img-slot ${src?'has-img':''}" id="ep-slot-${i}" onclick="epImgSlotClick(${i})">
+      ${src
+        ? `<img src="${escHtml(cdnImg(src,200))}" data-full="${escHtml(src)}">
+           <button class="ep-img-del" onclick="event.stopPropagation();epRemoveImg(${i})">✕</button>`
+        : `<div class="ep-img-plus">+</div><div class="ep-img-label">Фото ${i+1}</div>`
+      }
+      <input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">
+    </div>`;
+  }).join('');
+
+  $('confirmOverlay')?.classList.remove('open');
+
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay open';
+  overlay.id = 'editProductOverlay';
+  overlay.innerHTML = `
+  <div class="modal ep-modal" onclick="event.stopPropagation()">
+    <button class="modal-x" onclick="document.getElementById('editProductOverlay').remove()">✕</button>
+
+    <div class="ep-header">
+      <div class="ep-title">Редактировать товар</div>
+      <div class="ep-subtitle">ID: ${id} · Арт: ${escHtml(p.sku||'—')}</div>
+    </div>
+
+    <div class="ep-body">
+
+      <!-- ФОТОГРАФИИ -->
+      <div class="ep-section-label">Фотографии <span style="color:#bbb;font-weight:500">(мин. 1 · макс. 5)</span></div>
+      <div class="ep-img-grid">${imgSlots}</div>
+      <div id="ep-imgs-data" style="display:none">${escHtml(JSON.stringify(imgs))}</div>
+
+      <!-- ОСНОВНОЕ -->
+      <div class="ep-section-label">Основное</div>
+      <div class="ep-field">
+        <label>Название *</label>
+        <input id="ep-name" value="${escHtml(p.name)}" placeholder="Название товара">
+      </div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Артикул</label>
+          <input id="ep-sku" value="${escHtml(p.sku||'')}" placeholder="SKU / Арт.">
+        </div>
+        <div class="ep-field">
+          <label>Бренд</label>
+          <input id="ep-brand" value="${escHtml(p.brand||'')}" list="ep-brand-list" placeholder="Бренд">
+          <datalist id="ep-brand-list">${brandOpts}</datalist>
+        </div>
+      </div>
+
+      <!-- ЦЕНЫ -->
+      <div class="ep-section-label">Цены</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Цена (₽) *</label>
+          <input id="ep-price" type="number" step="0.01" value="${p.price}" placeholder="0">
+        </div>
+        <div class="ep-field">
+          <label>Цена без скидки (₽)</label>
+          <input id="ep-price-old" type="number" step="0.01" value="${p.price_old||''}" placeholder="0">
+        </div>
+        <div class="ep-field">
+          <label>Мин. заказ (шт)</label>
+          <input id="ep-minorder" type="number" value="${p.min_order||1}" min="1">
+        </div>
+      </div>
+
+      <!-- ОСТАТОК -->
+      <div class="ep-section-label">Наличие</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Статус</label>
+          <select id="ep-stock">
+            <option value="ok"  ${p.stock==='ok' ?'selected':''}>✅ В наличии</option>
+            <option value="low" ${p.stock==='low'?'selected':''}>⚠️ Мало</option>
+            <option value="out" ${p.stock==='out'?'selected':''}>❌ Нет</option>
+          </select>
+        </div>
+        <div class="ep-field">
+          <label>Остаток (шт)</label>
+          <input id="ep-qty" type="number" value="${p.stock_qty||0}" min="0">
+        </div>
+      </div>
+
+      <!-- КАТЕГОРИЯ -->
+      <div class="ep-section-label">Категория</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Категория</label>
+          <select id="ep-cat" onchange="epLoadSubcats(this.value)">${catOpts}</select>
+        </div>
+        <div class="ep-field">
+          <label>Подкатегория</label>
+          <select id="ep-subcat">${subOpts}</select>
+        </div>
+      </div>
+
+      <!-- ДОП -->
+      <div class="ep-section-label">Дополнительно</div>
+      <div class="ep-row">
+        <div class="ep-field">
+          <label>Возраст от (лет)</label>
+          <input id="ep-age" type="number" value="${p.age_min||''}" min="0" max="18" placeholder="0">
+        </div>
+        <div class="ep-field">
+          <label>Теги</label>
+          <input id="ep-tags" value="${escHtml((p.tags||[]).join(', '))}" placeholder="Хит, Новинка, Акция">
+        </div>
+      </div>
+      <div class="ep-field">
+        <label>Описание</label>
+        <textarea id="ep-desc" rows="3" placeholder="Описание товара...">${escHtml(p.description||'')}</textarea>
+      </div>
+
+    </div>
+
+    <div class="ep-footer">
+      <button class="ep-btn-cancel" onclick="document.getElementById('editProductOverlay').remove()">Отмена</button>
+      <button class="ep-btn-save" onclick="saveEditProduct(${id})">💾 Сохранить</button>
+    </div>
+  </div>`;
+
+  document.body.appendChild(overlay);
+  overlay.onclick = e => { if(e.target===overlay) overlay.remove(); };
+  // Store images array
+  window._epImgs = [...imgs];
+}
+
+async function epLoadSubcats(cat) {
+  const sel = document.getElementById('ep-subcat');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">Загрузка...</option>';
+  const subs = await API.get(`/api/categories/${encodeURIComponent(cat)}/subcategories`).catch(()=>[]);
+  sel.innerHTML = '<option value="">— без подкатегории —</option>' +
+    subs.map(s=>`<option value="${escHtml(s.name)}">${escHtml(s.name)}</option>`).join('');
+}
+
+function epImgSlotClick(i) {
+  document.getElementById(`ep-file-${i}`)?.click();
+}
+
+async function epHandleFile(i, input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 2*1024*1024) { toast('Файл слишком большой (макс. 2MB)', 'err'); return; }
+
+  const slot = document.getElementById(`ep-slot-${i}`);
+  slot.innerHTML = `<div class="skeleton" style="width:100%;height:100%;border-radius:10px"></div>`;
+
+  try {
+    const data = await API.uploadImage(file);
+    window._epImgs = window._epImgs || [];
+    window._epImgs[i] = data.url;
+    slot.className = 'ep-img-slot has-img';
+    slot.innerHTML = `
+      <img src="${escHtml(cdnImg(data.url,200))}" data-full="${escHtml(data.url)}">
+      <button class="ep-img-del" onclick="event.stopPropagation();epRemoveImg(${i})">✕</button>
+      <input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">`;
+    toast('Фото загружено ✓');
+  } catch(e) {
+    slot.className = 'ep-img-slot';
+    slot.innerHTML = `<div class="ep-img-plus">+</div><div class="ep-img-label">Фото ${i+1}</div><input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">`;
+    toast('Ошибка загрузки фото', 'err');
+  }
+}
+
+function epRemoveImg(i) {
+  if (window._epImgs) window._epImgs[i] = null;
+  const slot = document.getElementById(`ep-slot-${i}`);
+  if (slot) {
+    slot.className = 'ep-img-slot';
+    slot.innerHTML = `<div class="ep-img-plus">+</div><div class="ep-img-label">Фото ${i+1}</div><input type="file" accept="image/*" style="display:none" id="ep-file-${i}" onchange="epHandleFile(${i},this)">`;
+  }
+}
+
+async function saveEditProduct(id) {
+  const name = document.getElementById('ep-name')?.value?.trim();
+  if (!name) { toast('Введите название', 'err'); return; }
+  const price = parseFloat(document.getElementById('ep-price')?.value);
+  if (!price || price <= 0) { toast('Введите цену', 'err'); return; }
+
+  const images = (window._epImgs||[]).filter(Boolean);
+  const tagsRaw = document.getElementById('ep-tags')?.value || '';
+  const tags = tagsRaw.split(',').map(t=>t.trim()).filter(Boolean);
+
+  const btn = document.querySelector('.ep-btn-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
+
+  const body = {
+    name,
+    price,
+    price_old:   parseFloat(document.getElementById('ep-price-old')?.value) || null,
+    sku:         document.getElementById('ep-sku')?.value?.trim() || null,
+    category:    document.getElementById('ep-cat')?.value || null,
+    subcategory: document.getElementById('ep-subcat')?.value || null,
+    stock:       document.getElementById('ep-stock')?.value,
+    stock_qty:   parseInt(document.getElementById('ep-qty')?.value) || 0,
+    brand:       document.getElementById('ep-brand')?.value?.trim() || null,
+    description: document.getElementById('ep-desc')?.value?.trim() || null,
+    age_min:     parseInt(document.getElementById('ep-age')?.value) || null,
+    min_order:   parseInt(document.getElementById('ep-minorder')?.value) || 1,
+    tags,
+    images,
+    image:       images[0] || null,
+  };
+
+  try {
+    await API.updateProduct(id, body);
+    toast('Сохранено ✓');
+    document.getElementById('editProductOverlay')?.remove();
+    renderAdmin();
+  } catch(e) {
+    toast('Ошибка сохранения', 'err');
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Сохранить'; }
+  }
+}
+
+async function toggleProductActive(id, currentActive) {
+  try {
+    await API.updateProduct(id, {is_active: !currentActive});
+    toast(currentActive ? 'Товар скрыт' : 'Товар активирован');
+    renderAdmin();
+  } catch(e) { toast('Ошибка', 'err'); }
+}
+
+async function renderCatalogManager() {
+  let catalog = [];
+  try { catalog = await API.adminCatalog(); } catch(e){}
+
+  const rows = catalog.map(cat => {
+    const subRows = cat.subcategories.map(sub => `
+      <div class="subcat-manage-row">
+        <span>${escHtml(sub.name)}</span>
+        <span class="subcat-count">${sub.count} тов.</span>
+        <button class="btn-icon-del" onclick="adminDelSubcategory('${escHtml(cat.name)}','${escHtml(sub.name)}')" title="Удалить">✕</button>
+      </div>`).join('');
+    return `
+      <div class="cat-manage-card">
+        <div class="cat-manage-head">
+          <span class="cat-manage-name">${escHtml(cat.name)}</span>
+          <span class="cat-manage-cnt">${cat.count} тов.</span>
+          <button class="btn-add-sub" onclick="adminAddSubcategory('${escHtml(cat.name)}')">+ Подраздел</button>
+          <button class="btn-icon-del" onclick="adminDelCategory('${escHtml(cat.name)}')" title="Удалить">✕</button>
+        </div>
+        <div class="subcat-manage-list">${subRows || '<span style="color:#bbb;font-size:12px">Нет подразделов</span>'}</div>
+      </div>`;
+  }).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+      Управление каталогом
+    </h3>
+    <button class="btn-primary" style="margin-bottom:16px;padding:10px 18px;font-size:13px" onclick="adminAddCategory()">
+      + Добавить категорию
+    </button>
+    <div class="catalog-manage-grid">${rows}</div>
+  </div>`;
+}
+
+async function previewUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  const area = $('imgUploadArea');
+  area.innerHTML = `<div class="skeleton" style="width:100%;height:160px"></div>`;
+
+  try {
+    const data = await API.uploadImage(file);
+    $('fimg').value = data.url;
+    area.classList.add('has-img');
+    area.innerHTML = `<img src="${data.url}" alt="preview">`;
+  } catch(e) {
+    // Fallback: use local FileReader
+    const reader = new FileReader();
+    reader.onload = ev => {
+      $('fimg').value = ev.target.result;
+      area.classList.add('has-img');
+      area.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+async function migrateImages() {
+  try {
+    const r = await API.req('POST', '/api/admin/migrate-images');
+    toast(`✅ Обновлено ${r.updated} картинок! Обновите страницу.`);
+    setTimeout(() => location.reload(), 2000);
+  } catch(e) {
+    toast('Ошибка: ' + (e.detail || e.message), 'err');
+  }
+}
+
+function filterBrandList(val) {
+  // Just highlights — datalist handles filtering natively
+}
+
+async function saveBrandIfNew(name) {
+  if (!name?.trim()) return;
+  try { await API.post('/api/admin/brands', {name: name.trim()}, State.user?.token); } catch(e){}
+}
+
+async function submitProduct() {
+  const name     = $('fn')?.value?.trim();
+  const sku      = $('fsku')?.value?.trim();
+  const price    = parseFloat($('fprice')?.value || 0);
+  const priceOld = parseFloat($('fprice-old')?.value) || null;
+  const qty      = parseInt($('fqty')?.value || 0);
+  const minOrder = parseInt($('fminorder')?.value || 1);
+  const category = $('fcat')?.value;
+  const subcat   = $('fsubcat')?.value || '';
+  const brand    = $('fbrand')?.value?.trim() || '';
+  const desc     = $('fdesc')?.value || '';
+  const ageMin   = parseInt($('fagemin')?.value || 3);
+  const imgMain  = $('fimg')?.value || '';
+
+  let imgsArr = [];
+  try { imgsArr = JSON.parse($('fimgs')?.value || '[]'); } catch(e){}
+  if (!imgsArr.length && imgMain) imgsArr = [imgMain];
+
+  if (!name)             { toast('Укажите название товара', 'err'); return; }
+  if (!sku)              { toast('Укажите артикул', 'err'); return; }
+  if (!price || price<=0){ toast('Укажите цену', 'err'); return; }
+  if (!category)         { toast('Выберите категорию', 'err'); return; }
+  if (!imgsArr.length)   { toast('Загрузите хотя бы одно фото', 'err'); return; }
+
+  const stock = qty > 10 ? 'ok' : qty > 0 ? 'low' : 'out';
+  const body = {
+    name, sku, price, price_old: priceOld,
+    stock_qty: qty, category, subcategory: subcat,
+    brand, image: imgsArr[0]||'', images: imgsArr,
+    description: desc, min_order: minOrder,
+    age_min: ageMin, stock,
+  };
+
+  try {
+    await API.post('/api/products', body);
+    await saveBrandIfNew(brand);
+    window._uploadedImgs = [];
+    toast('Товар успешно добавлен! ✓');
+    // Reset form fields without reloading entire admin page
+    const fields = ['fn','fsku','fprice','fprice-old','fqty','fminorder','fbrand','fdesc'];
+    fields.forEach(id => { const el = $(id); if (el) el.value = el.type === 'number' && id === 'fminorder' ? '1' : id === 'fagemin' ? '3' : ''; });
+    // Reset image slots
+    window._uploadedImgs = [];
+    for (let i = 0; i < 5; i++) {
+      const slot = document.getElementById(`imgSlot${i}`);
+      if (!slot) continue;
+      const isMain = i === 0;
+      slot.className = `img-slot${isMain?' img-slot-main':''}`;
+      slot.innerHTML = `${isMain
+        ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
+        : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${i+1}</span>`}
+        <input type="file" id="imgFileSlot${i}" accept="image/*" style="display:none" onchange="handleImgSlot(${i},this)">`;
+      slot.onclick = () => triggerImgSlot(i);
+    }
+    syncImgFields();
+    // Refresh only the product list section
+    try {
+      const editHtml = await renderEditProducts();
+      const editSection = document.querySelector('#adminBody .admin-section:nth-child(2)');
+      if (editSection) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = editHtml;
+        editSection.replaceWith(tmp.firstElementChild);
+      }
+    } catch(e2) {}
+  } catch(e) {
+    toast('Ошибка: ' + (e?.detail || e?.message || e), 'err');
+    console.error('submitProduct:', e);
+  }
+}
+
+// ── Multi-image upload (admin add product) ────────────────────────────────────
+window._uploadedImgs = [];
+
+function triggerImgSlot(slotIdx) {
+  document.getElementById(`imgFileSlot${slotIdx}`)?.click();
+}
+
+async function handleImgSlot(slotIdx, input) {
+  const file = input.files[0];
+  if (!file) return;
+  const slot = document.getElementById(`imgSlot${slotIdx}`);
+  if (!slot) return;
+  slot.innerHTML = `<div class="slot-loading"><div class="slot-spinner"></div></div>
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  let url = '';
+  try {
+    const d = await API.uploadImage(file);
+    url = d.url;
+  } catch(e) {
+    url = await new Promise(res => { const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsDataURL(file); });
+  }
+  window._uploadedImgs = window._uploadedImgs.filter(x=>x.slot!==slotIdx);
+  window._uploadedImgs.push({slot:slotIdx, url});
+  window._uploadedImgs.sort((a,b)=>a.slot-b.slot);
+  slot.className = `img-slot${slotIdx===0?' img-slot-main':''} has-img`;
+  slot.innerHTML = `<img src="${url}" alt="photo ${slotIdx+1}" onclick="event.stopPropagation()">
+    <button class="slot-remove" onclick="event.stopPropagation();removeImgSlot(${slotIdx})">✕</button>
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  syncImgFields();
+  toast(slotIdx===0?'Главное фото загружено':`Фото ${slotIdx+1} загружено`);
+}
+
+function removeImgSlot(slotIdx) {
+  window._uploadedImgs = window._uploadedImgs.filter(x=>x.slot!==slotIdx);
+  const slot = document.getElementById(`imgSlot${slotIdx}`);
+  if (!slot) return;
+  const isMain = slotIdx===0;
+  slot.className = `img-slot${isMain?' img-slot-main':''}`;
+  slot.innerHTML = `${isMain
+    ?`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
+    :`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${slotIdx+1}</span>`}
+    <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+  slot.onclick = ()=>triggerImgSlot(slotIdx);
+  syncImgFields();
+}
+
+function syncImgFields() {
+  const imgs = window._uploadedImgs;
+  const me = document.getElementById('fimg');  const ie = document.getElementById('fimgs');
+  if (me) me.value = imgs[0]?.url||'';
+  if (ie) ie.value = JSON.stringify(imgs.map(x=>x.url));
+}
+
+async function previewUpload(input) { await handleImgSlot(0, input); }
+
+function renderCustomersTable(customers) {
+  if (!customers.length) return `<div class="admin-section"><h3>Клиенты</h3><p style="color:#999;font-size:14px">Нет зарегистрированных клиентов</p></div>`;
+
+  const rows = customers.map(c => `
+    <tr>
+      <td><div class="c-name">${escHtml(c.first_name)} ${escHtml(c.last_name)}</div><div class="c-email">${escHtml(c.email)}</div></td>
+      <td>${escHtml(c.phone||'—')}</td>
+      <td>${escHtml(c.address||'—')}</td>
+      <td class="c-orders">${(c.orders||[]).length}</td>
+      <td>${c.created_at?.slice(0,10)||'—'}</td>
+    </tr>`).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+      Клиенты (${customers.length})
+    </h3>
+    <div style="overflow-x:auto">
+      <table class="customers-table">
+        <thead><tr><th>Имя</th><th>Телефон</th><th>Адрес</th><th>Заказов</th><th>Дата</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderVisitorsTable(visitors) {
+  if (!visitors.length) return `
+    <div class="admin-section">
+      <h3>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+        Посетители
+      </h3>
+      <p style="color:#999;font-size:14px">Нет данных</p>
+    </div>`;
+
+  const rows = visitors.slice(0, 100).map(v => {
+    const t = v.time?.replace('T',' ').slice(0,16) || '—';
+    return `<tr>
+      <td><span class="visitor-ip">${escHtml(v.ip)}</span></td>
+      <td>${escHtml(v.device)}</td>
+      <td>${escHtml(v.browser)}</td>
+      <td style="color:var(--text3);font-size:11px">${escHtml(t)}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+      Посетители <span class="orders-count-badge">${visitors.length}</span>
+    </h3>
+    <div style="overflow-x:auto">
+      <table class="customers-table">
+        <thead><tr><th>IP</th><th>Устройство</th><th>Браузер</th><th>Время (UTC)</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderAdminCarts(carts) {
+  if (!carts.length) return `<div class="admin-section"><h3>Корзины</h3><p style="color:#999;font-size:14px">Нет корзин</p></div>`;
+  return `
+  <div class="admin-section">
+    <h3>Последние корзины (${carts.length})</h3>
+    <div class="cart-rows">
+      ${carts.map(c => `
+        <div class="cart-row">
+          <div class="cart-row-info">
+            <div class="cart-row-name">${escHtml(c.store_name||'Клиент')} — ${c.items?.length||0} позиций</div>
+            <div class="cart-row-meta">${c.code} · ${c.created_at?.slice(0,10)}</div>
+          </div>
+          <div class="cart-row-total">${rub(c.total)}</div>
+        </div>`).join('')}
+    </div>
+  </div>`;
+}
+
+
+// ── Featured Products Manager ─────────────────────────────────────────────────
+function renderFeaturedManager(items) {
+  const rows = items.map(p => `
+    <div class="feat-row" id="feat-${p.product_id}">
+      <img src="${escHtml(p.image||'')}" onerror="this.src='/static/icon-192.png'" style="width:44px;height:44px;object-fit:contain;border-radius:8px;background:#f5f5f5">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escHtml(p.name)}</div>
+        <div style="font-size:11px;color:#aaa">Страница ${p.page} · Позиция ${p.position}</div>
+      </div>
+      <button onclick="removeFeatured(${p.product_id})" style="background:#fff5f5;color:#e53935;border:1.5px solid #fecaca;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:inherit">✕ Убрать</button>
+    </div>`).join('');
+
+  return `
+  <div class="admin-section" id="sec-featured">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+      Товары на главной <span class="orders-count-badge">${items.length}</span>
+    </h3>
+    <p style="font-size:12px;color:#aaa;margin-bottom:12px">Выберите товар из списка и укажите страницу и позицию на главной</p>
+    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+      <input id="feat-search" type="text" placeholder="🔍 Найти товар по названию..." 
+        style="flex:1;min-width:160px;padding:9px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none"
+        oninput="featSearchProducts(this.value)">
+      <input id="feat-page" type="number" value="1" min="1" max="99" placeholder="Страница"
+        style="width:80px;padding:9px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none">
+      <input id="feat-pos" type="number" value="0" min="0" placeholder="Позиция"
+        style="width:90px;padding:9px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none">
+    </div>
+    <div id="feat-search-results" style="margin-bottom:12px"></div>
+    <div id="feat-list">${rows || '<p style="color:#bbb;font-size:13px">Нет товаров на главной</p>'}</div>
+  </div>`;
+}
+
+let _featTimer;
+async function featSearchProducts(q) {
+  clearTimeout(_featTimer);
+  if (!q || q.length < 2) { $('feat-search-results').innerHTML = ''; return; }
+  _featTimer = setTimeout(async () => {
+    try {
+      const data = await API.adminProducts({search: q, per_page: 10});
+      const res = $('feat-search-results');
+      if (!res) return;
+      res.innerHTML = data.items.map(p => `
+        <div onclick="addFeatured(${p.id},'${escHtml(p.name).replace(/'/g,"\'")}')"
+          style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1.5px solid var(--border);border-radius:10px;margin-bottom:6px;cursor:pointer;background:#fff;transition:background .15s"
+          onmouseover="this.style.background='#fff8f4'" onmouseout="this.style.background='#fff'">
+          <img src="${escHtml(p.image||'')}" onerror="this.src='/static/icon-192.png'" style="width:36px;height:36px;object-fit:contain;border-radius:7px;background:#f5f5f5">
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:13px">${escHtml(p.name)}</div>
+            <div style="font-size:11px;color:#aaa">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
+          </div>
+          <span style="background:var(--accent);color:#fff;border-radius:7px;padding:4px 10px;font-size:12px;font-weight:700">+ Добавить</span>
+        </div>`).join('') || '<p style="color:#bbb;font-size:12px">Ничего не найдено</p>';
+    } catch(e) {}
+  }, 300);
+}
+
+async function addFeatured(productId, name) {
+  const page = parseInt($('feat-page')?.value || 1);
+  const pos = parseInt($('feat-pos')?.value || 0);
+  try {
+    await API.req('POST', '/api/admin/featured', {product_id: productId, position: pos, page: page});
+    toast(`✅ "${name}" добавлен на главную (стр.${page}, поз.${pos})`);
+    $('feat-search').value = '';
+    $('feat-search-results').innerHTML = '';
+    // Refresh featured list
+    const data = await API.get('/api/admin/featured').catch(()=>({items:[]}));
+    const sec = $('sec-featured');
+    if (sec) { const tmp = document.createElement('div'); tmp.innerHTML = renderFeaturedManager(data.items||[]); sec.replaceWith(tmp.firstElementChild); }
+  } catch(e) { toast('Ошибка: ' + (e?.detail || e?.message || e), 'err'); }
+}
+
+async function removeFeatured(productId) {
+  try {
+    await API.req('DELETE', `/api/admin/featured/${productId}`);
+    toast('Убрано с главной');
+    const data = await API.get('/api/admin/featured').catch(()=>({items:[]}));
+    const sec = $('sec-featured');
+    if (sec) { const tmp = document.createElement('div'); tmp.innerHTML = renderFeaturedManager(data.items||[]); sec.replaceWith(tmp.firstElementChild); }
+  } catch(e) { toast('Ошибка', 'err'); }
+}
+
+// ── История действий ──────────────────────────────────────────────────────────
+function renderAdminLog(log) {
+  if (!log.length) return `
+  <div class="admin-section">
+    <h3>📋 История действий</h3>
+    <p style="color:#999;font-size:14px">Нет записей</p>
+  </div>`;
+
+  const actionLabel = {
+    'create': '➕ Добавлен',
+    'delete': '🗑 Скрыт',
+    'delete_all': '💥 Удалено всё',
+    'grant_admin': '👑 Выдан доступ',
+    'revoke_admin': '🔒 Отозван доступ',
+    'update': '✏️ Изменён',
+  };
+
+  const rows = log.slice(0, 100).map(l => {
+    const t = l.created_at?.replace('T',' ').slice(0,16) || '—';
+    const label = actionLabel[l.action] || l.action;
+    const isDelete = l.action === 'delete' || l.action === 'delete_all';
+    return `<tr>
+      <td style="color:${isDelete?'#e53935':'#2e7d32'};font-weight:700;white-space:nowrap">${escHtml(label)}</td>
+      <td style="font-size:12px">${escHtml(l.detail || '—')}</td>
+      <td style="color:#aaa;font-size:11px;white-space:nowrap">${escHtml(t)}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      История действий <span class="orders-count-badge">${log.length}</span>
+    </h3>
+    <div style="overflow-x:auto">
+      <table class="customers-table">
+        <thead><tr><th>Действие</th><th>Детали</th><th>Время (UTC)</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+// ── Управление доступом ───────────────────────────────────────────────────────
+function renderGrantAdminSection() {
+  return `
+  <div class="admin-section">
+    <h3>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      Управление доступом
+    </h3>
+    <p style="font-size:12px;color:#aaa;margin-bottom:12px">Найдите пользователя по номеру телефона и выдайте или отзовите права администратора</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="grant-phone" type="tel" placeholder="+7 999 123 45 67"
+        style="flex:1;min-width:180px;padding:9px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none">
+      <button onclick="grantAdminByPhone()" 
+        style="background:var(--accent);color:#fff;border:none;border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap">
+        👑 Выдать доступ
+      </button>
+      <button onclick="revokeAdminByPhone()" 
+        style="background:#fff5f5;color:#e53935;border:1.5px solid #fecaca;border-radius:10px;padding:9px 16px;font-size:13px;font-weight:800;cursor:pointer;font-family:inherit;white-space:nowrap">
+        🔒 Отозвать
+      </button>
+    </div>
+    <div id="grant-result" style="margin-top:10px"></div>
+  </div>`;
+}
+
+async function grantAdminByPhone() {
+  const phone = $('grant-phone')?.value?.trim();
+  if (!phone) { toast('Введите номер телефона', 'err'); return; }
+  try {
+    const r = await API.req('POST', '/api/admin/grant-admin', {phone});
+    const c = r.customer;
+    $('grant-result').innerHTML = `<div style="background:#f0fff4;border:1.5px solid #a7f3d0;border-radius:10px;padding:10px 14px;font-size:13px;color:#065f46">
+      ✅ ${r.message}
+    </div>`;
+    toast('✅ ' + r.message);
+  } catch(e) {
+    $('grant-result').innerHTML = `<div style="background:#fff5f5;border:1.5px solid #fecaca;border-radius:10px;padding:10px 14px;font-size:13px;color:#e53935">
+      ❌ ${e?.detail || 'Пользователь не найден'}
+    </div>`;
+    toast('Ошибка: ' + (e?.detail || e?.message), 'err');
+  }
+}
+
+async function revokeAdminByPhone() {
+  const phone = $('grant-phone')?.value?.trim();
+  if (!phone) { toast('Введите номер телефона', 'err'); return; }
+  try {
+    const r = await API.req('POST', '/api/admin/revoke-admin', {phone});
+    $('grant-result').innerHTML = `<div style="background:#f0fff4;border:1.5px solid #a7f3d0;border-radius:10px;padding:10px 14px;font-size:13px;color:#065f46">
+      ✅ ${r.message}
+    </div>`;
+    toast('✅ ' + r.message);
+  } catch(e) {
+    toast('Ошибка: ' + (e?.detail || e?.message), 'err');
+  }
+}
+
+// ── Search ────────────────────────────────────────────────────────────────────
+let _searchTimer;
+function onSearch(val) {
+  clearTimeout(_searchTimer);
+  const btn = $('searchClearBtn');
+  if (btn) btn.style.display = val.length > 0 ? 'flex' : 'none';
+  const q = val.trim();
+  if (!q) { $('searchDrop')?.classList.remove('open'); return; }
+  _searchTimer = setTimeout(async () => {
+    try {
+      const data = await API.search(q);
+      const drop = $('searchDrop');
+      if (!data.items.length) { drop.classList.remove('open'); return; }
+      if (!data.items.length) {
+        drop.innerHTML = '<div class="search-drop-empty">Ничего не найдено по запросу «' + escHtml(q) + '»</div>';
+        drop.classList.add('open');
+        return;
+      }
+      drop.innerHTML = data.items.map(p => `
+        <div class="search-result" onclick="closeSearch();openProduct(${p.id})">
+          <img src="${escHtml(p.image)}" alt="${escHtml(p.name)}">
+          <div style="flex:1;min-width:0">
+            <div class="search-result-name">${escHtml(p.name)}</div>
+            <div class="search-result-meta">${escHtml(p.sku)} · ${escHtml(p.brand)}</div>
+          </div>
+          <span class="search-result-price">${rub(p.price)}</span>
+        </div>`).join('');
+      drop.classList.add('open');
+    } catch(e){}
+  }, 200);
+}
+
+function closeSearch() {
+  $('searchDrop')?.classList.remove('open');
+}
+
+function clearSearch() {
+  const si = $('topSearch');
+  const btn = $('searchClearBtn');
+  if (si) si.value = '';
+  if (btn) btn.style.display = 'none';
+  closeSearch();
+  if (State.page === 'home' || State.page === 'catalog') {
+    State.search = '';
+    State.pageNum = 1;
+    loadProducts();
+  }
+}
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function navigate(page) {
+  State.page = page;
+  State.pageNum = 1;
+
+  document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
+  const btn = $(`bn-${page}`);
+  if (btn) btn.classList.add('active');
+
+  const mc = $('mainContent');
+  if (!mc) return;
+
+  // Show skeleton IMMEDIATELY on click — before any network requests
+  const skel = (h=80) => `<div class="skeleton" style="height:${h}px;border-radius:16px;margin-bottom:12px"></div>`;
+  if (page === 'home') {
+    mc.innerHTML = `<div style="padding:16px">${skel(180)}${skel(40)}${skel(200)}${skel(200)}</div>`;
+  } else if (page === 'catalog') {
+    mc.innerHTML = `<div style="padding:16px"><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">${Array(9).fill(`<div class="skeleton" style="height:90px;border-radius:16px"></div>`).join('')}</div></div>`;
+  } else if (page === 'profile' || page === 'admin') {
+    mc.innerHTML = `<div style="padding:16px">${skel(80)}${skel(120)}${skel(120)}</div>`;
+  }
+
+  // Then render real content
+  requestAnimationFrame(() => {
+    if (page === 'home')    renderHome();
+    if (page === 'catalog') { State.category = null; State.search = ''; renderCatalog(); }
+    if (page === 'profile') renderProfile();
+    if (page === 'admin')   renderAdmin();
+  });
+}
+
+// ── Events ────────────────────────────────────────────────────────────────────
+document.addEventListener('click', e => {
+  if (e.target.id === 'productOverlay') closeProductModal();
+  if (e.target.id === 'shareOverlay')   closeShareModal();
+  if (e.target.id === 'authOverlay')    closeAuth();
+  if (e.target.id === 'confirmOverlay') closeConfirm();
+  if (!e.target.closest('#topSearch') && !e.target.closest('#searchDrop')) closeSearch();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeProductModal(); closeShareModal(); closeAuth(); closeSearch(); closeConfirm(); }
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+document.addEventListener('touchstart',()=>{},{passive:true});
+document.addEventListener('touchmove',()=>{},{passive:true});
+document.addEventListener('DOMContentLoaded', () => {
+  // Make sure cart drawer is closed on load
+  const drawer = $('cartDrawer');
+  const backdrop = $('cartBackdrop');
+  if (drawer) drawer.classList.remove('open');
+  if (backdrop) backdrop.classList.remove('show');
+  State.cartOpen = false;
+
+  // Load cart from localStorage (persists across reloads)
+  loadCartFromStorage();
+  updateCartBadge();
+
+  loadSession().then(() => {
+    // Determine start page
+    const params = new URLSearchParams(window.location.search);
+    const startPage = params.get('page') || (State.user?.role === 'admin' ? 'admin' : 'home');
+
+    // Replay any queued navigation calls that happened before app.js loaded
+    const queue = window.__navQueue || [];
+    if (queue.length > 0) {
+      const last = queue[queue.length - 1];
+      if (last[0] === 'navigate') {
+        navigate(last[1]);
+      } else if (last[0] === 'openAuth') {
+        navigate(startPage); openAuth();
+      } else if (last[0] === 'toggleCart') {
+        navigate(startPage); toggleCart();
+      } else {
+        navigate(startPage);
+      }
+    } else {
+      navigate(startPage);
+    }
+    window.__navQueue = []; // clear queue
+  });
+});
