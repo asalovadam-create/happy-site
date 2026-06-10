@@ -268,6 +268,35 @@ async def _create_tables():
         created_at TIMESTAMPTZ DEFAULT NOW()
     )""")
 
+    # Новые таблицы
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS admin_log (
+        id          SERIAL PRIMARY KEY,
+        action      TEXT NOT NULL,
+        entity      TEXT NOT NULL,
+        entity_id   TEXT DEFAULT '',
+        detail      TEXT DEFAULT '',
+        admin_name  TEXT DEFAULT 'admin',
+        created_at  TIMESTAMPTZ DEFAULT NOW()
+    )""")
+
+    await db_execute("""
+    CREATE TABLE IF NOT EXISTS featured_products (
+        id          SERIAL PRIMARY KEY,
+        product_id  INTEGER REFERENCES products(id) ON DELETE CASCADE,
+        position    INTEGER DEFAULT 0,
+        page        INTEGER DEFAULT 1,
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(product_id)
+    )""")
+
+    # Добавляем колонку role в customers если нет
+    try:
+        await db_execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'customer'")
+        await db_execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE")
+    except Exception:
+        pass
+
     # Indexes for fast product queries
     for idx_sql in [
         "CREATE INDEX IF NOT EXISTS idx_products_active ON products(is_active) WHERE is_active=TRUE",
@@ -558,7 +587,16 @@ async def create_product(b: ProductIn, _=Depends(require_admin)):
             b.image, b.images or [], b.stock, b.stock_qty,
             b.description, b.min_order, b.age_min, []
         )
-        return dict(row)
+        product = dict(row)
+        # Логируем добавление товара
+        try:
+            await db_execute(
+                "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
+                'create', 'product', str(product['id']), f"Добавлен товар: {b.name} (арт: {b.sku})"
+            )
+        except Exception:
+            pass
+        return product
     except Exception as e:
         err = str(e)
         if "unique" in err.lower() or "duplicate" in err.lower():
@@ -589,7 +627,16 @@ async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
 @app.delete("/api/products/{pid}", status_code=204)
 async def delete_product(pid: int, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
+    row = await db_fetchrow("SELECT name, sku FROM products WHERE id=$1", pid)
     await db_execute("UPDATE products SET is_active=FALSE WHERE id=$1", pid)
+    if row:
+        try:
+            await db_execute(
+                "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
+                'delete', 'product', str(pid), f"Скрыт товар: {row['name']} (арт: {row['sku']})"
+            )
+        except Exception:
+            pass
 
 # ── Image upload (Cloudinary) ─────────────────────────────────────────────────
 @app.get("/api/cloudinary-signature")
@@ -994,15 +1041,26 @@ async def admin_products_list(
     return {"items": [dict(r) for r in rows], "total": total,
             "page": page, "pages": max(1,(total+per_page-1)//per_page)}
 
+class DeleteAllIn(BaseModel):
+    password: str
+
 @app.delete("/api/admin/products/all")
-async def delete_all_products(_=Depends(require_admin)):
-    """Delete ALL products from the database. Irreversible!"""
+async def delete_all_products(b: DeleteAllIn, _=Depends(require_admin)):
+    """Delete ALL products. Requires special password."""
     if not _db_pool:
         raise HTTPException(503, "DB not available")
+    if b.password != "2636":
+        raise HTTPException(403, "Неверный пароль подтверждения")
     deleted = (await db_fetchrow("SELECT COUNT(*) FROM products"))[0]
     await db_execute("DELETE FROM products")
-    # Reset the ID sequence so new products start from 1
     await db_execute("ALTER SEQUENCE products_id_seq RESTART WITH 1")
+    try:
+        await db_execute(
+            "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
+            'delete_all', 'products', '0', f"Удалены все товары ({deleted} шт)"
+        )
+    except Exception:
+        pass
     return {"deleted": deleted, "message": f"Удалено {deleted} товаров"}
 
 @app.post("/api/admin/migrate-images")
@@ -1071,6 +1129,92 @@ async def debug_db():
         result["error_msg"] = str(e)
 
     return result
+
+
+# ── История действий ─────────────────────────────────────────────────────────
+@app.get("/api/admin/log")
+async def admin_log(_=Depends(require_admin)):
+    if not _db_pool: return {"log": []}
+    rows = await db_fetch("SELECT * FROM admin_log ORDER BY created_at DESC LIMIT 200")
+    return {"log": [dict(r) for r in rows]}
+
+# ── Выдача прав администратора по телефону ────────────────────────────────────
+class GrantAdminIn(BaseModel):
+    phone: str
+
+@app.post("/api/admin/grant-admin")
+async def grant_admin(b: GrantAdminIn, _=Depends(require_admin)):
+    if not _db_pool: raise HTTPException(503)
+    phone = b.phone.strip().replace(" ", "").replace("-", "")
+    row = await db_fetchrow("SELECT id, first_name, last_name, email FROM customers WHERE phone LIKE $1", f"%{phone[-10:]}%")
+    if not row:
+        raise HTTPException(404, f"Пользователь с телефоном {b.phone} не найден")
+    await db_execute("UPDATE customers SET role='admin' WHERE id=$1", row["id"])
+    try:
+        await db_execute(
+            "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
+            'grant_admin', 'customer', str(row["id"]), f"Выдан доступ админа: {row['first_name']} {row['last_name']} ({row['email']})"
+        )
+    except Exception:
+        pass
+    return {"ok": True, "customer": dict(row), "message": f"Права администратора выданы {row['first_name']} {row['last_name']}"}
+
+@app.post("/api/admin/revoke-admin")
+async def revoke_admin(b: GrantAdminIn, _=Depends(require_admin)):
+    if not _db_pool: raise HTTPException(503)
+    phone = b.phone.strip().replace(" ", "").replace("-", "")
+    row = await db_fetchrow("SELECT id, first_name, last_name FROM customers WHERE phone LIKE $1", f"%{phone[-10:]}%")
+    if not row:
+        raise HTTPException(404, "Пользователь не найден")
+    await db_execute("UPDATE customers SET role='customer' WHERE id=$1", row["id"])
+    return {"ok": True, "message": f"Права администратора отозваны у {row['first_name']} {row['last_name']}"}
+
+# ── Товары на главной ─────────────────────────────────────────────────────────
+class FeaturedIn(BaseModel):
+    product_id: int
+    position: int = 0
+    page: int = 1
+
+@app.get("/api/featured")
+async def get_featured():
+    if not _db_pool: return {"items": []}
+    rows = await db_fetch("""
+        SELECT f.id, f.product_id, f.position, f.page, p.name, p.price, p.price_old,
+               p.image, p.images, p.sku, p.brand, p.category, p.stock, p.stock_qty, p.min_order
+        FROM featured_products f
+        JOIN products p ON p.id = f.product_id AND p.is_active = TRUE
+        ORDER BY f.page, f.position
+    """)
+    return {"items": [dict(r) for r in rows]}
+
+@app.post("/api/admin/featured")
+async def add_featured(b: FeaturedIn, _=Depends(require_admin)):
+    if not _db_pool: raise HTTPException(503)
+    try:
+        await db_execute(
+            "INSERT INTO featured_products(product_id, position, page) VALUES($1,$2,$3) ON CONFLICT(product_id) DO UPDATE SET position=$2, page=$3",
+            b.product_id, b.position, b.page
+        )
+    except Exception as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+@app.delete("/api/admin/featured/{product_id}")
+async def remove_featured(product_id: int, _=Depends(require_admin)):
+    if not _db_pool: raise HTTPException(503)
+    await db_execute("DELETE FROM featured_products WHERE product_id=$1", product_id)
+    return {"ok": True}
+
+@app.get("/api/admin/featured")
+async def admin_get_featured(_=Depends(require_admin)):
+    if not _db_pool: return {"items": []}
+    rows = await db_fetch("""
+        SELECT f.id, f.product_id, f.position, f.page, p.name, p.sku, p.image, p.price
+        FROM featured_products f
+        JOIN products p ON p.id = f.product_id
+        ORDER BY f.page, f.position
+    """)
+    return {"items": [dict(r) for r in rows]}
 
 if __name__ == "__main__":
     import uvicorn
