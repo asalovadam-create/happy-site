@@ -78,9 +78,9 @@ class CacheHeaders(BaseHTTPMiddleware):
         elif p in ('/manifest.json', '/static/manifest.json'):
             resp.headers['Cache-Control'] = 'no-cache'
         elif p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
-            resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-            resp.headers['Pragma'] = 'no-cache'
-            resp.headers['Expires'] = '0'
+            # Cache by content, not by name: browser keeps the file until it
+            # actually changes (the ?v=... query string busts the cache then).
+            resp.headers['Cache-Control'] = 'public, max-age=604800, immutable'
         elif p.startswith('/static/'):
             resp.headers['Cache-Control'] = 'public, max-age=86400'
         elif p.startswith('/api/'):
@@ -142,7 +142,7 @@ async def startup():
     db_url = DATABASE_URL
     for param in ['channel_binding=require', 'channel_binding=disable']:
         db_url = db_url.replace('&' + param, '').replace('?' + param + '&', '?').replace('?' + param, '')
-    print(f"🔌 Connecting to DB: {db_url[:50]}...")
+    print("🔌 Connecting to DB...")
     try:
         import asyncpg, ssl as _ssl
         # Neon requires SSL — create proper context
@@ -431,6 +431,20 @@ class ProductPatch(BaseModel):
     min_order: Optional[int]=None; age_min: Optional[int]=None
     tags: Optional[List[str]]=None
 
+def _reject_base64_images(image: str = "", images: Optional[List[str]] = None):
+    """A data: URI in an image field means the frontend fell back to embedding
+    the raw file as text — this is what filled the database and slowed the
+    whole site down. Block it here so it can never be saved again, no matter
+    what the frontend does."""
+    bad = (image or "").startswith("data:")
+    bad = bad or any((u or "").startswith("data:") for u in (images or []))
+    if bad:
+        raise HTTPException(
+            400,
+            "Фото не загрузилось в Cloudinary и не может быть сохранено как текст. "
+            "Попробуйте загрузить фото ещё раз (файл до 2MB)."
+        )
+
 class ShareIn(BaseModel):
     items: List[dict]; comment: str = ""; store_name: str = ""
     contact: str = ""; customer_id: Optional[str] = None
@@ -576,6 +590,7 @@ async def get_product(pid: int):
 @app.post("/api/products", status_code=201)
 async def create_product(b: ProductIn, _=Depends(require_admin)):
     if not _db_pool: raise HTTPException(503)
+    _reject_base64_images(b.image, b.images)
     try:
         row = await db_fetchrow("""
             INSERT INTO products(name,sku,price,price_old,brand,category,subcategory,
@@ -609,6 +624,7 @@ async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
     # exclude_unset: only update fields explicitly sent (preserves is_active=False, images=[])
     fields = b.dict(exclude_unset=True)
     if not fields: raise HTTPException(400, "No fields to update")
+    _reject_base64_images(fields.get("image", ""), fields.get("images"))
     sets = ", ".join(f"{k}=${i+2}" for i,k in enumerate(fields.keys()))
     vals = list(fields.values())
     try:
@@ -684,9 +700,9 @@ async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
         )
         return {"url": result["secure_url"], "public_id": result["public_id"]}
     else:
-        media_type = file.content_type or "image/jpeg"
-        b64 = base64.b64encode(content).decode()
-        return {"url": f"data:{media_type};base64,{b64}", "filename": file.filename}
+        # No silent base64 fallback: a data: URI in the DB is what caused
+        # the site to slow to a crawl (huge text stored per product row).
+        raise HTTPException(503, "Cloudinary недоступен — фото не загружено, попробуйте ещё раз")
 
 # ── Categories ────────────────────────────────────────────────────────────────
 @app.get("/api/categories")
@@ -1049,7 +1065,8 @@ async def delete_all_products(b: DeleteAllIn, _=Depends(require_admin)):
     """Delete ALL products. Requires special password."""
     if not _db_pool:
         raise HTTPException(503, "DB not available")
-    if b.password != "2636":
+    confirm_pass = os.getenv("DELETE_ALL_PASS", "2636")
+    if b.password != confirm_pass:
         raise HTTPException(403, "Неверный пароль подтверждения")
     deleted = (await db_fetchrow("SELECT COUNT(*) FROM products"))[0]
     await db_execute("DELETE FROM products")
@@ -1096,40 +1113,9 @@ async def health():
         "ts": datetime.utcnow().isoformat()
     }
 
-@app.get("/api/debug/db")
-async def debug_db():
-    """Live DB connection test — shows exact error."""
-    if not DATABASE_URL:
-        return {"error": "DATABASE_URL env var not set"}
-
-    # Clean URL same way as startup
-    db_url = DATABASE_URL
-    for param in ['channel_binding=require', 'channel_binding=disable']:
-        db_url = db_url.replace('&' + param, '').replace('?' + param + '&', '?').replace('?' + param, '')
-
-    masked = db_url[:45] + "..." if len(db_url) > 45 else db_url
-
-    # Try connecting right now
-    result = {"url_preview": masked, "pool_active": _db_pool is not None}
-    try:
-        import asyncpg, ssl as _ssl
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = _ssl.CERT_NONE
-
-        conn = await asyncpg.connect(db_url, ssl=ssl_ctx, timeout=15,
-                                     statement_cache_size=0)
-        ver = await conn.fetchval("SELECT version()")
-        await conn.close()
-        result["live_test"] = "✅ SUCCESS"
-        result["pg_version"] = ver[:60]
-    except Exception as e:
-        result["live_test"] = "❌ FAILED"
-        result["error_type"] = type(e).__name__
-        result["error_msg"] = str(e)
-
-    return result
-
+# The old /api/debug/db endpoint was removed — it was public (no login
+# required) and printed part of the database password to anyone who opened
+# it. /api/health above already reports connection status safely.
 
 # ── История действий ─────────────────────────────────────────────────────────
 @app.get("/api/admin/log")
