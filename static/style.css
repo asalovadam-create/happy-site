@@ -27,6 +27,8 @@ body {
   color: var(--text1);
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-x: none;
+  overflow-x: hidden; /* the colored-zone/page-panel 100vw full-bleed trick
+                         can otherwise introduce a 1px horizontal scrollbar */
 }
 
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
@@ -47,13 +49,13 @@ body {
   top: 0;
   z-index: 100;
   height: var(--topbar-h);
-  background: #fff;
-  border-bottom: 1px solid var(--border);
+  background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
+  border-bottom: none;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 0 14px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.07);
+  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
 }
 
 /* ── Brand Logo ──────────────────────────────────────────────────────────── */
@@ -111,11 +113,15 @@ body {
 
 .brand-sub {
   font-size: 10px;
-  color: var(--text3);
+  color: rgba(255,255,255,0.8);
   font-weight: 600;
   letter-spacing: .2px;
   margin-top: 2px;
 }
+
+/* On the orange topbar, the multicolor letters (tuned for a white
+   background) lose contrast — force plain white here instead. */
+.topbar .brand-name-colored span { color: #fff !important; }
 
 /* ── Search ──────────────────────────────────────────────────────────────── */
 .topbar-search {
@@ -138,8 +144,8 @@ body {
 .topbar-search input {
   width: 100%;
   padding: 8px 32px 8px 34px;
-  background: var(--bg);
-  border: 1.5px solid var(--border);
+  background: #fff;
+  border: 1.5px solid transparent;
   border-radius: 24px;
   font-size: 16px; /* Must be 16px+ to prevent iOS Safari zoom */
   font-family: inherit;
@@ -231,11 +237,11 @@ body {
   font-family: 'Nunito', sans-serif;
   font-size: 11px;
   font-weight: 900;
-  color: var(--accent);
+  color: #fff;
   white-space: nowrap;
   margin-left: -2px;
-  background: #fff5f0;
-  border: 1.5px solid rgba(255,107,53,0.2);
+  background: rgba(255,255,255,0.2);
+  border: 1.5px solid rgba(255,255,255,0.3);
   border-radius: 10px;
   padding: 2px 7px;
   max-width: 80px;
@@ -243,7 +249,7 @@ body {
   text-overflow: ellipsis;
   cursor: pointer;
 }
-.cart-total-badge:hover { background: #ffe8dc; }
+.cart-total-badge:hover { background: rgba(255,255,255,0.32); }
 @media (max-width: 380px) { .cart-total-badge { display: none !important; } }
 
 .icon-btn {
@@ -256,14 +262,14 @@ body {
   position: relative;
   transition: background .15s;
 }
-.icon-btn:hover { background: var(--bg); }
-.icon-btn svg { width: 22px; height: 22px; color: var(--text1); }
+.icon-btn:hover { background: rgba(255,255,255,0.18); }
+.icon-btn svg { width: 22px; height: 22px; color: #fff; }
 
 .cart-badge {
   position: absolute;
   top: 2px; right: 2px;
-  background: var(--accent);
-  color: #fff;
+  background: #fff;
+  color: var(--accent);
   font-size: 10px;
   font-weight: 800;
   min-width: 17px;
@@ -273,6 +279,7 @@ body {
   padding: 0 4px;
   font-family: 'Nunito', sans-serif;
   animation: badgePop .25s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
 }
 @keyframes badgePop { 0%{transform:scale(0)} 70%{transform:scale(1.2)} 100%{transform:scale(1)} }
 
@@ -331,12 +338,63 @@ body {
 }
 
 /* ── Home Page Hero ──────────────────────────────────────────────────────── */
+/* Colored zone: full-bleed orange band holding the category row + hero card,
+   the same way a typical marketplace header runs edge-to-edge regardless of
+   the page's content width. */
+.colored-zone {
+  background: var(--accent);
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  padding-top: 6px;
+}
+.colored-zone-inner {
+  max-width: 1340px;
+  margin: 0 auto;
+}
+
+/* White rounded-top panel the product grid sits in — the "page on top of
+   the colored header" look. */
+.page-panel {
+  background: var(--card);
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  transform: translateX(-50%);
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -6px 16px rgba(0,0,0,0.05);
+  z-index: 1;
+}
+.page-panel-inner {
+  max-width: 1340px;
+  margin: 0 auto;
+  padding-top: 14px;
+}
+
+/* Category row on the colored zone: flat text items, no chip background,
+   no per-category counts (cleaner, matches a typical marketplace nav). */
+.colored-zone .cat-pill {
+  background: transparent;
+  border: 1.5px solid transparent;
+  color: rgba(255,255,255,0.88);
+}
+.colored-zone .cat-pill:hover,
+.colored-zone .cat-pill.active {
+  background: rgba(255,255,255,0.2);
+  border-color: transparent;
+  color: #fff;
+}
+
 .home-hero {
   background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
   padding: 20px 18px 22px;
   color: #fff;
   position: relative;
   overflow: hidden;
+  border-radius: 18px;
+  margin: 0 14px 16px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
 }
 .home-hero::before {
   content: '';
@@ -3228,6 +3286,7 @@ body {
 /* Desktop layout */
 @media(min-width:900px){
   #mainContent{max-width:1340px;margin:0 auto;padding-left:24px;padding-right:24px;}
+  .colored-zone-inner, .page-panel-inner { padding-left:24px; padding-right:24px; }
   .topbar{padding:0 28px;}
   .card-img-wrap{aspect-ratio:.95;}
   /* Desktop search: was a cramped 480px strip squeezed into a corner —
@@ -3237,7 +3296,7 @@ body {
   .topbar-search > svg{width:18px;height:18px;left:16px;}
   .search-clear{right:14px;}
 }
-@media(min-width:1200px){#mainContent{padding-left:32px;padding-right:32px;}}
+@media(min-width:1200px){#mainContent{padding-left:32px;padding-right:32px;} .colored-zone-inner, .page-panel-inner { padding-left:32px; padding-right:32px; }}
 
 /* ══════════════════════════════════════════════════════════════════════════════
    PERFORMANCE OPTIMIZATIONS
