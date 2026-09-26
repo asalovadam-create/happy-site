@@ -319,6 +319,7 @@ function toggleCart() {
   State.cartOpen = !State.cartOpen;
   $('cartDrawer').classList.toggle('open', State.cartOpen);
   $('cartBackdrop').classList.toggle('show', State.cartOpen);
+  if (State.cartOpen) renderCart();
 }
 
 function renderCart() {
@@ -409,18 +410,14 @@ function renderProductCard(p) {
                    : '<span class="stock-badge stock-out">Нет</span>';
 
   const ctrl = isOut
-    ? `<button class="card-add disabled" disabled>
-         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-       </button>`
+    ? `<button class="card-add disabled" disabled>Нет в наличии</button>`
     : cartQty > 0
       ? `<div class="card-qty-ctrl" onclick="event.stopPropagation()">
            <button class="qty-sm-btn" onclick="changeCardQty(${p.id},-1)">−</button>
            <span class="qty-sm-val">${cartQty}</span>
            <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
          </div>`
-      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})" aria-label="Добавить в корзину">
-           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
-         </button>`;
+      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})">В корзину</button>`;
 
   // ── Gallery strip: ALL images rendered as a CSS scroll strip (no JS swap = no flicker) ──
   // The strip slides horizontally via transform. Each image fills 100% of the wrap width.
@@ -466,16 +463,16 @@ function renderProductCard(p) {
     </div>
 
     <div class="card-body">
+      <div class="card-price-block">
+        <span class="card-price">${rub(p.price)}</span>
+        ${discPct > 0 ? `<span class="card-price-old">${rub(p.price_old)}</span>` : ''}
+      </div>
       <div class="card-name">${escHtml(p.name)}</div>
       ${p.brand ? `<div class="card-brand">${escHtml(p.brand)}</div>` : ''}
       ${p.min_order && p.min_order > 1 ? `<div class="card-moq">Мин. заказ: ${p.min_order} шт</div>` : ''}
     </div>
 
     <div class="card-price-row">
-      <div class="card-price-block">
-        <div class="card-price">${rub(p.price)}<span class="card-per"> / шт</span></div>
-        ${discPct > 0 ? `<div class="card-price-old">${rub(p.price_old)}</div>` : ''}
-      </div>
       ${ctrl}
     </div>
   </div>`;
@@ -2722,6 +2719,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load cart from localStorage (persists across reloads)
   loadCartFromStorage();
   updateCartBadge();
+  renderCart(); // the drawer's list was never repainted on load before —
+                // only badge was, so the list stayed on its empty
+                // placeholder until the next add/remove touched it.
 
   loadSession().then(() => {
     // Determine start page
