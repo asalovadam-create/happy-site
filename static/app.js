@@ -2149,14 +2149,11 @@ async function previewUpload(input) {
     area.classList.add('has-img');
     area.innerHTML = `<img src="${data.url}" alt="preview">`;
   } catch(e) {
-    // Fallback: use local FileReader
-    const reader = new FileReader();
-    reader.onload = ev => {
-      $('fimg').value = ev.target.result;
-      area.classList.add('has-img');
-      area.innerHTML = `<img src="${ev.target.result}" alt="preview">`;
-    };
-    reader.readAsDataURL(file);
+    // No local-file fallback: a photo that fails to reach Cloudinary must
+    // NOT be saved as text — that's what filled the database before.
+    area.classList.remove('has-img');
+    area.innerHTML = `<div class="upload-error">Не удалось загрузить фото. Попробуйте ещё раз (файл до 2MB)</div>`;
+    toast('Ошибка загрузки фото: ' + (e?.message || e), 'err');
   }
 }
 
@@ -2269,7 +2266,14 @@ async function handleImgSlot(slotIdx, input) {
     const d = await API.uploadImage(file);
     url = d.url;
   } catch(e) {
-    url = await new Promise(res => { const r=new FileReader();r.onload=ev=>res(ev.target.result);r.readAsDataURL(file); });
+    // No local-file fallback: don't let an embedded photo reach the database.
+    slot.className = `img-slot${slotIdx===0?' img-slot-main':''}`;
+    slot.innerHTML = `${slotIdx===0
+      ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
+      : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${slotIdx+1}</span>`}
+      <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
+    toast('Не удалось загрузить фото. Попробуйте ещё раз (файл до 2MB)', 'err');
+    return;
   }
   window._uploadedImgs = window._uploadedImgs.filter(x=>x.slot!==slotIdx);
   window._uploadedImgs.push({slot:slotIdx, url});
