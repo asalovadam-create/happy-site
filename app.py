@@ -683,8 +683,8 @@ async def cloudinary_signature(_=Depends(require_admin)):
 async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
     """Fallback server-side upload (used only if direct upload fails)."""
     content = await file.read()
-    if len(content) > 2*1024*1024:
-        raise HTTPException(400, "File too large (max 2MB)")
+    if len(content) > 5*1024*1024:
+        raise HTTPException(400, "File too large (max 5MB)")
 
     if _cloudinary_ok:
         import cloudinary.uploader

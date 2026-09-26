@@ -73,6 +73,7 @@ body {
   width: 42px;
   height: 42px;
   flex-shrink: 0;
+  object-fit: contain;
   transition: transform .2s;
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.15));
 }
@@ -355,7 +356,10 @@ body {
 }
 
 /* White rounded-top panel the product grid sits in — the "page on top of
-   the colored header" look. */
+   the colored header" look. Pulled up to overlap the colored zone by
+   exactly its own corner radius: without this, the rounded corners cut
+   into the grey page background behind everything (not the orange),
+   leaving two ugly grey triangles at the seam. */
 .page-panel {
   background: var(--card);
   width: 100vw;
@@ -363,8 +367,9 @@ body {
   left: 50%;
   transform: translateX(-50%);
   border-radius: 20px 20px 0 0;
-  box-shadow: 0 -6px 16px rgba(0,0,0,0.05);
-  z-index: 1;
+  margin-top: -20px;
+  padding-top: 20px;
+  z-index: 2;
 }
 .page-panel-inner {
   max-width: 1340px;
@@ -373,7 +378,12 @@ body {
 }
 
 /* Category row on the colored zone: flat text items, no chip background,
-   no per-category counts (cleaner, matches a typical marketplace nav). */
+   no per-category counts (cleaner, matches a typical marketplace nav).
+   Right edge fades out instead of clipping mid-word when the row scrolls. */
+.colored-zone .cat-scroll {
+  -webkit-mask-image: linear-gradient(to right, black 94%, transparent 100%);
+  mask-image: linear-gradient(to right, black 94%, transparent 100%);
+}
 .colored-zone .cat-pill {
   background: transparent;
   border: 1.5px solid transparent;
@@ -3387,3 +3397,25 @@ input, select, textarea { font-size: 16px !important; }
 }
 
 .cart-drawer, .overlay, .product-card { will-change: transform; }
+
+/* ── Confetti celebration (fired on successful checkout) ────────────────── */
+.confetti-wrap {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 99999;
+  overflow: hidden;
+}
+.confetti-piece {
+  position: absolute;
+  top: -20px;
+  opacity: 0.95;
+  animation-name: confettiFall;
+  animation-timing-function: cubic-bezier(.36,.11,.89,.32);
+  animation-fill-mode: forwards;
+}
+@keyframes confettiFall {
+  0%   { transform: translate(0, 0) rotate(0deg); opacity: 1; }
+  85%  { opacity: 1; }
+  100% { transform: translate(var(--drift), 105vh) rotate(var(--rot)); opacity: 0; }
+}
