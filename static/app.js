@@ -42,8 +42,29 @@ function loadCartFromStorage() {
     const saved = JSON.parse(raw);
     if (saved && typeof saved === 'object') {
       State.cart = saved;
+      sanitizeCart();
     }
   } catch(e) {}
+}
+
+// Removes any cart entry that isn't a proper {product, qty} pair — this is
+// what used to make the badge count show a number while the cart list
+// rendered as empty (a broken entry crashed the render loop partway
+// through). Called on load and defensively before every render.
+function sanitizeCart() {
+  let changed = false;
+  for (const key of Object.keys(State.cart)) {
+    const entry = State.cart[key];
+    const qtyOk = entry && typeof entry.qty === 'number' && entry.qty > 0;
+    const prodOk = entry && entry.product && typeof entry.product === 'object'
+      && entry.product.id != null && typeof entry.product.price === 'number'
+      && typeof entry.product.name === 'string';
+    if (!qtyOk || !prodOk) {
+      delete State.cart[key];
+      changed = true;
+    }
+  }
+  if (changed) saveCart();
 }
 
 async function loadSession() {
@@ -272,6 +293,7 @@ function saveCart() {
 }
 
 function updateCartBadge() {
+  sanitizeCart();
   const count = Object.values(State.cart).reduce((s, i) => s + i.qty, 0);
   const total = Object.values(State.cart).reduce((s, i) => s + (i.product?.price || 0) * i.qty, 0);
   const badge = $('cartBadge');
@@ -300,6 +322,7 @@ function toggleCart() {
 }
 
 function renderCart() {
+  sanitizeCart();
   const list = $('cartList');
   const foot = $('cartFoot');
   if (!list) return;
@@ -395,8 +418,8 @@ function renderProductCard(p) {
            <span class="qty-sm-val">${cartQty}</span>
            <button class="qty-sm-btn qty-sm-plus" onclick="changeCardQty(${p.id},1)">+</button>
          </div>`
-      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})">
-           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      : `<button class="card-add" onclick="event.stopPropagation();addToCartAnimated(this,${p.id})" aria-label="Добавить в корзину">
+           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
          </button>`;
 
   // ── Gallery strip: ALL images rendered as a CSS scroll strip (no JS swap = no flicker) ──
@@ -658,6 +681,12 @@ function clearCartConfirm() {
 async function renderHome() {
   let cats = [];
   try { cats = await API.categories(); } catch(e){}
+  // Real product count — cheap request, just need the "total" field
+  let totalProducts = State.total || 0;
+  try {
+    const head = await API.get('/api/products?page=1&per_page=1');
+    totalProducts = head.total ?? totalProducts;
+  } catch(e){}
 
   const catPills = cats.map(c =>
     `<button class="cat-pill" data-cat="${escHtml(c.name)}" onclick="navigate('catalog');selectCatalogCategory('${escHtml(c.name)}');">${escHtml(c.name)} <small>${c.count}</small></button>`
@@ -694,10 +723,8 @@ async function renderHome() {
           <p class="hero-tagline">Лучшие игрушки для вашего магазина</p>
         </div>
       </div>
-      <div class="hero-stats">
-        <div class="hero-stat"><strong>200+</strong><span>Товаров</span></div>
-        <div class="hero-stat"><strong>10</strong><span>Брендов</span></div>
-        <div class="hero-stat"><strong>8</strong><span>Категорий</span></div>
+      <div class="hero-stats hero-stats-single">
+        <div class="hero-stat"><strong>${totalProducts}</strong><span>Товаров в каталоге</span></div>
       </div>
     </div>
 
@@ -1783,32 +1810,14 @@ async function renderAddProductForm() {
 }
 
 async function renderEditProducts() {
+  State.adminEditPage = 1;
   let data = {items:[], total:0, page:1, pages:1};
-  try { data = await API.adminProducts({per_page:20}); } catch(e){}
+  try { data = await API.adminProducts({per_page:20, page:1}); } catch(e){}
 
-  const rows = data.items.map(p => {
-    const active = p.is_active !== false;
-    return `<div class="edit-prod-row" id="epr-${p.id}">
-      <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}"
-           onerror="this.src='/static/icon-192.png'" alt="">
-      <div class="edit-prod-info">
-        <div class="edit-prod-name">${escHtml(p.name)}</div>
-        <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
-        <div class="edit-prod-cat" style="font-size:11px;color:#aaa">${escHtml(p.category||'')} ${p.subcategory?'› '+escHtml(p.subcategory):''}</div>
-      </div>
-      <div class="edit-prod-actions">
-        <button class="btn-edit-prod" onclick="openEditProduct(${p.id})" title="Редактировать">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        </button>
-        <button class="btn-del-prod" onclick="toggleProductActive(${p.id},${active})" title="${active?'Скрыть':'Показать'}">
-          ${active
-            ? '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/></svg>'
-            : '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>'
-          }
-        </button>
-      </div>
-    </div>`;
-  }).join('');
+  const rows = data.items.map(p => editProdRow(p)).join('');
+  const showMore = data.pages > 1
+    ? `<button id="epLoadMoreBtn" class="btn-secondary" style="width:100%;margin-top:10px" onclick="loadMoreAdminProducts()">Показать ещё (${data.total - data.items.length})</button>`
+    : '';
 
   return `<div class="admin-section">
     <h3>
@@ -1822,7 +1831,49 @@ async function renderEditProducts() {
     <input type="text" class="field input" placeholder="🔍 Поиск товара..." style="margin-bottom:12px;width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:10px;font-size:13px;font-family:inherit;outline:none"
       oninput="searchAdminProducts(this.value)">
     <div id="editProdList">${rows || '<p style="color:#bbb">Нет товаров</p>'}</div>
+    <div id="epLoadMoreWrap">${showMore}</div>
   </div>`;
+}
+
+function editProdRow(p) {
+  return `<div class="edit-prod-row" id="epr-${p.id}">
+      <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}"
+           onerror="this.src='/static/icon-192.png'" alt="">
+      <div class="edit-prod-info">
+        <div class="edit-prod-name">${escHtml(p.name)}</div>
+        <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
+        <div class="edit-prod-cat" style="font-size:11px;color:#aaa">${escHtml(p.category||'')} ${p.subcategory?'› '+escHtml(p.subcategory):''}</div>
+      </div>
+      <div class="edit-prod-actions">
+        <button class="btn-edit-prod" onclick="openEditProduct(${p.id})" title="Редактировать">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+        <button class="btn-del-prod" onclick="deleteProductConfirm(${p.id}, '${escHtml(p.name).replace(/'/g,"\\'")}')" title="Удалить навсегда">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+async function loadMoreAdminProducts() {
+  const btn = $('epLoadMoreBtn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Загрузка...'; }
+  State.adminEditPage = (State.adminEditPage || 1) + 1;
+  try {
+    const data = await API.adminProducts({per_page:20, page: State.adminEditPage});
+    const list = $('editProdList');
+    if (list) list.insertAdjacentHTML('beforeend', data.items.map(p => editProdRow(p)).join(''));
+    const shownNow = (State.adminEditPage) * 20;
+    const wrap = $('epLoadMoreWrap');
+    if (wrap) {
+      wrap.innerHTML = (data.page < data.pages)
+        ? `<button id="epLoadMoreBtn" class="btn-secondary" style="width:100%;margin-top:10px" onclick="loadMoreAdminProducts()">Показать ещё (${Math.max(0,data.total - shownNow)})</button>`
+        : '';
+    }
+  } catch(e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Показать ещё'; }
+    toast('Ошибка загрузки', 'err');
+  }
 }
 
 async function searchAdminProducts(q) {
@@ -1832,20 +1883,10 @@ async function searchAdminProducts(q) {
       const data = await API.adminProducts({search:q, per_page:20});
       const list = $('editProdList');
       if (!list) return;
-      list.innerHTML = data.items.map(p => {
-        const active = p.is_active !== false;
-        return `<div class="edit-prod-row" id="epr-${p.id}">
-          <img class="edit-prod-img" src="${escHtml((p.images&&p.images[0])||p.image||'')}" onerror="this.src='/static/icon-192.png'" alt="">
-          <div class="edit-prod-info">
-            <div class="edit-prod-name">${escHtml(p.name)}</div>
-            <div class="edit-prod-meta">Арт: ${escHtml(p.sku)} · ${rub(p.price)}</div>
-          </div>
-          <div class="edit-prod-actions">
-            <button class="btn-edit-prod" onclick="openEditProduct(${p.id})">✏️</button>
-            <button class="btn-del-prod" onclick="toggleProductActive(${p.id},${active})">${active?'🗑':'✓'}</button>
-          </div>
-        </div>`;
-      }).join('') || '<p style="color:#bbb">Ничего не найдено</p>';
+      list.innerHTML = data.items.map(p => editProdRow(p)).join('') || '<p style="color:#bbb">Ничего не найдено</p>';
+      // Search results aren't paginated — hide the "show more" button while searching
+      const wrap = $('epLoadMoreWrap');
+      if (wrap) wrap.innerHTML = '';
     } catch(e){}
   }, 300);
 }
@@ -2092,12 +2133,14 @@ async function saveEditProduct(id) {
   }
 }
 
-async function toggleProductActive(id, currentActive) {
+async function deleteProductConfirm(id, name) {
+  if (!confirm(`Удалить «${name}» навсегда? Это нельзя отменить.`)) return;
   try {
-    await API.updateProduct(id, {is_active: !currentActive});
-    toast(currentActive ? 'Товар скрыт' : 'Товар активирован');
-    renderAdmin();
-  } catch(e) { toast('Ошибка', 'err'); }
+    await API.del(`/api/products/${id}`);
+    const row = document.getElementById(`epr-${id}`);
+    if (row) row.remove();
+    toast('Товар удалён');
+  } catch(e) { toast('Ошибка удаления', 'err'); }
 }
 
 async function renderCatalogManager() {

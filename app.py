@@ -642,14 +642,16 @@ async def update_product(pid: int, b: ProductPatch, _=Depends(require_admin)):
 
 @app.delete("/api/products/{pid}", status_code=204)
 async def delete_product(pid: int, _=Depends(require_admin)):
+    """Permanently delete the product (not a soft hide) — this is what the
+    admin trash button now does, per the shop owner's request."""
     if not _db_pool: raise HTTPException(503)
     row = await db_fetchrow("SELECT name, sku FROM products WHERE id=$1", pid)
-    await db_execute("UPDATE products SET is_active=FALSE WHERE id=$1", pid)
+    await db_execute("DELETE FROM products WHERE id=$1", pid)
     if row:
         try:
             await db_execute(
                 "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
-                'delete', 'product', str(pid), f"Скрыт товар: {row['name']} (арт: {row['sku']})"
+                'delete', 'product', str(pid), f"Удалён товар: {row['name']} (арт: {row['sku']})"
             )
         except Exception:
             pass
