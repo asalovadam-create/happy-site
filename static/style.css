@@ -78,17 +78,24 @@ body {
 /* ── Brand Logo ──────────────────────────────────────────────────────────── */
 .topbar-brand {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 0;
   cursor: pointer;
   flex-shrink: 0;
   text-decoration: none;
   user-select: none;
 }
 
+.brand-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .brand-logo {
-  width: 42px;
-  height: 42px;
+  width: 34px;
+  height: 34px;
   flex-shrink: 0;
   object-fit: contain;
   transition: transform .2s;
@@ -97,8 +104,7 @@ body {
 .topbar-brand:hover .brand-logo { transform: scale(1.05); }
 
 .brand-text {
-  display: none; /* mobile: just the centered logo, like a typical app header */
-  flex-direction: column;
+  display: none; /* mobile: keep just "Happy [logo] Toys", no subtitle — space is tight */
   line-height: 1;
 }
 
@@ -453,7 +459,11 @@ body {
 .home-hero-logo {
   width: 72px; height: 72px;
   flex-shrink: 0;
-  filter: drop-shadow(0 3px 10px rgba(0,0,0,0.25));
+  object-fit: contain;
+  background: rgba(255,255,255,0.92);
+  border-radius: 16px;
+  padding: 8px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.25);
 }
 
 .home-hero h1 {

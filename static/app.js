@@ -82,6 +82,37 @@ async function loadSession() {
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
+// ── Client-side image compression ──────────────────────────────────────────
+// Runs before every upload: shrinks huge phone photos (often 3-8MB) down to
+// a small, still-sharp file before it ever leaves the browser. Cloudinary
+// stores and serves the result — nothing heavy ever touches our database.
+async function compressImageFile(file, maxDim = 1600, quality = 0.85) {
+  // Only compress what a <canvas> can safely re-draw; anything else (e.g. an
+  // animated GIF) is uploaded as-is so we don't break it.
+  if (!/^image\/(jpeg|jpg|png|webp)$/.test(file.type)) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    let { width, height } = bitmap;
+    if (width > maxDim || height > maxDim) {
+      const scale = maxDim / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    // PNGs are usually logos/screenshots that may have transparency — keep
+    // them PNG. Real photos (jpeg/webp) re-encode as jpeg for a much smaller file.
+    const outType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    const blob = await new Promise(res => canvas.toBlob(res, outType, quality));
+    if (!blob || blob.size >= file.size) return file; // compression didn't help — keep original
+    return new File([blob], file.name.replace(/\.\w+$/, outType === 'image/png' ? '.png' : '.jpg'), { type: outType });
+  } catch (e) {
+    return file; // any failure (unsupported browser, corrupt file) — fall back to the original
+  }
+}
+
 const API = {
   base: '',
 
@@ -143,9 +174,10 @@ const API = {
   adminCarts()    { return this.get('/api/admin/carts'); },
   adminCustomers(){ return this.get('/api/admin/customers'); },
 
-  async uploadImage(file) {
+  async uploadImage(rawFile) {
     // Check size before upload — fail fast, don't waste time uploading
-    if (file.size > 2 * 1024 * 1024) throw new Error('Файл слишком большой (макс. 2MB)');
+    if (rawFile.size > 5 * 1024 * 1024) throw new Error('Файл слишком большой (макс. 5MB)');
+    const file = await compressImageFile(rawFile);
     // Direct upload to Cloudinary — bypasses our server entirely
     // This means: no server load, no file size limits from us, faster upload
     try {
@@ -704,23 +736,7 @@ async function renderHome() {
           </span>
         </div>
         <div class="home-hero-top">
-          <svg class="home-hero-logo" viewBox="0 0 56 56" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <ellipse cx="28" cy="46" rx="22" ry="7" fill="rgba(255,255,255,0.55)"/>
-            <ellipse cx="11" cy="44" rx="9" ry="5.5" fill="rgba(255,255,255,0.45)"/>
-            <ellipse cx="45" cy="44" rx="9" ry="5.5" fill="rgba(255,255,255,0.45)"/>
-            <rect x="14" y="26" width="28" height="20" rx="2" fill="rgba(255,255,255,0.92)"/>
-            <rect x="22" y="35" width="12" height="11" rx="3" fill="#1e88e5"/>
-            <rect x="14" y="20" width="5" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
-            <rect x="21" y="20" width="4" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
-            <rect x="31" y="20" width="4" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
-            <rect x="37" y="20" width="5" height="8" rx="1" fill="rgba(255,255,255,0.8)"/>
-            <rect x="20" y="14" width="16" height="15" rx="2" fill="rgba(255,255,255,0.95)"/>
-            <polygon points="28,1 35,14 21,14" fill="#e53935"/>
-            <polygon points="10,12 14,25 6,25" fill="#42A5F5"/>
-            <polygon points="46,12 50,25 42,25" fill="#42A5F5"/>
-            <rect x="24" y="18" width="8" height="8" rx="2" fill="#1e88e5"/>
-            <rect x="7" y="43" width="42" height="3" rx="1.5" fill="#66BB6A" opacity="0.9"/>
-          </svg>
+          <img class="home-hero-logo" src="/static/logo.png?v=2" alt="" onerror="this.style.display='none'">
           <div class="hero-title-block">
             <h1 class="hero-brand-name"><span class="bc-1">H</span><span class="bc-2">a</span><span class="bc-3">p</span><span class="bc-4">p</span><span class="bc-5">y</span>&nbsp;<span class="bc-6">T</span><span class="bc-7">o</span><span class="bc-8">y</span><span class="bc-9">s</span></h1>
             <p class="hero-tagline">Лучшие игрушки для вашего магазина</p>
@@ -1512,6 +1528,34 @@ ${comment ? `<div class="cmt">💬 <strong>Комментарий:</strong> ${es
   window.location.href = url;
 }
 
+// ── Confetti celebration ────────────────────────────────────────────────────
+// A little "wow" moment when an order successfully goes out — pure CSS/JS,
+// no libraries, cleans up after itself.
+function fireConfetti() {
+  const colors = ['#FF6B35', '#FFB347', '#2ECC71', '#1e88e5', '#e53935', '#FFC34D'];
+  const wrap = document.createElement('div');
+  wrap.className = 'confetti-wrap';
+  const n = 90;
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement('span');
+    p.className = 'confetti-piece';
+    const x = Math.random() * 100;
+    const drift = (Math.random() - 0.5) * 160;
+    const rot = Math.random() * 720 - 360;
+    const delay = Math.random() * 0.25;
+    const dur = 2.2 + Math.random() * 1.3;
+    const size = 6 + Math.random() * 7;
+    const color = colors[i % colors.length];
+    const shape = Math.random() > 0.5 ? '50%' : '3px';
+    p.style.cssText = `left:${x}vw;--drift:${drift}px;--rot:${rot}deg;
+      animation-delay:${delay}s;animation-duration:${dur}s;
+      width:${size}px;height:${size*0.6}px;background:${color};border-radius:${shape}`;
+    wrap.appendChild(p);
+  }
+  document.body.appendChild(wrap);
+  setTimeout(() => wrap.remove(), 3800);
+}
+
 // ── Share modal ───────────────────────────────────────────────────────────────
 async function openShareModal() {
   const items = Object.values(State.cart);
@@ -1537,6 +1581,7 @@ async function openShareModal() {
     };
     const data = await API.shareCart(payload);
     $('shareUrlSpan').textContent = `${location.origin}/api/cart/${data.code}`;
+    fireConfetti();
   } catch(e) {
     $('shareUrlSpan').textContent = 'Ошибка генерации';
   }
@@ -1813,7 +1858,7 @@ async function renderAddProductForm() {
 async function renderEditProducts() {
   State.adminEditPage = 1;
   let data = {items:[], total:0, page:1, pages:1};
-  try { data = await API.adminProducts({per_page:20, page:1}); } catch(e){}
+  try { data = await API.adminProducts({per_page:25, page:1}); } catch(e){}
 
   const rows = data.items.map(p => editProdRow(p)).join('');
   const showMore = data.pages > 1
@@ -1861,7 +1906,7 @@ async function loadMoreAdminProducts() {
   if (btn) { btn.disabled = true; btn.textContent = 'Загрузка...'; }
   State.adminEditPage = (State.adminEditPage || 1) + 1;
   try {
-    const data = await API.adminProducts({per_page:20, page: State.adminEditPage});
+    const data = await API.adminProducts({per_page:25, page: State.adminEditPage});
     const list = $('editProdList');
     if (list) list.insertAdjacentHTML('beforeend', data.items.map(p => editProdRow(p)).join(''));
     const shownNow = (State.adminEditPage) * 20;
@@ -1881,7 +1926,7 @@ async function searchAdminProducts(q) {
   clearTimeout(window._apTimer);
   window._apTimer = setTimeout(async () => {
     try {
-      const data = await API.adminProducts({search:q, per_page:20});
+      const data = await API.adminProducts({search:q, per_page:25});
       const list = $('editProdList');
       if (!list) return;
       list.innerHTML = data.items.map(p => editProdRow(p)).join('') || '<p style="color:#bbb">Ничего не найдено</p>';
@@ -2061,7 +2106,7 @@ function epImgSlotClick(i) {
 async function epHandleFile(i, input) {
   const file = input.files[0];
   if (!file) return;
-  if (file.size > 2*1024*1024) { toast('Файл слишком большой (макс. 2MB)', 'err'); return; }
+  if (file.size > 5*1024*1024) { toast('Файл слишком большой (макс. 5MB)', 'err'); return; }
 
   const slot = document.getElementById(`ep-slot-${i}`);
   slot.innerHTML = `<div class="skeleton" style="width:100%;height:100%;border-radius:10px"></div>`;
@@ -2196,7 +2241,7 @@ async function previewUpload(input) {
     // No local-file fallback: a photo that fails to reach Cloudinary must
     // NOT be saved as text — that's what filled the database before.
     area.classList.remove('has-img');
-    area.innerHTML = `<div class="upload-error">Не удалось загрузить фото. Попробуйте ещё раз (файл до 2MB)</div>`;
+    area.innerHTML = `<div class="upload-error">Не удалось загрузить фото. Попробуйте ещё раз (файл до 5MB)</div>`;
     toast('Ошибка загрузки фото: ' + (e?.message || e), 'err');
   }
 }
@@ -2316,7 +2361,7 @@ async function handleImgSlot(slotIdx, input) {
       ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Главное фото</span>`
       : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>Фото ${slotIdx+1}</span>`}
       <input type="file" id="imgFileSlot${slotIdx}" accept="image/*" style="display:none" onchange="handleImgSlot(${slotIdx},this)">`;
-    toast('Не удалось загрузить фото. Попробуйте ещё раз (файл до 2MB)', 'err');
+    toast('Не удалось загрузить фото. Попробуйте ещё раз (файл до 5MB)', 'err');
     return;
   }
   window._uploadedImgs = window._uploadedImgs.filter(x=>x.slot!==slotIdx);
