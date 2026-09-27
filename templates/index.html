@@ -202,6 +202,12 @@
   <!-- Header -->
   <header class="topbar">
    <div class="topbar-inner">
+    <div class="topbar-left">
+      <button class="icon-btn" id="authBtn" onclick="openAuth()" aria-label="Аккаунт">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
+    </div>
+
     <div class="topbar-brand" onclick="navigate('home')" role="button" tabindex="0" title="Happy Toys — Главная">
       <img class="brand-logo" src="/static/logo.png?v=2" alt="Happy Toys" onerror="this.style.display='none'">
       <div class="brand-text">
@@ -210,22 +216,19 @@
       </div>
     </div>
 
-    <div class="topbar-search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input id="topSearch" type="search" placeholder="Поиск товаров..." oninput="onSearch(this.value)" autocomplete="off" aria-label="Поиск товаров">
-      <button class="search-clear" id="searchClearBtn" onclick="clearSearch()" style="display:none" aria-label="Очистить поиск">✕</button>
-      <div class="search-drop" id="searchDrop"></div>
-    </div>
-
     <div class="topbar-right">
-      <button class="icon-btn" id="authBtn" onclick="openAuth()" aria-label="Аккаунт">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-      </button>
       <button class="icon-btn cart-btn" onclick="toggleCart()" aria-label="Корзина">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
         <span class="cart-badge" id="cartBadge" style="display:none">0</span>
       </button>
       <span class="cart-total-badge" id="cartTotalBadge" style="display:none"></span>
+    </div>
+
+    <div class="topbar-search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      <input id="topSearch" type="search" placeholder="Поиск товаров..." oninput="onSearch(this.value)" autocomplete="off" aria-label="Поиск товаров">
+      <button class="search-clear" id="searchClearBtn" onclick="clearSearch()" style="display:none" aria-label="Очистить поиск">✕</button>
+      <div class="search-drop" id="searchDrop"></div>
     </div>
    </div>
   </header>

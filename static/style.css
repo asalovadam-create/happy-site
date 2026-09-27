@@ -48,24 +48,30 @@ body {
   position: sticky;
   top: 0;
   z-index: 100;
-  height: var(--topbar-h);
+  min-height: var(--topbar-h);
   background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
   border-bottom: none;
   box-shadow: 0 2px 10px rgba(0,0,0,0.12);
 }
 
-/* Keeps the header's content readable-width even on very wide monitors —
-   the orange background still runs edge-to-edge, but logo/search/icons
-   don't spread out leaving an empty gap in the middle. */
+/* Content of the header. Mobile-first: a 2-row grid — icon row (account
+   left, logo centered, cart right) with the search bar as a full-width row
+   underneath, matching a typical marketplace app header. Desktop overrides
+   this back into the original single flex row further down. */
 .topbar-inner {
-  height: 100%;
   max-width: 1600px;
   margin: 0 auto;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 10px;
-  padding: 0 14px;
+  column-gap: 10px;
+  row-gap: 8px;
+  padding: 8px 14px;
 }
+.topbar-left  { grid-column: 1; grid-row: 1; justify-self: start; display: flex; }
+.topbar-brand { grid-column: 2; grid-row: 1; justify-self: center; }
+.topbar-right { grid-column: 3; grid-row: 1; justify-self: end; }
+.topbar-search{ grid-column: 1 / -1; grid-row: 2; }
 @media (min-width: 900px)  { .topbar-inner { padding: 0 28px; } }
 @media (min-width: 1200px) { .topbar-inner { padding: 0 32px; } }
 
@@ -91,7 +97,7 @@ body {
 .topbar-brand:hover .brand-logo { transform: scale(1.05); }
 
 .brand-text {
-  display: flex;
+  display: none; /* mobile: just the centered logo, like a typical app header */
   flex-direction: column;
   line-height: 1;
 }
@@ -137,10 +143,9 @@ body {
 
 /* ── Search ──────────────────────────────────────────────────────────────── */
 .topbar-search {
-  flex: 1;
   position: relative;
-  max-width: 480px;
   min-width: 0;
+  max-width: none; /* full-width row on mobile; desktop re-caps this below */
 }
 
 .topbar-search > svg {
@@ -188,8 +193,10 @@ body {
 .search-clear:hover { background: var(--border); color: var(--text1); }
 
 .search-drop {
-  position: fixed;
-  top: var(--topbar-h);
+  position: absolute; /* positions relative to .topbar (sticky = positioned
+                          ancestor) — works regardless of how tall the header
+                          is, so it doesn't need to know the header's height */
+  top: 100%;
   left: 0;
   right: 0;
   background: #fff;
@@ -200,7 +207,7 @@ body {
   display: none;
   z-index: 200;
   border-top: 1px solid var(--border);
-  max-height: calc(100vh - var(--topbar-h) - 80px);
+  max-height: 70vh;
 }
 @media (min-width: 600px) {
   .search-drop {
@@ -3309,6 +3316,19 @@ body {
   #mainContent{max-width:1340px;margin:0 auto;padding-left:24px;padding-right:24px;}
   .colored-zone-inner, .page-panel-inner { padding-left:24px; padding-right:24px; }
   .card-img-wrap{aspect-ratio:.95;}
+  /* Desktop header: back to the original single row (logo, search, icons) —
+     the mobile 2-row grid above is overridden here. */
+  .topbar-inner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 0; padding-bottom: 0;
+  }
+  .topbar-brand { order: 1; }
+  .topbar-search { order: 2; }
+  .topbar-left  { order: 3; }
+  .topbar-right { order: 4; }
+  .brand-text { display: flex; }
   /* Desktop search: was a cramped 480px strip squeezed into a corner —
      give it real width and presence, matching a proper storefront header. */
   .topbar-search{max-width:640px;margin:0 24px;flex:1;}
@@ -3397,7 +3417,7 @@ input, select, textarea { font-size: 16px !important; }
 }
 
 @media (display-mode: standalone) {
-  .topbar { padding-top: env(safe-area-inset-top, 0px); height: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)); }
+  .topbar { padding-top: env(safe-area-inset-top, 0px); }
 }
 
 .cart-drawer-list, .cat-scroll, .filters-row, .similar-scroll { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
