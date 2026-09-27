@@ -148,13 +148,23 @@ body {
 .topbar .brand-name-colored span { color: #fff !important; }
 
 /* ── Search ──────────────────────────────────────────────────────────────── */
+/* The whole capsule: input field + attached solid search button, one piece —
+   like a typical marketplace search bar (dark button fused to a white field). */
 .topbar-search {
   position: relative;
   min-width: 0;
   max-width: none; /* full-width row on mobile; desktop re-caps this below */
+  display: flex;
+  align-items: stretch;
 }
 
-.topbar-search > svg {
+.topbar-search-field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.topbar-search-field > svg {
   position: absolute;
   left: 12px;
   top: 50%;
@@ -166,19 +176,19 @@ body {
 
 .topbar-search input {
   width: 100%;
+  height: 100%;
   padding: 8px 32px 8px 34px;
   background: #fff;
-  border: 1.5px solid transparent;
-  border-radius: 24px;
+  border: none;
+  border-radius: 24px 0 0 24px;
   font-size: 16px; /* Must be 16px+ to prevent iOS Safari zoom */
   font-family: inherit;
   outline: none;
-  transition: border-color .2s, box-shadow .2s;
+  transition: box-shadow .2s;
 }
 .topbar-search input::placeholder { color: var(--text3); font-size: 16px; }
 .topbar-search input:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(255,107,53,0.1);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 .search-clear {
@@ -197,6 +207,23 @@ body {
   transition: background .15s;
 }
 .search-clear:hover { background: var(--border); color: var(--text1); }
+
+/* The attached button itself — dark square fused to the field's right edge,
+   the same construction as a typical marketplace search bar. */
+.search-submit-btn {
+  flex-shrink: 0;
+  width: 44px;
+  border: none;
+  border-radius: 0 24px 24px 0;
+  background: var(--text1);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background .15s;
+}
+.search-submit-btn:hover { background: #000; }
+.search-submit-btn:active { transform: scale(0.95); }
+.search-submit-btn svg { width: 18px; height: 18px; }
 
 .search-drop {
   position: absolute; /* positions relative to .topbar (sticky = positioned
@@ -3342,8 +3369,10 @@ body {
   /* Desktop search: was a cramped 480px strip squeezed into a corner —
      give it real width and presence, matching a proper storefront header. */
   .topbar-search{max-width:640px;margin:0 24px;flex:1;}
-  .topbar-search input{padding:12px 40px 12px 42px;font-size:15px;border-radius:26px;}
-  .topbar-search > svg{width:18px;height:18px;left:16px;}
+  .topbar-search input{padding:12px 40px 12px 42px;font-size:15px;border-radius:26px 0 0 26px;}
+  .topbar-search-field > svg{width:18px;height:18px;left:16px;}
+  .search-submit-btn{width:50px;border-radius:0 26px 26px 0;}
+  .search-submit-btn svg{width:20px;height:20px;}
   .search-clear{right:14px;}
 }
 @media(min-width:1200px){#mainContent{padding-left:32px;padding-right:32px;} .colored-zone-inner, .page-panel-inner { padding-left:32px; padding-right:32px; }}

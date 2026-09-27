@@ -228,9 +228,14 @@
     </div>
 
     <div class="topbar-search">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-      <input id="topSearch" type="search" placeholder="Поиск товаров..." oninput="onSearch(this.value)" autocomplete="off" aria-label="Поиск товаров">
-      <button class="search-clear" id="searchClearBtn" onclick="clearSearch()" style="display:none" aria-label="Очистить поиск">✕</button>
+      <div class="topbar-search-field">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+        <input id="topSearch" type="search" placeholder="Поиск товаров..." oninput="onSearch(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();submitSearch();}" autocomplete="off" aria-label="Поиск товаров">
+        <button class="search-clear" id="searchClearBtn" onclick="clearSearch()" style="display:none" aria-label="Очистить поиск">✕</button>
+      </div>
+      <button class="search-submit-btn" onclick="submitSearch()" aria-label="Найти">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
+      </button>
       <div class="search-drop" id="searchDrop"></div>
     </div>
    </div>

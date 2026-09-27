@@ -2697,6 +2697,23 @@ function closeSearch() {
   $('searchDrop')?.classList.remove('open');
 }
 
+// Fired by the search button (and Enter) — jumps straight to the flat
+// product list for this query, skipping the category-picker landing screen
+// that renderCatalog() shows by default.
+function submitSearch() {
+  const q = ($('topSearch')?.value || '').trim();
+  if (!q) { $('topSearch')?.focus(); return; }
+  closeSearch();
+  State.category    = null;
+  State.subcategory = null;
+  State.search      = q;
+  State.pageNum      = 1;
+  State.page = 'catalog';
+  document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
+  $('bn-catalog')?.classList.add('active');
+  renderCatalogProducts();
+}
+
 function clearSearch() {
   const si = $('topSearch');
   const btn = $('searchClearBtn');
