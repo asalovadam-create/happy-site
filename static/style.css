@@ -3491,3 +3491,18 @@ input, select, textarea { font-size: 16px !important; }
   85%  { opacity: 1; }
   100% { transform: translate(var(--drift), 105vh) rotate(var(--rot)); opacity: 0; }
 }
+
+/* ── Category photo icons (cut-out product photos replacing emoji) ───────── */
+/* Sized in em so the photo scales with whatever font-size the emoji wrapper
+   already had in each context (card grid, subcategory list, page title). */
+.cat-icon-photo {
+  display: block;
+  height: 1.45em;
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+  margin-left: auto;
+  filter: drop-shadow(0 4px 8px rgba(0,0,0,0.18));
+}
+.sl-cat-title .cat-icon-photo,
+.sl-subcat-emoji .cat-icon-photo { height: 1.2em; margin: 0; }

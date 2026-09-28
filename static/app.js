@@ -787,11 +787,14 @@ async function renderHome() {
 
 // ── Catalog page ──────────────────────────────────────────────────────────────
 // ── Category emoji/image map ──────────────────────────────────────────────────
+// A category can have a real "img" (a cut-out product photo dropped into
+// static/) which takes over from its emoji. Categories without one yet just
+// keep the emoji — add more images later and they'll switch over the same way.
 const CAT_META = {
   'Куклы':           { emoji: '🪆', color: '#FF6B9D', bg: '#fff0f6' },
-  'Конструкторы':    { emoji: '🧱', color: '#FF6B35', bg: '#fff5f0' },
-  'Машинки':         { emoji: '🚗', color: '#1e88e5', bg: '#f0f7ff' },
-  'Мягкие игрушки':  { emoji: '🧸', color: '#b08040', bg: '#fdf6ec' },
+  'Конструкторы':    { emoji: '🧱', color: '#FF6B35', bg: '#fff5f0', img: '/static/конструкторы.png' },
+  'Машинки':         { emoji: '🚗', color: '#1e88e5', bg: '#f0f7ff', img: '/static/car.png' },
+  'Мягкие игрушки':  { emoji: '🧸', color: '#b08040', bg: '#fdf6ec', img: '/static/мягк-игрушки.png' },
   'Настольные игры': { emoji: '🎲', color: '#7c3aed', bg: '#f5f0ff' },
   'Развивающие':     { emoji: '🎨', color: '#2ECC71', bg: '#f0fdf4' },
   'Спорт':           { emoji: '⚽', color: '#e53935', bg: '#fff5f5' },
@@ -800,6 +803,7 @@ const CAT_META = {
   'Наборы':          { emoji: '🎁', color: '#d97706', bg: '#fffbeb' },
   'Пазлы':           { emoji: '🧩', color: '#059669', bg: '#f0fdf8' },
   'Творчество':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff' },
+  'Канцелярия':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff', img: '/static/канцелярия.png' },
   'Музыкальные':     { emoji: '🎵', color: '#f59e0b', bg: '#fffbeb' },
   'Интерактивные':   { emoji: '💡', color: '#3b82f6', bg: '#eff6ff' },
   'Спорт и активность': { emoji: '🏃', color: '#e53935', bg: '#fff5f5' },
@@ -809,6 +813,23 @@ const CAT_META = {
 };
 function catMeta(name) {
   return CAT_META[name] || { emoji: '🧩', color: '#FF6B35', bg: '#fff8f5' };
+}
+// Russian plural: 1 товар, 2-4 товара, 5+ товаров (11-14 are always "товаров")
+function plTovar(n) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return 'товаров';
+  if (b === 1) return 'товар';
+  if (b >= 2 && b <= 4) return 'товара';
+  return 'товаров';
+}
+
+// Renders a category's icon: a real photo when one's been dropped in
+// static/ for this category, otherwise the emoji as before. If the photo
+// file is missing (e.g. name typo, not uploaded yet), falls back to the
+// emoji automatically instead of showing a broken image.
+function catIconInner(m) {
+  if (!m.img) return m.emoji;
+  return `<img src="${m.img}" alt="" class="cat-icon-photo" onerror="this.outerHTML=${JSON.stringify(m.emoji)}">`;
 }
 
 async function renderCatalog() {
@@ -827,8 +848,8 @@ async function renderCatalog() {
     return `
       <div class="cat-card" onclick="selectCatalogCategory('${escHtml(c.name)}')" style="--cat-color:${m.color};--cat-bg:${m.bg}">
         <div class="cat-card-name">${escHtml(c.name)}</div>
-        <div class="cat-card-count">${c.count} товаров</div>
-        <div class="cat-card-icon">${m.emoji}</div>
+        <div class="cat-card-count">${c.count} ${plTovar(c.count)}</div>
+        <div class="cat-card-icon">${catIconInner(m)}</div>
       </div>`;
   }).join('');
 
@@ -882,7 +903,7 @@ async function selectCatalogCategory(name) {
   const subItems = subs.map((s, i) => {
     const imgHtml = s.image
       ? `<img src="${escHtml(s.image)}" alt="${escHtml(s.name)}" class="sl-subcat-img">`
-      : `<div class="sl-subcat-emoji">${m.emoji}</div>`;
+      : `<div class="sl-subcat-emoji">${catIconInner(m)}</div>`;
     return `
       <div class="sl-subcat-row" onclick="selectSubcategory('${escHtml(s.name)}')">
         <div class="sl-subcat-icon-wrap">${imgHtml}</div>
@@ -906,7 +927,7 @@ async function selectCatalogCategory(name) {
       </div>
 
       <div class="sl-cat-title">
-        <span class="sl-cat-emoji">${m.emoji}</span>
+        <span class="sl-cat-emoji">${catIconInner(m)}</span>
         ${escHtml(name)}
       </div>
 
