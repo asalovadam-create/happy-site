@@ -3516,3 +3516,11 @@ input, select, textarea { font-size: 16px !important; }
    the right edge of every page as a dark vertical band. Only show it open. */
 .cart-drawer { box-shadow: none; }
 .cart-drawer.open { box-shadow: -4px 0 32px rgba(0,0,0,0.14); }
+
+/* Login/registration modal: when closed it must not exist for the browser at
+   all. As an invisible-but-rendered overlay (opacity:0) its password field
+   made iOS think every page is a login form and pop up the saved-password
+   bar ("Использовать admin") whenever any input was tapped. */
+#authOverlay:not(.open) { display: none; }
+#authOverlay.open { animation: authOverlayIn .25s ease; }
+@keyframes authOverlayIn { from { opacity: 0; } to { opacity: 1; } }
