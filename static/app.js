@@ -791,24 +791,25 @@ async function renderHome() {
 // static/) which takes over from its emoji. Categories without one yet just
 // keep the emoji — add more images later and they'll switch over the same way.
 const CAT_META = {
-  'Куклы':           { emoji: '🪆', color: '#FF6B9D', bg: '#fff0f6' },
-  'Конструкторы':    { emoji: '🧱', color: '#FF6B35', bg: '#fff5f0', img: '/static/конструкторы.png' },
-  'Машинки':         { emoji: '🚗', color: '#1e88e5', bg: '#f0f7ff', img: '/static/car.png' },
-  'Мягкие игрушки':  { emoji: '🧸', color: '#b08040', bg: '#fdf6ec', img: '/static/мягк-игрушки.png' },
-  'Настольные игры': { emoji: '🎲', color: '#7c3aed', bg: '#f5f0ff' },
-  'Развивающие':     { emoji: '🎨', color: '#2ECC71', bg: '#f0fdf4' },
-  'Спорт':           { emoji: '⚽', color: '#e53935', bg: '#fff5f5' },
+  'Куклы':           { emoji: '🪆', color: '#FF6B9D', bg: '#fff0f6', img: '/static/куклы' },
+  'Конструкторы':    { emoji: '🧱', color: '#FF6B35', bg: '#fff5f0', img: '/static/конструкторы' },
+  'Машинки':         { emoji: '🚗', color: '#1e88e5', bg: '#f0f7ff', img: '/static/car' },
+  'Мягкие игрушки':  { emoji: '🧸', color: '#b08040', bg: '#fdf6ec', img: '/static/мягк-игрушки' },
+  'Настольные игры': { emoji: '🎲', color: '#7c3aed', bg: '#f5f0ff', img: '/static/настольные-игры' },
+  'Развивающие':     { emoji: '🎨', color: '#2ECC71', bg: '#f0fdf4', img: '/static/развивающее' },
+  'Спорт':           { emoji: '⚽', color: '#e53935', bg: '#fff5f5', img: '/static/спортивное' },
   'Транспорт':       { emoji: '✈️', color: '#0891b2', bg: '#f0fbff' },
   'Роботы':          { emoji: '🤖', color: '#6366f1', bg: '#f0f0ff' },
   'Наборы':          { emoji: '🎁', color: '#d97706', bg: '#fffbeb' },
   'Пазлы':           { emoji: '🧩', color: '#059669', bg: '#f0fdf8' },
   'Творчество':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff' },
-  'Канцелярия':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff', img: '/static/канцелярия.png' },
+  'Канцелярия':      { emoji: '✏️', color: '#d946ef', bg: '#fdf0ff', img: '/static/канцелярия' },
   'Музыкальные':     { emoji: '🎵', color: '#f59e0b', bg: '#fffbeb' },
   'Интерактивные':   { emoji: '💡', color: '#3b82f6', bg: '#eff6ff' },
-  'Спорт и активность': { emoji: '🏃', color: '#e53935', bg: '#fff5f5' },
-  'Для малышей':     { emoji: '👶', color: '#ec4899', bg: '#fdf2f8' },
+  'Спорт и активность': { emoji: '🏃', color: '#e53935', bg: '#fff5f5', img: '/static/спортивное' },
+  'Для малышей':     { emoji: '👶', color: '#ec4899', bg: '#fdf2f8', img: '/static/для-малышей' },
   'Железные дороги': { emoji: '🚂', color: '#78716c', bg: '#f9f7f5' },
+  'слаймы и антистрессы': { emoji: '🫧', color: '#0ea5e9', bg: '#f0f9ff', img: '/static/слаймы' },
   'Аксессуары':      { emoji: '🎀', color: '#f472b6', bg: '#fff0f8' },
 };
 function catMeta(name) {
@@ -829,7 +830,15 @@ function plTovar(n) {
 // emoji automatically instead of showing a broken image.
 function catIconInner(m) {
   if (!m.img) return m.emoji;
-  return `<img src="${m.img}" alt="" class="cat-icon-photo" onerror="this.outerHTML=${JSON.stringify(m.emoji)}">`;
+  return `<img src="${m.img}.png" data-base="${m.img}" data-i="0" data-emoji="${m.emoji}" alt="" class="cat-icon-photo" onerror="catImgFail(this)">`;
+}
+// The file extension isn't known in advance (Windows hides it), so try the
+// common ones in turn; only if none exists fall back to the emoji.
+function catImgFail(img) {
+  const exts = ['png', 'webp', 'jpg', 'jpeg'];
+  const i = (+img.dataset.i) + 1;
+  if (i < exts.length) { img.dataset.i = i; img.src = img.dataset.base + '.' + exts[i]; }
+  else img.outerHTML = img.dataset.emoji;
 }
 
 async function renderCatalog() {
@@ -858,7 +867,7 @@ async function renderCatalog() {
     <div class="cat-card cat-card-all" onclick="selectCatalogCategory(null)">
       <div class="cat-card-name">Все товары</div>
       <div class="cat-card-count" style="color:rgba(255,255,255,0.75)">${totalCount} позиций</div>
-      <div class="cat-card-icon">🛍️</div>
+      <div class="cat-card-icon">${catIconInner({img:'/static/все-товары', emoji:'🛍️'})}</div>
     </div>`;
 
   $('mainContent').innerHTML = `
