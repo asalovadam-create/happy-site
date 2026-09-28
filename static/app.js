@@ -2814,6 +2814,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load cart from localStorage (persists across reloads)
   loadCartFromStorage();
+  // Header shadow only when scrolled, so at the top it merges seamlessly
+  // with the colored zone underneath.
+  const _tb = document.querySelector('.topbar');
+  window.addEventListener('scroll', () => _tb && _tb.classList.toggle('scrolled', window.scrollY > 4), { passive: true });
   updateCartBadge();
   renderCart(); // the drawer's list was never repainted on load before —
                 // only badge was, so the list stayed on its empty

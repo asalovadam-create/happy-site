@@ -49,10 +49,15 @@ body {
   top: 0;
   z-index: 100;
   min-height: var(--topbar-h);
-  background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
+  /* One flat brand color, identical to the phone's status-bar color
+     (theme-color meta) and the colored zone below — so there are no seams.
+     The shadow only appears once the page is scrolled (see .scrolled). */
+  background: var(--accent);
   border-bottom: none;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+  box-shadow: none;
+  transition: box-shadow .2s;
 }
+.topbar.scrolled { box-shadow: 0 2px 10px rgba(0,0,0,0.18); }
 
 /* Content of the header. Mobile-first: a 2-row grid — icon row (account
    left, logo centered, cart right) with the search bar as a full-width row
@@ -455,7 +460,7 @@ body {
   overflow: hidden;
   border-radius: 18px;
   margin: 0 14px 16px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+  box-shadow: 0 6px 20px rgba(0,0,0,0.14), inset 0 0 0 1px rgba(255,255,255,0.28);
 }
 .home-hero::before {
   content: '';
@@ -3506,3 +3511,8 @@ input, select, textarea { font-size: 16px !important; }
 }
 .sl-cat-title .cat-icon-photo,
 .sl-subcat-emoji .cat-icon-photo { height: 1.2em; margin: 0; }
+
+/* Closed cart drawer sits just off-screen; its 32px shadow used to bleed onto
+   the right edge of every page as a dark vertical band. Only show it open. */
+.cart-drawer { box-shadow: none; }
+.cart-drawer.open { box-shadow: -4px 0 32px rgba(0,0,0,0.14); }
