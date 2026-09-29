@@ -3524,3 +3524,38 @@ input, select, textarea { font-size: 16px !important; }
 #authOverlay:not(.open) { display: none; }
 #authOverlay.open { animation: authOverlayIn .25s ease; }
 @keyframes authOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* ── PDF-каталог для представителей (админка) ───────────────────────────── */
+.rep-pdf {
+  position: relative; display: flex; gap: 16px; align-items: center;
+  background: linear-gradient(135deg, #FF6B35 0%, #FFB347 100%);
+  border: 2.5px solid #0B1250; border-radius: 18px;
+  box-shadow: 4px 4px 0 #0B1250; padding: 18px 18px 18px 20px;
+  margin-bottom: 18px; color: #fff; overflow: hidden;
+}
+.rep-pdf-body { flex: 1; min-width: 0; position: relative; z-index: 1; }
+.rep-pdf-title { font-family: 'Nunito', sans-serif; font-size: 20px; font-weight: 900; text-shadow: 0 2px 0 rgba(11,18,80,.35); margin-bottom: 4px; }
+.rep-pdf-sub { font-size: 13px; font-weight: 700; line-height: 1.45; opacity: .96; margin-bottom: 12px; max-width: 520px; }
+.rep-pdf-check { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 800; margin-bottom: 12px; cursor: pointer; }
+.rep-pdf-check input { width: 18px; height: 18px; accent-color: #0B1250; }
+.rep-pdf-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: #fff; color: #0B1250; border: 2.5px solid #0B1250; border-radius: 14px;
+  padding: 11px 22px; font-family: 'Nunito', sans-serif; font-size: 16px; font-weight: 900;
+  box-shadow: 3px 3px 0 #0B1250; cursor: pointer; transition: transform .12s, box-shadow .12s;
+}
+.rep-pdf-btn:hover { transform: translate(-1px,-1px); box-shadow: 4px 4px 0 #0B1250; }
+.rep-pdf-btn:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 #0B1250; }
+.rep-pdf-btn.busy { opacity: .75; cursor: progress; pointer-events: none; }
+.rep-pdf-progress { margin-top: 12px; font-size: 12.5px; font-weight: 800; }
+.rep-pdf-bar { height: 10px; background: rgba(255,255,255,.4); border: 2px solid #0B1250; border-radius: 99px; overflow: hidden; margin-bottom: 6px; }
+.rep-pdf-bar i { display: block; height: 100%; width: 0; background: #FFD22E; transition: width .5s ease; }
+.rep-pdf-result { margin-top: 10px; font-size: 12.5px; font-weight: 700; line-height: 1.5; }
+.rep-pdf-result:empty { display: none; }
+.rep-pdf-result.err { background: #fff; color: #c62828; border-radius: 10px; padding: 8px 12px; }
+.rep-pdf-art { width: 150px; flex-shrink: 0; transform: rotate(4deg); filter: drop-shadow(0 4px 0 rgba(11,18,80,.25)); }
+@media (max-width: 600px) {
+  .rep-pdf { flex-direction: column-reverse; align-items: stretch; }
+  .rep-pdf-art { width: 110px; align-self: flex-end; margin: -6px -4px -8px 0; }
+  .rep-pdf-btn { width: 100%; justify-content: center; }
+}

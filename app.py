@@ -1204,6 +1204,55 @@ async def admin_get_featured(_=Depends(require_admin)):
     """)
     return {"items": [dict(r) for r in rows]}
 
+# ── PDF-каталог для представителей ───────────────────────────────────────────
+# Генерация идёт в фоновом потоке (catalog_pdf.py): фронт запускает задачу,
+# опрашивает прогресс и скачивает готовый файл. Только для админа.
+class PdfExportIn(BaseModel):
+    hide_out_of_stock: bool = False
+
+def _pdf_module():
+    try:
+        import catalog_pdf
+        return catalog_pdf
+    except ImportError as e:
+        raise HTTPException(503, f"Не установлены библиотеки для PDF (reportlab, Pillow): {e}")
+
+@app.post("/api/admin/catalog-pdf")
+async def catalog_pdf_start(b: PdfExportIn, _=Depends(require_admin)):
+    if not _db_pool: raise HTTPException(503, "База данных недоступна")
+    cp = _pdf_module()
+    rows = await db_fetch(
+        """SELECT id, name, sku, price, category, subcategory, image, images, stock, min_order
+           FROM products WHERE is_active = TRUE ORDER BY id"""
+    )
+    job = cp.start_job([dict(r) for r in rows], hide_out=b.hide_out_of_stock)
+    return job.public()
+
+@app.get("/api/admin/catalog-pdf/{job_id}")
+async def catalog_pdf_status(job_id: str, _=Depends(require_admin)):
+    job = _pdf_module().get_job(job_id)
+    if not job: raise HTTPException(404, "Задача не найдена (возможно, сервер перезапускался). Запустите заново.")
+    return job.public()
+
+@app.get("/api/admin/catalog-pdf/{job_id}/file")
+async def catalog_pdf_file(job_id: str, _=Depends(require_admin)):
+    job = _pdf_module().get_job(job_id)
+    if not job or job.state != "done" or not job.pdf:
+        raise HTTPException(404, "Файл ещё не готов или устарел")
+    try:
+        await db_execute(
+            "INSERT INTO admin_log(action,entity,entity_id,detail) VALUES($1,$2,$3,$4)",
+            'export_pdf', 'catalog', '0',
+            f"PDF-каталог: {job.stats.get('products', 0)} товаров, {job.stats.get('pages', 0)} стр."
+        )
+    except Exception:
+        pass
+    fname = f"Happy-Toys-catalog-{datetime.utcnow():%Y-%m-%d}.pdf"
+    return Response(
+        content=job.pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"', "Cache-Control": "no-store"},
+    )
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

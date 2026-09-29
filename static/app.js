@@ -1725,6 +1725,77 @@ async function adminDelSubcategory(cat, sub) {
   });
 }
 
+// ── PDF-каталог для представителей ───────────────────────────────────────────
+function renderRepPdfCard() {
+  return `
+  <div class="rep-pdf" id="repPdfCard">
+    <img class="rep-pdf-art" src="/static/car.png" alt="" onerror="this.style.display='none'">
+    <div class="rep-pdf-body">
+      <div class="rep-pdf-title">Каталог для представителей</div>
+      <div class="rep-pdf-sub">Красивый PDF: обложка, содержание и разделы по категориям. В каждой карточке — фото, артикул, название и цена. Товары без фото не попадают в файл.</div>
+      <label class="rep-pdf-check"><input type="checkbox" id="repPdfHideOut"><span>Не включать товары «нет в наличии»</span></label>
+      <button class="rep-pdf-btn" id="repPdfBtn" onclick="downloadRepPdf()">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M4 20h16"/></svg>
+        <span id="repPdfBtnText">Скачать PDF</span>
+      </button>
+      <div class="rep-pdf-progress" id="repPdfProg" hidden>
+        <div class="rep-pdf-bar"><i id="repPdfBar"></i></div>
+        <span id="repPdfMsg"></span>
+      </div>
+      <div class="rep-pdf-result" id="repPdfRes"></div>
+    </div>
+  </div>`;
+}
+
+function _pdfErrText(e) {
+  let m = (e && e.message) || String(e || '');
+  try { const j = JSON.parse(m); m = j.detail || j.message || m; } catch (_) {}
+  return typeof m === 'string' ? m : 'Не удалось создать PDF';
+}
+
+async function downloadRepPdf() {
+  const btn = $('repPdfBtn'); if (!btn || btn.disabled) return;
+  const prog = $('repPdfProg'), bar = $('repPdfBar'), msg = $('repPdfMsg'), res = $('repPdfRes'), txt = $('repPdfBtnText');
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  btn.disabled = true; btn.classList.add('busy'); txt.textContent = 'Готовлю PDF…';
+  res.textContent = ''; res.classList.remove('err'); prog.hidden = false; bar.style.width = '4%'; msg.textContent = 'Запускаю…';
+  try {
+    let job = await API.post('/api/admin/catalog-pdf', { hide_out_of_stock: !!$('repPdfHideOut')?.checked });
+    while (job.state === 'running') {
+      await sleep(700);
+      job = await API.get('/api/admin/catalog-pdf/' + job.job_id);
+      const k = job.total ? Math.min(1, job.done / job.total) : 0;
+      if (job.stage === 'photos') { bar.style.width = (4 + k * 66) + '%'; msg.textContent = `Загружаю фото: ${job.done} из ${job.total}`; }
+      else { bar.style.width = (70 + k * 28) + '%'; msg.textContent = `Рисую страницы: ${job.done} из ${job.total}`; }
+    }
+    if (job.state === 'error') throw new Error(job.error || 'Не удалось создать PDF');
+
+    bar.style.width = '100%'; msg.textContent = 'Скачиваю файл…';
+    const r = await fetch(`/api/admin/catalog-pdf/${job.job_id}/file`, { headers: { Authorization: `Bearer ${State.user?.token}` } });
+    if (!r.ok) throw new Error('Не удалось скачать файл, попробуйте ещё раз');
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url; a.download = `Happy-Toys-каталог-${new Date().toISOString().slice(0, 10)}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+
+    const st = job.stats || {};
+    const parts = [`В файле: <b>${st.products}</b> тов. · ${st.categories} разд. · ${st.pages} стр. · ${st.size_mb} МБ`];
+    if (st.no_photo) parts.push(`Без фото не включено: ${st.no_photo}`);
+    if (st.broken_photo) parts.push(`Фото не загрузилось: ${st.broken_photo}`);
+    if (st.hidden_out) parts.push(`Скрыто «нет в наличии»: ${st.hidden_out}`);
+    res.innerHTML = parts.join('<br>');
+    prog.hidden = true;
+    toast('PDF-каталог готов');
+  } catch (e) {
+    prog.hidden = true; res.classList.add('err');
+    res.textContent = _pdfErrText(e);
+    toast('Ошибка: ' + _pdfErrText(e), 'err');
+  } finally {
+    btn.disabled = false; btn.classList.remove('busy'); txt.textContent = 'Скачать PDF';
+  }
+}
+
 async function renderAdmin() {
   const mc = $('mainContent');
 
@@ -1741,6 +1812,7 @@ async function renderAdmin() {
   const skel = (h) => `<div class="skeleton" style="height:${h}px;border-radius:14px;margin-bottom:12px"></div>`;
   mc.innerHTML = `<div class="admin-page">
     <div class="admin-stats" id="adminStats">${[1,2,3,4,5].map(() => `<div class="stat-card skeleton" style="height:80px"></div>`).join('')}</div>
+    ${renderRepPdfCard()}
     <div id="adminBody">
       <div class="admin-section" id="sec-addprod">${skel(40)}${skel(120)}${skel(120)}${skel(44)}</div>
       <div class="admin-section" id="sec-editprod">${skel(40)}${skel(60)}${skel(60)}${skel(60)}</div>
@@ -2605,6 +2677,7 @@ function renderAdminLog(log) {
     'delete_all': '💥 Удалено всё',
     'grant_admin': '👑 Выдан доступ',
     'revoke_admin': '🔒 Отозван доступ',
+    'export_pdf': '📄 PDF-каталог',
     'update': '✏️ Изменён',
   };
 
