@@ -3559,3 +3559,13 @@ input, select, textarea { font-size: 16px !important; }
   .rep-pdf-art { width: 110px; align-self: flex-end; margin: -6px -4px -8px 0; }
   .rep-pdf-btn { width: 100%; justify-content: center; }
 }
+
+.rep-pdf-layout { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.rep-pdf-layout label { cursor: pointer; }
+.rep-pdf-layout input { position: absolute; opacity: 0; pointer-events: none; }
+.rep-pdf-layout span {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 7px 12px; border-radius: 12px;
+  border: 2px solid #0B1250; background: rgba(255,255,255,.35); font-size: 13px; font-weight: 800;
+}
+.rep-pdf-layout small { font-size: 11px; font-weight: 700; opacity: .85; }
+.rep-pdf-layout input:checked + span { background: #fff; color: #0B1250; box-shadow: 2px 2px 0 #0B1250; }

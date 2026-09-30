@@ -1209,6 +1209,7 @@ async def admin_get_featured(_=Depends(require_admin)):
 # опрашивает прогресс и скачивает готовый файл. Только для админа.
 class PdfExportIn(BaseModel):
     hide_out_of_stock: bool = False
+    layout: str = "big"   # big — крупные карточки (4 на стр.), compact — мелкие (9 на стр.)
 
 def _pdf_module():
     try:
@@ -1225,7 +1226,8 @@ async def catalog_pdf_start(b: PdfExportIn, _=Depends(require_admin)):
         """SELECT id, name, sku, price, category, subcategory, image, images, stock, min_order
            FROM products WHERE is_active = TRUE ORDER BY id"""
     )
-    job = cp.start_job([dict(r) for r in rows], hide_out=b.hide_out_of_stock)
+    job = cp.start_job([dict(r) for r in rows], hide_out=b.hide_out_of_stock,
+                       layout="compact" if b.layout == "compact" else "big")
     return job.public()
 
 @app.get("/api/admin/catalog-pdf/{job_id}")

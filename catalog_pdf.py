@@ -12,15 +12,20 @@ import io
 import math
 import os
 import random
+import re
 import threading
 import time
 import traceback
+import urllib.error
 import urllib.request
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from functools import lru_cache
 
 from PIL import Image, ImageOps
+from reportlab import rl_config
 from reportlab.lib.colors import HexColor, white
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -29,13 +34,13 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 
 Image.MAX_IMAGE_PIXELS = 40_000_000
+rl_config.useA85 = 0  # без ASCII85: быстрее и файл меньше
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FONT_DIR = os.path.join(BASE_DIR, "fonts")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 W, H = 210 * mm, 297 * mm
-THUMB_PX = 380
 
 # ── Палитра (взята с логотипа сайта) ─────────────────────────────────────────
 NAVY = HexColor("#0B1250")
@@ -194,15 +199,29 @@ def _smooth_closed(c, pts):
     return p
 
 
-def blob(c, x, y, w, h, r, fill=None, stroke=NAVY, lw=1.3, seed=0, jit=0.2 * mm, dx=0, dy=0, dash=None):
-    """Скруглённый прямоугольник с «дрожащей» рукой. Возвращает path (для clip)."""
+@lru_cache(maxsize=512)
+def _rr_rel(w, h, r, step):
+    return tuple(_rr_points(0, 0, w, h, r, step))
+
+
+def blob(c, x, y, w, h, r, fill=None, stroke=NAVY, lw=1.3, seed=0, jit=0.2 * mm, dash=None,
+         shadow=0, shadow_color=NAVY):
+    """Скруглённый прямоугольник с «дрожащей» рукой (+ жёсткая тень). Возвращает path."""
     rng = random.Random(seed)
-    pts = [(px + rng.uniform(-jit, jit) + dx, py + rng.uniform(-jit, jit) + dy)
-           for px, py in _rr_points(x, y, w, h, r, 6 * mm)]
+    base = _rr_rel(round(w, 1), round(h, 1), round(r, 1), 6 * mm)
+    pts = [(x + px + rng.uniform(-jit, jit), y + py + rng.uniform(-jit, jit)) for px, py in base]
     path = _smooth_closed(c, pts)
     c.saveState()
     c.setLineJoin(1)
     c.setLineCap(1)
+    if shadow:
+        c.saveState()
+        c.translate(shadow, -shadow)
+        c.setFillColor(shadow_color)
+        c.setStrokeColor(shadow_color)
+        c.setLineWidth(lw)
+        c.drawPath(path, fill=1, stroke=1)
+        c.restoreState()
     if dash:
         c.setDash(*dash)
     if fill is not None:
@@ -216,9 +235,22 @@ def blob(c, x, y, w, h, r, fill=None, stroke=NAVY, lw=1.3, seed=0, jit=0.2 * mm,
 
 
 def sticker(c, x, y, w, h, r, fill, seed=0, lw=1.3, shadow=1.4 * mm, shadow_color=NAVY, dash=None):
-    if shadow:
-        blob(c, x, y, w, h, r, fill=shadow_color, stroke=shadow_color, lw=lw, seed=seed + 7, dx=shadow, dy=-shadow)
-    return blob(c, x, y, w, h, r, fill=fill, stroke=NAVY, lw=lw, seed=seed, dash=dash)
+    return blob(c, x, y, w, h, r, fill=fill, stroke=NAVY, lw=lw, seed=seed, dash=dash,
+                shadow=shadow, shadow_color=shadow_color)
+
+
+def chip(c, x, y, w, h, fill, shadow=0.6 * mm, lw=1.0):
+    """Маленькая дешёвая плашка (для артикула и т.п.)."""
+    r = h / 2
+    c.saveState()
+    c.setLineJoin(1)
+    c.setFillColor(NAVY)
+    c.roundRect(x + shadow, y - shadow, w, h, r, stroke=0, fill=1)
+    c.setFillColor(fill)
+    c.setStrokeColor(NAVY)
+    c.setLineWidth(lw)
+    c.roundRect(x, y, w, h, r, stroke=1, fill=1)
+    c.restoreState()
 
 
 def circle_o(c, cx, cy, r, fill, lw=1.3):
@@ -319,8 +351,13 @@ def confetti(c, rng, x0, y0, x1, y1, n, avoid=None):
         c.restoreState()
 
 
-def dotted_bg(c, color=CREAM):
-    c.setFillColor(color)
+def dotted_bg(c):
+    c.doForm("bg")
+
+
+def _make_bg_form(c):
+    c.beginForm("bg")
+    c.setFillColor(CREAM)
     c.rect(0, 0, W, H, stroke=0, fill=1)
     c.setFillColor(DOT)
     step = 9 * mm
@@ -333,6 +370,7 @@ def dotted_bg(c, color=CREAM):
             x += step
         y += step * .75
         row += 1
+    c.endForm()
 
 
 def outlined_text(c, x, y, s, font, size, fill, lw=2.4, stroke=NAVY, rot=0):
@@ -390,14 +428,18 @@ def photo_candidates(p):
     return out[:3]
 
 
-def _cloud_thumb(url):
-    marker = "/image/upload/"
-    if "res.cloudinary.com" in url and marker in url:
-        return url.replace(marker, f"{marker}c_limit,w_{THUMB_PX},h_{THUMB_PX},q_auto:good,f_jpg/", 1)
+def _photo_url(url):
+    """Если в ссылке Cloudinary нет преобразований (сырой оригинал) — просим ≤900px.
+    Ссылки с готовым преобразованием (c_limit,w_800…) не трогаем: они уже лёгкие."""
+    m = "/image/upload/"
+    if "res.cloudinary.com" in url and m in url:
+        head, rest = url.split(m, 1)
+        if re.fullmatch(r"v\d+", rest.split("/", 1)[0]):
+            return f"{head}{m}c_limit,w_900,h_900,q_auto:good/{rest}"
     return url
 
 
-def _fetch_bytes(url, timeout=12, limit=8 * 1024 * 1024):
+def _fetch_bytes(url, timeout=10, limit=8 * 1024 * 1024):
     if url.startswith("data:"):
         head, _, b64 = url.partition(",")
         if "base64" not in head:
@@ -417,16 +459,27 @@ def _fetch_bytes(url, timeout=12, limit=8 * 1024 * 1024):
     return data if len(data) <= limit else None
 
 
-def _make_thumb(data):
-    im = Image.open(io.BytesIO(data))
+PASS_MAX_BYTES = 70 * 1024   # маленький JPEG кладём в PDF как есть, без перекодировки
+
+
+def _make_thumb(data, px):
+    im = Image.open(io.BytesIO(data))          # читает только заголовок
+    w, h = im.size
+    if min(w, h) < 40:
+        return None
     try:
-        im.draft("RGB", (THUMB_PX * 2, THUMB_PX * 2))
+        orient = im.getexif().get(0x0112, 1)
+    except Exception:
+        orient = 1
+    if (im.format == "JPEG" and im.mode in ("RGB", "L") and orient == 1
+            and max(w, h) <= int(px * 1.5) and len(data) <= PASS_MAX_BYTES):
+        return data, (w, h)
+    try:
+        im.draft("RGB", (px * 2, px * 2))
     except Exception:
         pass
     im.load()
     im = ImageOps.exif_transpose(im)
-    if min(im.size) < 40:
-        return None
     if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
         im = im.convert("RGBA")
         bg = Image.new("RGB", im.size, (255, 255, 255))
@@ -434,16 +487,45 @@ def _make_thumb(data):
         im = bg
     else:
         im = im.convert("RGB")
-    im.thumbnail((THUMB_PX, THUMB_PX), Image.LANCZOS)
+    im.thumbnail((px, px))
     out = io.BytesIO()
-    im.save(out, "JPEG", quality=80, optimize=True)
+    im.save(out, "JPEG", quality=76)
     return out.getvalue(), im.size
 
 
-def load_photo(p):
+_photo_cache = OrderedDict()   # (url, px) -> (bytes, size); живёт между выгрузками
+_photo_cache_bytes = 0
+_photo_lock = threading.Lock()
+PHOTO_CACHE_LIMIT = 120 * 1024 * 1024
+
+
+def _cache_get(key):
+    with _photo_lock:
+        v = _photo_cache.get(key)
+        if v:
+            _photo_cache.move_to_end(key)
+        return v
+
+
+def _cache_put(key, val):
+    global _photo_cache_bytes
+    with _photo_lock:
+        if key in _photo_cache:
+            return
+        _photo_cache[key] = val
+        _photo_cache_bytes += len(val[0])
+        while _photo_cache_bytes > PHOTO_CACHE_LIMIT and _photo_cache:
+            _, old = _photo_cache.popitem(last=False)
+            _photo_cache_bytes -= len(old[0])
+
+
+def load_photo(p, px):
     """Первое рабочее фото товара -> (jpeg_bytes, (w, h)) или None."""
     for url in photo_candidates(p):
-        attempts = [_cloud_thumb(url)]
+        hit = _cache_get((url, px))
+        if hit:
+            return hit
+        attempts = [_photo_url(url)]
         if attempts[0] != url:
             attempts.append(url)
         for u in attempts:
@@ -451,23 +533,40 @@ def load_photo(p):
                 try:
                     data = _fetch_bytes(u)
                     if data:
-                        res = _make_thumb(data)
+                        res = _make_thumb(data, px)
                         if res:
+                            _cache_put((url, px), res)
                             return res
                     break
+                except urllib.error.HTTPError as e:
+                    if 400 <= e.code < 500:
+                        break            # ссылка мёртвая — повторять бессмысленно
+                    time.sleep(0.3)
                 except Exception:
-                    time.sleep(0.4)
+                    time.sleep(0.3)
     return None
 
 
 # ── Страницы ─────────────────────────────────────────────────────────────────
-COLS, ROWS = 3, 3
-PER_PAGE = COLS * ROWS
-CARD_W, CARD_H = 58 * mm, 78 * mm
-GAP_X, GAP_Y = 6 * mm, 6 * mm
-MARGIN_X = (W - COLS * CARD_W - (COLS - 1) * GAP_X) / 2
+MARGIN_X = 12 * mm
 HEADER_H = 25 * mm
 GRID_TOP = H - HEADER_H - 7 * mm
+GRID_BOTTOM = 19 * mm
+
+
+class Layout:
+    """big — крупные карточки 2x2 (по умолчанию), compact — мелкие 3x3."""
+
+    def __init__(self, name="big"):
+        self.name = "compact" if name == "compact" else "big"
+        if self.name == "compact":
+            self.cols, self.rows, self.gap_x, self.gap_y, self.thumb_px = 3, 3, 6 * mm, 6 * mm, 400
+        else:
+            self.cols, self.rows, self.gap_x, self.gap_y, self.thumb_px = 2, 2, 8 * mm, 8 * mm, 560
+        self.card_w = (W - 2 * MARGIN_X - (self.cols - 1) * self.gap_x) / self.cols
+        self.card_h = (GRID_TOP - GRID_BOTTOM - (self.rows - 1) * self.gap_y) / self.rows
+        self.s = self.card_w / (58 * mm)          # масштаб относительно «компактной» карточки
+        self.per_page = self.cols * self.rows
 
 
 class Assets:
@@ -581,9 +680,6 @@ def draw_cover(c, assets, date_str, n_products, n_cats):
     sz = 23
     c.setFillColor(NAVY); c.setFont(F_BOLD, sz)
     c.drawCentredString(W / 2, rc_y - 3 * mm, t)
-    sticker(c, W / 2 - 42 * mm, rc_y - 31 * mm, 84 * mm, 12 * mm, 5 * mm, YELLOW, seed=5)
-    c.setFillColor(NAVY); c.setFont(F_CONDB, 13.5)
-    c.drawCentredString(W / 2, rc_y - 26.6 * mm, "для представителей")
 
     # стикер-звезда со статистикой
     c.saveState(); c.translate(W - 30 * mm, H - 124 * mm); c.rotate(10)
@@ -610,33 +706,34 @@ def draw_cover(c, assets, date_str, n_products, n_cats):
     c.drawCentredString(W / 2, 11.4 * mm, f"Актуально на {date_str}")
 
 
-def draw_header(c, assets, title, theme, count_text, page_kind_seed):
-    main = HexColor(theme[0])
-    c.saveState()
-    c.setFillColor(main)
-    p = c.beginPath()
-    y0 = H - HEADER_H
-    p.moveTo(0, H); p.lineTo(W, H); p.lineTo(W, y0)
+def _make_header_forms(c, assets):
+    """Цветная волнистая шапка + логотип — по одной форме на цвет темы."""
     n = 48
-    for i in range(n + 1):
-        x = W - W * i / n
-        p.lineTo(x, y0 + 1.6 * mm * math.sin(i / n * 9 * math.pi))
-    p.close()
-    c.drawPath(p, fill=1, stroke=0)
-    c.setStrokeColor(NAVY); c.setLineWidth(1.6); c.setLineJoin(1)
-    q = c.beginPath()
-    for i in range(n + 1):
-        x = W * i / n
-        (q.moveTo if i == 0 else q.lineTo)(x, y0 + 1.6 * mm * math.sin((n - i) / n * 9 * math.pi))
-    c.drawPath(q, fill=0, stroke=1)
-    c.restoreState()
+    y0 = H - HEADER_H
+    for ti, theme in enumerate(THEMES):
+        c.beginForm(f"hdr{ti}")
+        c.setFillColor(HexColor(theme[0]))
+        p = c.beginPath()
+        p.moveTo(0, H); p.lineTo(W, H); p.lineTo(W, y0)
+        for i in range(n + 1):
+            p.lineTo(W - W * i / n, y0 + 1.6 * mm * math.sin(i / n * 9 * math.pi))
+        p.close()
+        c.drawPath(p, fill=1, stroke=0)
+        c.setStrokeColor(NAVY); c.setLineWidth(1.6); c.setLineJoin(1)
+        q = c.beginPath()
+        for i in range(n + 1):
+            (q.moveTo if i == 0 else q.lineTo)(W * i / n, y0 + 1.6 * mm * math.sin((n - i) / n * 9 * math.pi))
+        c.drawPath(q, fill=0, stroke=1)
+        cx, cy = MARGIN_X + 10 * mm, H - 12.2 * mm
+        circle_o(c, cx, cy, 9.6 * mm, white, lw=1.6)
+        if assets.logo:
+            rd, sz = assets.logo
+            draw_image_fit(c, rd, sz, cx - 7.6 * mm, cy - 7.6 * mm, 15.2 * mm, 15.2 * mm)
+        c.endForm()
 
-    # логотип в круге
-    cx, cy = MARGIN_X + 10 * mm, H - 12.2 * mm
-    circle_o(c, cx, cy, 9.6 * mm, white, lw=1.6)
-    if assets.logo:
-        rd, sz = assets.logo
-        draw_image_fit(c, rd, sz, cx - 7.6 * mm, cy - 7.6 * mm, 15.2 * mm, 15.2 * mm)
+
+def draw_header(c, assets, title, theme, count_text, page_kind_seed):
+    c.doForm(f"hdr{THEMES.index(theme)}")
 
     # плашка с названием
     text = _clean(title, F_BOLD) or "Каталог"
@@ -659,7 +756,6 @@ def draw_header(c, assets, title, theme, count_text, page_kind_seed):
         c.setFillColor(NAVY); c.setFont(F_CONDB, 9)
         c.drawCentredString(W - MARGIN_X - cw / 2, H - 14.3 * mm, count_text)
 
-    # украшения на плашке
     sparkle(c, W - MARGIN_X - 40 * mm, H - 8 * mm, 2.3 * mm)
     sparkle(c, MARGIN_X + 22 * mm + 1 * mm, H - 5 * mm, 1.7 * mm)
 
@@ -679,68 +775,104 @@ def draw_footer(c, page_no, date_str):
     c.drawCentredString(W - MARGIN_X - 4.6 * mm, 6.9 * mm, str(page_no))
 
 
-def draw_card(c, x, y, item, theme, seed):
+CARD_VARIANTS = 4
+
+
+def _card_geom(L):
+    s = L.s
+    pad, band_h, name_zone = 3 * mm * s, 10.5 * mm * s, 15.5 * mm * s
+    well_h = L.card_h - 2 * pad - band_h - name_zone
+    return s, pad, band_h, name_zone, well_h
+
+
+def _make_card_forms(c, L):
+    """Рамка карточки (тень, фон, окно фото, плашка цены) — рисуем один раз на тему/вариант."""
+    s, pad, band_h, _, well_h = _card_geom(L)
+    ls = min(s, 1.25)
+    cw, ch = L.card_w, L.card_h
+    for ti, theme in enumerate(THEMES):
+        main, dark, light = HexColor(theme[0]), HexColor(theme[1]), HexColor(theme[2])
+        for v in range(CARD_VARIANTS):
+            seed = ti * 17 + v * 31
+            c.beginForm(f"card_{L.name}_{ti}_{v}", -4 * mm, -4 * mm, cw + 6 * mm, ch + 6 * mm)
+            blob(c, 0, 0, cw, ch, 4.5 * mm * s, fill=light, stroke=NAVY, lw=1.4 * ls, seed=seed,
+                 jit=.2 * mm * s, shadow=1.5 * mm * s)
+            blob(c, pad, ch - pad - well_h, cw - 2 * pad, well_h, 3 * mm * s, fill=white, stroke=main,
+                 lw=1.1 * ls, seed=seed + 1, jit=.2 * mm * s, dash=(3 * ls, 2 * ls))
+            blob(c, pad, pad, cw - 2 * pad, band_h, 3.4 * mm * s, fill=dark, stroke=NAVY, lw=1.2 * ls,
+                 seed=seed + 4, jit=.2 * mm * s)
+            c.endForm()
+
+
+def draw_card(c, x, y, item, theme_idx, seed, L):
     """x, y — левый нижний угол карточки."""
-    main, dark, light, on_dark = (HexColor(theme[0]), HexColor(theme[1]), HexColor(theme[2]), HexColor(theme[3]))
-    sticker(c, x, y, CARD_W, CARD_H, 4.5 * mm, light, seed=seed, lw=1.4, shadow=1.5 * mm)
+    theme = THEMES[theme_idx]
+    s, pad, band_h, _, well_h = _card_geom(L)
+    ls = min(s, 1.25)
+    cw, ch = L.card_w, L.card_h
+    on_dark = HexColor(theme[3])
+
+    c.saveState()
+    c.translate(x, y)
+    c.doForm(f"card_{L.name}_{theme_idx}_{seed % CARD_VARIANTS}")
+    c.restoreState()
 
     # фото
-    pad = 3 * mm
-    wx, wh = x + pad, 46 * mm
-    wy = y + CARD_H - pad - wh
-    ww = CARD_W - 2 * pad
-    well = blob(c, wx, wy, ww, wh, 3 * mm, fill=white, stroke=main, lw=1.1, seed=seed + 1, jit=.2 * mm, dash=(3, 2))
-    c.saveState()
-    c.clipPath(well, stroke=0, fill=0)
+    wx, ww = x + pad, cw - 2 * pad
+    wy = y + ch - pad - well_h
+    m = 1.5 * mm * s
     rd = ImageReader(io.BytesIO(item["thumb"]))
-    draw_image_fit(c, rd, item["thumb_size"], wx + 1.5 * mm, wy + 1.5 * mm, ww - 3 * mm, wh - 3 * mm)
-    c.restoreState()
+    draw_image_fit(c, rd, item["thumb_size"], wx + m, wy + m, ww - 2 * m, well_h - 2 * m)
 
     # артикул
     sku = "арт. " + _clean(item["sku"], F_CONDB)
-    max_w = ww - 6 * mm
-    fs = fit_size(sku, F_CONDB, 7.2, max_w - 4 * mm, 4.5)
-    chip_w = min(max_w, _sw(sku, F_CONDB, fs) + 4.4 * mm)
-    cx0, cy0 = wx + 1.8 * mm, wy + wh - 3.4 * mm
-    sticker(c, cx0, cy0, chip_w, 5.2 * mm, 2.4 * mm, YELLOW, seed=seed + 2, lw=1, shadow=.6 * mm)
+    max_w = ww - 6 * mm * s
+    fs = fit_size(sku, F_CONDB, 7.2 * s, max_w - 4 * mm * s, 4.5)
+    chip_w = min(max_w, _sw(sku, F_CONDB, fs) + 4.4 * mm * s)
+    chip_h = 5.2 * mm * s
+    cx0, cy0 = wx + 1.8 * mm * s, wy + well_h - 3.4 * mm * s
+    chip(c, cx0, cy0, chip_w, chip_h, YELLOW, shadow=.6 * mm * s, lw=1.0 * ls)
     c.setFillColor(NAVY); c.setFont(F_CONDB, fs)
-    c.drawString(cx0 + 2.2 * mm, cy0 + 1.65 * mm, sku)
+    c.drawString(cx0 + 2.2 * mm * s, cy0 + chip_h / 2 - fs * .35, sku)
 
     if item.get("out"):
         t = "нет в наличии"
-        tw = _sw(t, F_CONDB, 6.5) + 4 * mm
-        sticker(c, wx + 1.8 * mm, wy + 1.6 * mm, tw, 4.8 * mm, 2.2 * mm, HexColor("#E53935"), seed=seed + 3, lw=1, shadow=.5 * mm)
-        c.setFillColor(white); c.setFont(F_CONDB, 6.5)
-        c.drawString(wx + 3.8 * mm, wy + 3.1 * mm, t)
+        fso = 6.5 * s
+        tw = _sw(t, F_CONDB, fso) + 4 * mm * s
+        oh = 4.8 * mm * s
+        chip(c, wx + 1.8 * mm * s, wy + 1.6 * mm * s, tw, oh, HexColor("#E53935"), shadow=.5 * mm * s, lw=1.0 * ls)
+        c.setFillColor(white); c.setFont(F_CONDB, fso)
+        c.drawString(wx + 3.8 * mm * s, wy + 1.6 * mm * s + oh / 2 - fso * .35, t)
 
     # название (до 3 строк)
     name = _clean(item["name"], F_CONDB) or "Без названия"
-    fs = 9
-    lines = wrap_text(name, F_CONDB, fs, ww - 1 * mm, 3)
-    ny = wy - 4.2 * mm
+    fs = 9 * s
+    lines = wrap_text(name, F_CONDB, fs, ww - 1 * mm * s, 3)
+    ny = wy - 4.2 * mm * s
     c.setFillColor(NAVY); c.setFont(F_CONDB, fs)
     for ln in lines:
-        c.drawCentredString(x + CARD_W / 2, ny, ln)
-        ny -= 3.75 * mm
+        c.drawCentredString(x + cw / 2, ny, ln)
+        ny -= 3.75 * mm * s
 
-    # плашка с ценой
-    bx, bw, bh = x + pad, CARD_W - 2 * pad, 10.5 * mm
-    by = y + pad
-    blob(c, bx, by, bw, bh, 3.4 * mm, fill=dark, stroke=NAVY, lw=1.2, seed=seed + 4, jit=.2 * mm)
+    # цена
+    bx, bw, by = x + pad, cw - 2 * pad, y + pad
     price = fmt_price(item["price"])
     mo = int(item.get("min_order") or 1)
-    avail = bw - 4 * mm - (15.5 * mm if mo > 1 else 0)
-    fs = fit_size(price, F_BOLD, 13.5, avail, 7)
+    avail = bw - 4 * mm * s - (15.5 * mm * s if mo > 1 else 0)
+    fs = fit_size(price, F_BOLD, 13.5 * s, avail, 7)
+    ty = by + band_h / 2 - fs * .35
     c.setFillColor(on_dark); c.setFont(F_BOLD, fs)
     if mo > 1:
-        c.drawString(bx + 3 * mm, by + 3.4 * mm, price)
+        c.drawString(bx + 3 * mm * s, ty, price)
         t = f"от {mo} шт"
-        tw = _sw(t, F_CONDB, 6.6) + 3 * mm
-        blob(c, bx + bw - tw - 1.8 * mm, by + 2.6 * mm, tw, 5.3 * mm, 2.4 * mm, fill=white, stroke=NAVY, lw=.8, seed=seed + 5, jit=.1 * mm)
-        c.setFillColor(NAVY); c.setFont(F_CONDB, 6.6)
-        c.drawCentredString(bx + bw - tw / 2 - 1.8 * mm, by + 4.2 * mm, t)
+        fsm = 6.6 * s
+        tw = _sw(t, F_CONDB, fsm) + 3 * mm * s
+        mh = 5.3 * mm * s
+        chip(c, bx + bw - tw - 1.8 * mm * s, by + (band_h - mh) / 2, tw, mh, white, shadow=0, lw=.8 * ls)
+        c.setFillColor(NAVY); c.setFont(F_CONDB, fsm)
+        c.drawCentredString(bx + bw - tw / 2 - 1.8 * mm * s, by + band_h / 2 - fsm * .35, t)
     else:
-        c.drawCentredString(bx + bw / 2, by + 3.4 * mm, price)
+        c.drawCentredString(bx + bw / 2, ty, price)
 
 
 def draw_ground_decor(c, assets):
@@ -757,10 +889,11 @@ def draw_ground_decor(c, assets):
         c.drawImage(rd, -cw / 2, -cw * ch_ / cw_ / 2 + 5 * mm, cw, cw * ch_ / cw_, mask="auto"); c.restoreState()
 
 
-def draw_sparse_decor(c, assets, n_items):
+def draw_sparse_decor(c, assets, n_items, L):
     """Заполняем пустое место, если на странице мало товаров."""
-    free_rows = ROWS - math.ceil(n_items / COLS)
-    if free_rows >= 2:
+    free_rows = L.rows - math.ceil(n_items / L.cols)
+    free_h = free_rows * (L.card_h + L.gap_y)
+    if free_h >= 150 * mm:
         hills(c, 44 * mm, 30 * mm)
         cloud(c, 150 * mm, 150 * mm, 8 * mm)
         cloud(c, 60 * mm, 110 * mm, 6 * mm)
@@ -773,7 +906,9 @@ def draw_sparse_decor(c, assets, n_items):
             cw = 70 * mm
             c.saveState(); c.translate(W - 62 * mm, 28 * mm); c.rotate(-3)
             c.drawImage(rd, -cw / 2, -cw * ch_ / cw_ / 2 + 5 * mm, cw, cw * ch_ / cw_, mask="auto"); c.restoreState()
-    elif free_rows == 1:
+    elif free_h >= 110 * mm:
+        draw_ground_decor(c, assets)
+    elif free_rows >= 1:
         cloud(c, 45 * mm, 42 * mm, 6.5 * mm)
         cloud(c, W - 50 * mm, 50 * mm, 7.5 * mm)
         rng = random.Random(n_items + 5)
@@ -842,9 +977,10 @@ def draw_toc(c, assets, entries, page_idx, n_toc, date_str, total_products):
 
 
 # ── Сборка PDF ───────────────────────────────────────────────────────────────
-def build_pdf(items, progress=None, date_str=None):
+def build_pdf(items, progress=None, date_str=None, layout="big"):
     """items: [{name, sku, price, category, subcategory, min_order, out, thumb, thumb_size}]"""
     _register_fonts()
+    L = Layout(layout)
     date_str = date_str or datetime.now().strftime("%d.%m.%Y")
     assets = Assets()
 
@@ -861,7 +997,7 @@ def build_pdf(items, progress=None, date_str=None):
     page_no = 1 + n_toc + 1  # обложка + содержание, дальше — первая страница товаров
     plan, toc_entries = [], []
     for idx, cat in enumerate(order):
-        chunks = [groups[cat][i:i + PER_PAGE] for i in range(0, len(groups[cat]), PER_PAGE)]
+        chunks = [groups[cat][i:i + L.per_page] for i in range(0, len(groups[cat]), L.per_page)]
         toc_entries.append({"idx": idx, "title": cat, "count": len(groups[cat]), "page": page_no,
                             "theme": idx, "bookmark": f"cat{idx}"})
         for ci, chunk in enumerate(chunks):
@@ -873,8 +1009,13 @@ def build_pdf(items, progress=None, date_str=None):
     c = canvas.Canvas(buf, pagesize=(W, H), pageCompression=1)
     c.setTitle("Happy Toys — оптовый каталог")
     c.setAuthor("Happy Toys")
-    c.setSubject(f"Каталог для представителей, {date_str}")
+    c.setSubject(f"Оптовый каталог, {date_str}")
     c.setCreator("Happy Toys catalog generator")
+
+    # общие элементы рисуем один раз и дальше только вставляем (быстро и файл меньше)
+    _make_bg_form(c)
+    _make_header_forms(c, assets)
+    _make_card_forms(c, L)
 
     draw_cover(c, assets, date_str, len(items), len(order))
     c.showPage()
@@ -885,7 +1026,7 @@ def build_pdf(items, progress=None, date_str=None):
         c.showPage()
 
     for n, (idx, cat, ci, nch, chunk, pno) in enumerate(plan):
-        theme = THEMES[idx % len(THEMES)]
+        ti = idx % len(THEMES)
         dotted_bg(c)
         if ci == 0:
             c.bookmarkPage(f"cat{idx}")
@@ -893,13 +1034,13 @@ def build_pdf(items, progress=None, date_str=None):
         cnt = f"{len(groups[cat])} {plural(len(groups[cat]), 'товар', 'товара', 'товаров')}"
         if nch > 1:
             cnt += f" · {ci + 1}/{nch}"
-        draw_header(c, assets, cat, theme, cnt, idx * 5 + ci)
-        draw_sparse_decor(c, assets, len(chunk))
+        draw_header(c, assets, cat, THEMES[ti], cnt, idx * 5 + ci)
+        draw_sparse_decor(c, assets, len(chunk), L)
         for k, it in enumerate(chunk):
-            r, col = divmod(k, COLS)
-            x = MARGIN_X + col * (CARD_W + GAP_X)
-            y = GRID_TOP - (r + 1) * CARD_H - r * GAP_Y
-            draw_card(c, x, y, it, theme, seed=(it.get("id") or 0) * 13 + k)
+            r, col = divmod(k, L.cols)
+            x = MARGIN_X + col * (L.card_w + L.gap_x)
+            y = GRID_TOP - (r + 1) * L.card_h - r * L.gap_y
+            draw_card(c, x, y, it, ti, (it.get("id") or 0) * 13 + k, L)
         draw_footer(c, pno, date_str)
         c.showPage()
         if progress:
@@ -943,7 +1084,7 @@ def get_job(job_id):
         return _jobs.get(job_id)
 
 
-def start_job(products, hide_out=False):
+def start_job(products, hide_out=False, layout="big"):
     """products — список dict из БД. Возвращает Job (или уже идущий)."""
     with _lock:
         _purge()
@@ -952,14 +1093,15 @@ def start_job(products, hide_out=False):
                 return j
         job = Job()
         _jobs[job.id] = job
-    threading.Thread(target=_run, args=(job, products, hide_out), daemon=True).start()
+    threading.Thread(target=_run, args=(job, products, hide_out, layout), daemon=True).start()
     return job
 
 
-def _run(job, products, hide_out):
+def _run(job, products, hide_out, layout):
     try:
-        cand = []
-        skipped_out = 0
+        L = Layout(layout)
+        t0 = time.time()
+        cand, skipped_out = [], 0
         for p in products:
             if hide_out and p.get("stock") == "out":
                 skipped_out += 1
@@ -972,13 +1114,14 @@ def _run(job, products, hide_out):
         lock = threading.Lock()
 
         def work(p):
-            res = load_photo(p)
+            res = load_photo(p, L.thumb_px)
             with lock:
                 job.done += 1
             return res
 
-        with ThreadPoolExecutor(max_workers=12) as ex:
+        with ThreadPoolExecutor(max_workers=16) as ex:
             results = list(ex.map(work, with_url))
+        t_photos = time.time() - t0
 
         items, broken = [], 0
         for p, res in zip(with_url, results):
@@ -996,10 +1139,15 @@ def _run(job, products, hide_out):
         def prog(n, t):
             job.done, job.total = n, t
 
-        pdf, st = build_pdf(items, progress=prog)
+        t1 = time.time()
+        pdf, st = build_pdf(items, progress=prog, layout=layout)
+        t_render = time.time() - t1
         job.pdf = pdf
         job.stats = {**st, "products": len(items), "no_photo": len(no_photo), "broken_photo": broken,
-                     "hidden_out": skipped_out, "size_mb": round(len(pdf) / 1048576, 1)}
+                     "hidden_out": skipped_out, "size_mb": round(len(pdf) / 1048576, 1),
+                     "sec_photos": round(t_photos, 1), "sec_render": round(t_render, 1)}
+        print(f"[catalog-pdf] {len(items)} товаров, {st['pages']} стр., {job.stats['size_mb']} МБ, "
+              f"фото {t_photos:.1f}с, сборка {t_render:.1f}с")
         job.state = "done"
     except Exception as e:  # noqa
         traceback.print_exc()

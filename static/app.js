@@ -1733,6 +1733,10 @@ function renderRepPdfCard() {
     <div class="rep-pdf-body">
       <div class="rep-pdf-title">Каталог для представителей</div>
       <div class="rep-pdf-sub">Красивый PDF: обложка, содержание и разделы по категориям. В каждой карточке — фото, артикул, название и цена. Товары без фото не попадают в файл.</div>
+      <div class="rep-pdf-layout">
+        <label><input type="radio" name="repPdfLayout" value="big" checked><span>Крупные карточки <small>4 на странице</small></span></label>
+        <label><input type="radio" name="repPdfLayout" value="compact"><span>Компактно <small>9 на странице</small></span></label>
+      </div>
       <label class="rep-pdf-check"><input type="checkbox" id="repPdfHideOut"><span>Не включать товары «нет в наличии»</span></label>
       <button class="rep-pdf-btn" id="repPdfBtn" onclick="downloadRepPdf()">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M4 20h16"/></svg>
@@ -1760,7 +1764,7 @@ async function downloadRepPdf() {
   btn.disabled = true; btn.classList.add('busy'); txt.textContent = 'Готовлю PDF…';
   res.textContent = ''; res.classList.remove('err'); prog.hidden = false; bar.style.width = '4%'; msg.textContent = 'Запускаю…';
   try {
-    let job = await API.post('/api/admin/catalog-pdf', { hide_out_of_stock: !!$('repPdfHideOut')?.checked });
+    let job = await API.post('/api/admin/catalog-pdf', { hide_out_of_stock: !!$('repPdfHideOut')?.checked, layout: document.querySelector('input[name=repPdfLayout]:checked')?.value || 'big' });
     while (job.state === 'running') {
       await sleep(700);
       job = await API.get('/api/admin/catalog-pdf/' + job.job_id);
@@ -1780,7 +1784,7 @@ async function downloadRepPdf() {
     setTimeout(() => URL.revokeObjectURL(url), 120000);
 
     const st = job.stats || {};
-    const parts = [`В файле: <b>${st.products}</b> тов. · ${st.categories} разд. · ${st.pages} стр. · ${st.size_mb} МБ`];
+    const parts = [`В файле: <b>${st.products}</b> тов. · ${st.categories} разд. · ${st.pages} стр. · ${st.size_mb} МБ`, `Собрано за ${((st.sec_photos || 0) + (st.sec_render || 0)).toFixed(1)} с`];
     if (st.no_photo) parts.push(`Без фото не включено: ${st.no_photo}`);
     if (st.broken_photo) parts.push(`Фото не загрузилось: ${st.broken_photo}`);
     if (st.hidden_out) parts.push(`Скрыто «нет в наличии»: ${st.hidden_out}`);
