@@ -976,6 +976,40 @@ def draw_toc(c, assets, entries, page_idx, n_toc, date_str, total_products):
     draw_footer(c, page_idx + 2, date_str)
 
 
+# ── Выбор товаров для файла ──────────────────────────────────────────────────
+MAX_PER_FILE = 500
+
+
+def _sort_key(p):
+    cat = _clean(p.get("category"), F_BOLD)
+    return (cat == "", cat.lower(), str(p.get("subcategory") or "").lower(),
+            str(p.get("name") or "").lower(), p.get("id") or 0)
+
+
+def eligible(products, hide_out=False):
+    """Товары, которые могут попасть в каталог (есть фото), в порядке каталога."""
+    _register_fonts()
+    cand = [p for p in products if photo_candidates(p) and not (hide_out and p.get("stock") == "out")]
+    cand.sort(key=_sort_key)
+    return cand
+
+
+def catalog_index(products):
+    """Лёгкий индекс для админки: [[категория, нет_в_наличии], ...] в порядке каталога."""
+    return [[_clean(p.get("category"), F_BOLD) or "Без категории", 1 if p.get("stock") == "out" else 0]
+            for p in eligible(products)]
+
+
+def select_products(products, hide_out=False, limit=0, part=1):
+    """Возвращает (товары_части, всего_подходящих, всего_частей, размер_части)."""
+    cand = eligible(products, hide_out)
+    size = min(int(limit or MAX_PER_FILE), MAX_PER_FILE)
+    part = max(1, int(part or 1))
+    total = len(cand)
+    parts = max(1, math.ceil(total / size))
+    return cand[(part - 1) * size: part * size], total, parts, size
+
+
 # ── Сборка PDF ───────────────────────────────────────────────────────────────
 def build_pdf(items, progress=None, date_str=None, layout="big"):
     """items: [{name, sku, price, category, subcategory, min_order, out, thumb, thumb_size}]"""
@@ -1084,7 +1118,7 @@ def get_job(job_id):
         return _jobs.get(job_id)
 
 
-def start_job(products, hide_out=False, layout="big"):
+def start_job(products, hide_out=False, layout="big", limit=0, part=1):
     """products — список dict из БД. Возвращает Job (или уже идущий)."""
     with _lock:
         _purge()
@@ -1093,22 +1127,20 @@ def start_job(products, hide_out=False, layout="big"):
                 return j
         job = Job()
         _jobs[job.id] = job
-    threading.Thread(target=_run, args=(job, products, hide_out, layout), daemon=True).start()
+    threading.Thread(target=_run, args=(job, products, hide_out, layout, limit, part), daemon=True).start()
     return job
 
 
-def _run(job, products, hide_out, layout):
+def _run(job, products, hide_out, layout, limit=0, part=1):
     try:
         L = Layout(layout)
         t0 = time.time()
-        cand, skipped_out = [], 0
-        for p in products:
-            if hide_out and p.get("stock") == "out":
-                skipped_out += 1
-                continue
-            cand.append(p)
-        no_photo = [p for p in cand if not photo_candidates(p)]
-        with_url = [p for p in cand if photo_candidates(p)]
+        _register_fonts()
+        no_photo = [p for p in products if not photo_candidates(p)]
+        skipped_out = sum(1 for p in products if hide_out and p.get("stock") == "out" and photo_candidates(p))
+        with_url, total_ok, parts, size = select_products(products, hide_out, limit, part)
+        if not with_url:
+            raise ValueError("В выбранной части нет товаров — выберите другую часть.")
         job.total = len(with_url)
 
         lock = threading.Lock()
@@ -1145,9 +1177,10 @@ def _run(job, products, hide_out, layout):
         job.pdf = pdf
         job.stats = {**st, "products": len(items), "no_photo": len(no_photo), "broken_photo": broken,
                      "hidden_out": skipped_out, "size_mb": round(len(pdf) / 1048576, 1),
-                     "sec_photos": round(t_photos, 1), "sec_render": round(t_render, 1)}
-        print(f"[catalog-pdf] {len(items)} товаров, {st['pages']} стр., {job.stats['size_mb']} МБ, "
-              f"фото {t_photos:.1f}с, сборка {t_render:.1f}с")
+                     "sec_photos": round(t_photos, 1), "sec_render": round(t_render, 1),
+                     "part": max(1, int(part or 1)), "parts": parts, "part_size": size, "total_available": total_ok}
+        print(f"[catalog-pdf] часть {job.stats['part']}/{parts}: {len(items)} товаров, {st['pages']} стр., "
+              f"{job.stats['size_mb']} МБ, фото {t_photos:.1f}с, сборка {t_render:.1f}с")
         job.state = "done"
     except Exception as e:  # noqa
         traceback.print_exc()

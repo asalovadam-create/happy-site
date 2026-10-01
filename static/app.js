@@ -1733,6 +1733,15 @@ function renderRepPdfCard() {
     <div class="rep-pdf-body">
       <div class="rep-pdf-title">Каталог для представителей</div>
       <div class="rep-pdf-sub">Красивый PDF: обложка, содержание и разделы по категориям. В каждой карточке — фото, артикул, название и цена. Товары без фото не попадают в файл.</div>
+      <div class="rep-pdf-size" id="repPdfSize" hidden>
+        <div class="rep-pdf-label">Сколько товаров в файле <b id="repPdfTotal"></b></div>
+        <div class="rep-pdf-chips" id="repPdfLimits"></div>
+        <div id="repPdfPartsWrap" hidden>
+          <div class="rep-pdf-label" style="margin-top:10px">Какую часть скачать</div>
+          <div class="rep-pdf-chips parts" id="repPdfParts"></div>
+        </div>
+        <div class="rep-pdf-warn" id="repPdfWarn" hidden></div>
+      </div>
       <div class="rep-pdf-layout">
         <label><input type="radio" name="repPdfLayout" value="big" checked><span>Крупные карточки <small>4 на странице</small></span></label>
         <label><input type="radio" name="repPdfLayout" value="compact"><span>Компактно <small>9 на странице</small></span></label>
@@ -1751,6 +1760,81 @@ function renderRepPdfCard() {
   </div>`;
 }
 
+// ── Настройка размера PDF: сколько товаров и какая часть ─────────────────────
+const RepPdf = { items: [], max: 500, limit: 'all', part: 1, ready: false };
+
+async function initRepPdf() {
+  RepPdf.ready = false;
+  try {
+    const info = await API.get('/api/admin/catalog-pdf-info');
+    RepPdf.items = info.items || [];
+    RepPdf.max = info.max_per_file || 500;
+    RepPdf.ready = true;
+  } catch (e) { return; }   // не критично: кнопка работает и без выбора
+  document.querySelectorAll('#repPdfHideOut, input[name=repPdfLayout]').forEach(el => el.addEventListener('change', () => repPdfRecalc(true)));
+  RepPdf.limit = null; RepPdf.part = 1;
+  repPdfRecalc(true);
+}
+
+function repPdfList() {
+  const hide = !!$('repPdfHideOut')?.checked;
+  return RepPdf.items.filter(r => !(hide && r[1]));
+}
+
+function repPdfSizeInfo() {
+  const list = repPdfList(), total = list.length;
+  const limits = [100, 200, 300, 400, 500].filter(n => n < total && n <= RepPdf.max);
+  const canAll = total <= RepPdf.max;
+  if (RepPdf.limit == null || (RepPdf.limit === 'all' ? !canAll : !limits.includes(RepPdf.limit))) {
+    RepPdf.limit = canAll ? 'all' : RepPdf.max; RepPdf.part = 1;
+  }
+  const size = RepPdf.limit === 'all' ? total : RepPdf.limit;
+  const parts = Math.max(1, Math.ceil(total / Math.max(1, size)));
+  RepPdf.part = Math.min(Math.max(1, RepPdf.part), parts);
+  const from = (RepPdf.part - 1) * size + 1, to = Math.min(RepPdf.part * size, total);
+  return { list, total, limits, canAll, size, parts, from, to, count: Math.max(0, to - from + 1) };
+}
+
+function repPdfRecalc(rerender) {
+  const box = $('repPdfSize'); if (!box || !RepPdf.ready) return;
+  const I = repPdfSizeInfo();
+  box.hidden = false;
+  $('repPdfTotal').textContent = `· с фото: ${I.total}`;
+
+  const chip = (label, active, onclick, sub) =>
+    `<button type="button" class="rep-chip${active ? ' on' : ''}" onclick="${onclick}">${label}${sub ? `<small>${sub}</small>` : ''}</button>`;
+  const opts = I.limits.map(n => chip(n, RepPdf.limit === n, `repPdfSetLimit(${n})`));
+  if (I.canAll) opts.push(chip(I.total > 100 ? `Все ${I.total}` : `Все ${I.total}`, RepPdf.limit === 'all', `repPdfSetLimit('all')`));
+  $('repPdfLimits').innerHTML = opts.length > 1 || !I.canAll ? opts.join('') : opts.join('');
+
+  const pw = $('repPdfPartsWrap');
+  pw.hidden = I.parts <= 1;
+  if (I.parts > 1) {
+    const esc = s => String(s).replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));
+    $('repPdfParts').innerHTML = Array.from({ length: I.parts }, (_, k) => {
+      const a = k * I.size + 1, b = Math.min((k + 1) * I.size, I.total);
+      const c1 = I.list[a - 1][0], c2 = I.list[b - 1][0];
+      const cats = c1 === c2 ? c1 : `${c1} → ${c2}`;
+      return chip(`Часть ${k + 1}`, RepPdf.part === k + 1, `repPdfSetPart(${k + 1})`, `${a}–${b} · ${esc(cats)}`);
+    }).join('');
+  }
+
+  const layout = document.querySelector('input[name=repPdfLayout]:checked')?.value || 'big';
+  const mb = Math.max(0.1, I.count * (layout === 'big' ? 0.03 : 0.012));
+  const w = $('repPdfWarn');
+  if (I.count > 100) {
+    w.hidden = false;
+    w.innerHTML = `<b>⏳ Это займёт время.</b> Файл на ${I.count} товаров собирается от нескольких секунд до нескольких минут — зависит от скорости сервера. Не закрывайте и не обновляйте страницу, пока не начнётся скачивание. Примерный размер файла — ${mb.toFixed(mb < 10 ? 1 : 0)} МБ.` +
+      (I.count >= 300 ? `<br>Для быстрой выгрузки выберите меньше товаров, например 100–200.` : '');
+    w.classList.toggle('strong', I.count >= 300);
+  } else { w.hidden = true; }
+
+  const t = $('repPdfBtnText');
+  if (t && !$('repPdfBtn').disabled) t.textContent = I.count ? `Скачать PDF · ${I.count} тов.` : 'Скачать PDF';
+}
+function repPdfSetLimit(n) { RepPdf.limit = n; RepPdf.part = 1; repPdfRecalc(true); }
+function repPdfSetPart(n) { RepPdf.part = n; repPdfRecalc(true); }
+
 function _pdfErrText(e) {
   let m = (e && e.message) || String(e || '');
   try { const j = JSON.parse(m); m = j.detail || j.message || m; } catch (_) {}
@@ -1761,10 +1845,13 @@ async function downloadRepPdf() {
   const btn = $('repPdfBtn'); if (!btn || btn.disabled) return;
   const prog = $('repPdfProg'), bar = $('repPdfBar'), msg = $('repPdfMsg'), res = $('repPdfRes'), txt = $('repPdfBtnText');
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const I = RepPdf.ready ? repPdfSizeInfo() : null;
+  if (I && I.count >= 300 && !confirm(`Скачать ${I.count} товаров одним файлом?\n\nСборка может занять несколько минут. Не закрывайте страницу, пока не начнётся скачивание.`)) return;
   btn.disabled = true; btn.classList.add('busy'); txt.textContent = 'Готовлю PDF…';
   res.textContent = ''; res.classList.remove('err'); prog.hidden = false; bar.style.width = '4%'; msg.textContent = 'Запускаю…';
   try {
-    let job = await API.post('/api/admin/catalog-pdf', { hide_out_of_stock: !!$('repPdfHideOut')?.checked, layout: document.querySelector('input[name=repPdfLayout]:checked')?.value || 'big' });
+    let job = await API.post('/api/admin/catalog-pdf', { hide_out_of_stock: !!$('repPdfHideOut')?.checked, layout: document.querySelector('input[name=repPdfLayout]:checked')?.value || 'big',
+      limit: I && RepPdf.limit !== 'all' ? RepPdf.limit : 0, part: I ? RepPdf.part : 1 });
     while (job.state === 'running') {
       await sleep(700);
       job = await API.get('/api/admin/catalog-pdf/' + job.job_id);
@@ -1779,7 +1866,8 @@ async function downloadRepPdf() {
     if (!r.ok) throw new Error('Не удалось скачать файл, попробуйте ещё раз');
     const url = URL.createObjectURL(await r.blob());
     const a = document.createElement('a');
-    a.href = url; a.download = `Happy-Toys-каталог-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const stp = job.stats || {};
+    a.href = url; a.download = `Happy-Toys-каталог-${new Date().toISOString().slice(0, 10)}${stp.parts > 1 ? `-часть-${stp.part}-из-${stp.parts}` : ''}.pdf`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 120000);
 
@@ -1788,6 +1876,10 @@ async function downloadRepPdf() {
     if (st.no_photo) parts.push(`Без фото не включено: ${st.no_photo}`);
     if (st.broken_photo) parts.push(`Фото не загрузилось: ${st.broken_photo}`);
     if (st.hidden_out) parts.push(`Скрыто «нет в наличии»: ${st.hidden_out}`);
+    if (st.parts > 1) {
+      parts.unshift(`<b>Часть ${st.part} из ${st.parts}</b> (всего с фото: ${st.total_available})`);
+      if (st.part < st.parts) { RepPdf.part = st.part + 1; parts.push(`Следующая часть выбрана — нажмите «Скачать» ещё раз`); }
+    }
     res.innerHTML = parts.join('<br>');
     prog.hidden = true;
     toast('PDF-каталог готов');
@@ -1797,6 +1889,7 @@ async function downloadRepPdf() {
     toast('Ошибка: ' + _pdfErrText(e), 'err');
   } finally {
     btn.disabled = false; btn.classList.remove('busy'); txt.textContent = 'Скачать PDF';
+    if (RepPdf.ready) repPdfRecalc(true);
   }
 }
 
@@ -1825,6 +1918,7 @@ async function renderAdmin() {
       <div class="admin-section" id="sec-carts">${skel(40)}${skel(60)}</div>
     </div>
   </div>`;
+  initRepPdf();
 
   // Load stats first (fastest single query)
   API.adminStats().then(stats => {

@@ -3569,3 +3569,21 @@ input, select, textarea { font-size: 16px !important; }
 }
 .rep-pdf-layout small { font-size: 11px; font-weight: 700; opacity: .85; }
 .rep-pdf-layout input:checked + span { background: #fff; color: #0B1250; box-shadow: 2px 2px 0 #0B1250; }
+
+.rep-pdf-size { background: rgba(255,255,255,.22); border: 2px dashed rgba(11,18,80,.55); border-radius: 14px; padding: 12px; margin-bottom: 12px; }
+.rep-pdf-label { font-size: 13px; font-weight: 900; margin-bottom: 8px; }
+.rep-pdf-label b { font-weight: 800; opacity: .9; }
+.rep-pdf-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.rep-chip {
+  display: inline-flex; flex-direction: column; align-items: center; gap: 1px; min-width: 52px;
+  padding: 7px 13px; border-radius: 12px; border: 2px solid #0B1250; background: rgba(255,255,255,.4);
+  color: #0B1250; font-family: 'Nunito', sans-serif; font-size: 14px; font-weight: 900; cursor: pointer;
+}
+.rep-chip small { font-size: 10.5px; font-weight: 700; opacity: .85; max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rep-chip.on { background: #fff; box-shadow: 2px 2px 0 #0B1250; }
+.rep-pdf-chips.parts .rep-chip { align-items: flex-start; }
+.rep-pdf-warn {
+  margin-top: 10px; background: #FFF4BF; color: #0B1250; border: 2px solid #0B1250; border-radius: 12px;
+  padding: 9px 12px; font-size: 12.5px; font-weight: 700; line-height: 1.5;
+}
+.rep-pdf-warn.strong { background: #FFE1D6; }

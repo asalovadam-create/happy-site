@@ -1209,6 +1209,8 @@ async def admin_get_featured(_=Depends(require_admin)):
 # опрашивает прогресс и скачивает готовый файл. Только для админа.
 class PdfExportIn(BaseModel):
     hide_out_of_stock: bool = False
+    limit: int = 0        # сколько товаров в файле (0 = максимум 500)
+    part: int = 1         # номер части, если товаров больше лимита
     layout: str = "big"   # big — крупные карточки (4 на стр.), compact — мелкие (9 на стр.)
 
 def _pdf_module():
@@ -1217,6 +1219,17 @@ def _pdf_module():
         return catalog_pdf
     except ImportError as e:
         raise HTTPException(503, f"Не установлены библиотеки для PDF (reportlab, Pillow): {e}")
+
+@app.get("/api/admin/catalog-pdf-info")
+async def catalog_pdf_info(_=Depends(require_admin)):
+    """Сколько товаров подходит для каталога (есть фото) — для выбора размера файла."""
+    if not _db_pool: raise HTTPException(503, "База данных недоступна")
+    cp = _pdf_module()
+    rows = await db_fetch(
+        "SELECT id, name, category, image, images, stock FROM products WHERE is_active = TRUE ORDER BY id"
+    )
+    data = [dict(r) for r in rows]
+    return {"max_per_file": cp.MAX_PER_FILE, "all_active": len(data), "items": cp.catalog_index(data)}
 
 @app.post("/api/admin/catalog-pdf")
 async def catalog_pdf_start(b: PdfExportIn, _=Depends(require_admin)):
@@ -1227,7 +1240,8 @@ async def catalog_pdf_start(b: PdfExportIn, _=Depends(require_admin)):
            FROM products WHERE is_active = TRUE ORDER BY id"""
     )
     job = cp.start_job([dict(r) for r in rows], hide_out=b.hide_out_of_stock,
-                       layout="compact" if b.layout == "compact" else "big")
+                       layout="compact" if b.layout == "compact" else "big",
+                       limit=max(0, min(b.limit, 500)), part=max(1, b.part))
     return job.public()
 
 @app.get("/api/admin/catalog-pdf/{job_id}")
@@ -1249,7 +1263,8 @@ async def catalog_pdf_file(job_id: str, _=Depends(require_admin)):
         )
     except Exception:
         pass
-    fname = f"Happy-Toys-catalog-{datetime.utcnow():%Y-%m-%d}.pdf"
+    part_sfx = f"-part{job.stats.get('part')}of{job.stats.get('parts')}" if job.stats.get("parts", 1) > 1 else ""
+    fname = f"Happy-Toys-catalog-{datetime.utcnow():%Y-%m-%d}{part_sfx}.pdf"
     return Response(
         content=job.pdf, media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{fname}"', "Cache-Control": "no-store"},
