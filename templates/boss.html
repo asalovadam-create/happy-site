@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#0B1020">
+  <title>Happy Toys · Штаб владельца</title>
+  <link rel="icon" href="/static/logo.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/boss.css?v={{ v_css }}">
+</head>
+<body data-enabled="{{ '1' if enabled else '0' }}">
+
+  <!-- Вход -->
+  <div class="login" id="login" hidden>
+    <div class="login-card">
+      <img src="/static/logo.png" alt="" class="login-logo">
+      <div class="login-title">Штаб владельца</div>
+      <div class="login-sub">Happy Toys · закрытый раздел</div>
+      <div class="login-off" id="loginOff" hidden>
+        Страница отключена: в настройках Render не задан пароль <b>BOSS_PASS</b>.
+      </div>
+      <form id="loginForm" autocomplete="on">
+        <label>Логин<input id="lgUser" type="text" autocomplete="username" required></label>
+        <label>Пароль<input id="lgPass" type="password" autocomplete="current-password" required></label>
+        <div class="login-err" id="lgErr"></div>
+        <button class="btn primary big" type="submit" id="lgBtn">Войти</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Приложение -->
+  <div class="app" id="app" hidden>
+    <aside class="side" id="side">
+      <div class="brand">
+        <img src="/static/logo.png" alt="">
+        <div><b>Happy Toys</b><span>штаб владельца</span></div>
+      </div>
+      <nav id="nav"></nav>
+      <div class="side-foot">
+        <div class="live-pill" id="livePill"><i></i><span>онлайн: —</span></div>
+        <button class="btn ghost" id="logoutBtn">Выйти</button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="top">
+        <h1 id="title">Сейчас на сайте</h1>
+        <div class="top-r"><span id="clock"></span></div>
+      </header>
+      <div id="view" class="view"></div>
+    </main>
+  </div>
+
+  <div class="drawer-back" id="drawerBack" hidden></div>
+  <aside class="drawer" id="drawer" hidden></aside>
+  <div class="modal-back" id="modal" hidden></div>
+  <div class="toasts" id="toasts"></div>
+
+  <script src="/static/boss.js?v={{ v_js }}"></script>
+</body>
+</html>

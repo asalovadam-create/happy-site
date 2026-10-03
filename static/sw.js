@@ -56,7 +56,8 @@ self.addEventListener('fetch', event => {
   if (url.origin !== self.location.origin) return;
 
   // ── Админские API (данные клиентов, PDF): никогда не кэшируем ─────────────
-  if (url.pathname.startsWith('/api/admin/')) return;
+  if (url.pathname.startsWith('/api/admin/') || url.pathname.startsWith('/api/boss/') ||
+      url.pathname.startsWith('/api/t/') || url.pathname === '/boss') return;
 
   // ── API: Network First, fall back to cache ──────────────────────────────
   if (url.pathname.startsWith('/api/')) {

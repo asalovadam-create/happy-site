@@ -129,6 +129,10 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# Страница владельца /boss (отдельно от админки сотрудников) + сбор аналитики
+import boss
+boss.register(app, templates, db_fetch, db_fetchrow, db_execute, get_db, JWT_SECRET)
+
 security = HTTPBearer(auto_error=False)
 
 # ── DB init / startup ─────────────────────────────────────────────────────────
@@ -161,6 +165,7 @@ async def startup():
         )
         print("✅ Neon pool created, initializing tables...")
         await _create_tables()
+        await boss.create_tables()
         await _seed_if_empty()
         print("✅ Neon PostgreSQL connected and ready!")
     except Exception as e:
