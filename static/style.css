@@ -3587,3 +3587,18 @@ input, select, textarea { font-size: 16px !important; }
   padding: 9px 12px; font-size: 12.5px; font-weight: 700; line-height: 1.5;
 }
 .rep-pdf-warn.strong { background: #FFE1D6; }
+
+/* ── Компактная шапка главной: ниже по высоте, всё помещается выше ── */
+.colored-zone { padding-top: 0; }
+.colored-zone .cat-scroll { padding: 8px 14px 8px; }
+.home-hero { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 14px; margin: 0 14px 12px; border-radius: 16px; }
+.home-hero .home-hero-top { order: 1; flex: 1 1 0; min-width: 0; margin: 0; gap: 12px; }
+.home-hero .hero-stats { order: 2; flex: 0 0 auto; }
+.home-hero .hero-wholesale-row { order: 3; flex: 1 0 100%; margin: 0; }
+.home-hero-logo { width: 52px; height: 52px; padding: 6px; border-radius: 14px; }
+.hero-brand-name { font-size: 24px; }
+.hero-tagline { font-size: 12px; margin-top: 2px; }
+.hero-stats-single .hero-stat { padding: 6px 12px; border-radius: 12px; }
+.hero-stat strong { font-size: 18px; line-height: 1.1; }
+.hero-stat span { font-size: 10px; display: block; max-width: 72px; line-height: 1.15; margin: 0 auto; }
+.wholesale-badge { margin: 0; padding: 4px 11px; font-size: 11px; }

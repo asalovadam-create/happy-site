@@ -211,6 +211,7 @@
       if (!items || !items.length) return;
       ev('download_cart_pdf', 'PDF корзины', { items: items.length, qty: items.reduce(function (a, i) { return a + i.qty; }, 0),
         total: items.reduce(function (a, i) { return a + i.price * i.qty; }, 0) });
+      flush(true);
     });
     wrap('openShareModal', null, function () { ev('share_open', 'Окно «Поделиться корзиной»'); });
     wrap('copyShareLink', null, function () { ev('share_copy', 'Скопировал ссылку на корзину'); });
@@ -266,6 +267,8 @@
   ['scroll', 'keydown', 'touchstart', 'mousemove'].forEach(function (n) {
     window.addEventListener(n, function () { lastAct = Date.now(); }, { passive: true });
   });
+
+  window.htTrack = function (type, name, meta) { ev(type, name, meta); };   // для reels.js и др.
 
   // ── старт ────────────────────────────────────────────────────────────────
   function start() {

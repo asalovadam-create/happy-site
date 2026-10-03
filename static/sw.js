@@ -57,7 +57,8 @@ self.addEventListener('fetch', event => {
 
   // ── Админские API (данные клиентов, PDF): никогда не кэшируем ─────────────
   if (url.pathname.startsWith('/api/admin/') || url.pathname.startsWith('/api/boss/') ||
-      url.pathname.startsWith('/api/t/') || url.pathname === '/boss') return;
+      url.pathname.startsWith('/api/t/') || url.pathname.startsWith('/api/reels/') ||
+      url.pathname === '/boss') return;
 
   // ── API: Network First, fall back to cache ──────────────────────────────
   if (url.pathname.startsWith('/api/')) {

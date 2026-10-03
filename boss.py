@@ -653,8 +653,26 @@ def _file(rows, name, fmt):
                     headers={"Content-Disposition": f'attachment; filename="{name}-{stamp}.csv"'})
 
 
+@router.get("/api/boss/export-link")
+async def boss_export_link(kind: str, fmt: str = "csv", days: int = 30, _=Depends(require_boss)):
+    """Короткоживущая ссылка на файл — скачивается обычным способом (надёжно на iPhone, без blob:)."""
+    tok = jwt.encode({"sub": "boss-dl", "kind": kind, "v": _pw_fingerprint(),
+                      "exp": datetime.utcnow() + timedelta(minutes=3)}, _ctx["secret"], algorithm="HS256")
+    return {"url": f"/api/boss/export/{kind}?fmt={'json' if fmt == 'json' else 'csv'}&days={max(1, min(days, 365))}&t={tok}"}
+
+
 @router.get("/api/boss/export/{kind}")
-async def boss_export(kind: str, fmt: str = "csv", days: int = 30, _=Depends(require_boss)):
+async def boss_export(kind: str, fmt: str = "csv", days: int = 30, t: str = "",
+                      creds: HTTPAuthorizationCredentials = Depends(_bearer)):
+    ok = False
+    if t:
+        try:
+            pl = jwt.decode(t, _ctx["secret"], algorithms=["HS256"])
+            ok = pl.get("sub") == "boss-dl" and pl.get("kind") == kind and pl.get("v") == _pw_fingerprint()
+        except jwt.PyJWTError:
+            ok = False
+    if not ok:
+        require_boss(creds)
     f = _ctx["fetch"]
     fmt = "json" if fmt == "json" else "csv"
     if kind == "customers":

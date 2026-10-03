@@ -65,7 +65,7 @@ function confirmBox({ title, text, ok = 'Удалить', danger = true, word = 
 }
 
 // ── словари ──────────────────────────────────────────────────────────────────
-const PAGES = { home: 'Главная', catalog: 'Каталог', profile: 'Профиль', admin: 'Админ-панель', cart: 'Корзина', favorites: 'Избранное' };
+const PAGES = { home: 'Главная', reels: 'Happy TV', catalog: 'Каталог', profile: 'Профиль', admin: 'Админ-панель', cart: 'Корзина', favorites: 'Избранное' };
 const DEV_ICON = { mobile: '📱', tablet: '📲', desktop: '💻' };
 const CONF = { exact: ['точно', 'g'], likely: ['вероятно', 'y'], group: ['группа моделей', 'y'], unknown: ['не определено', 'r'] };
 
@@ -89,6 +89,9 @@ function describeEvent(e) {
     case 'share_open': return ['📤', 'Открыл «Поделиться корзиной»', ''];
     case 'share_copy': return ['🔗', 'Скопировал ссылку на корзину', ''];
     case 'share_whatsapp': return ['💬', 'Отправил корзину в WhatsApp', ''];
+    case 'reel_view': return ['🎬', `Посмотрел видео «${n}»`, ''];
+    case 'reel_like': return ['❤️', `Лайкнул видео «${n}»`, ''];
+    case 'reel_comment': return ['💬', `Прокомментировал видео «${n}»`, m.text || ''];
     case 'login': return ['🔑', 'Вошёл в аккаунт', ''];
     case 'login_fail': return ['⛔', 'Неудачная попытка входа', ''];
     case 'register': return ['🎉', 'Зарегистрировался', ''];
@@ -436,13 +439,10 @@ VIEWS.exports = async v => {
 async function download(kind, fmt, days) {
   try {
     toast('Готовлю файл…');
-    const r = await fetch(`${API}/export/${kind}?fmt=${fmt}&days=${days || 30}`, { headers: { Authorization: 'Bearer ' + token } });
-    if (!r.ok) throw new Error('Не удалось сформировать файл');
-    const blob = await r.blob();
-    const name = ((r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/) || [])[1] || `${kind}.${fmt}`;
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 60000);
-    toast('Файл скачан: ' + name);
+    const j = await api(`/export-link?kind=${encodeURIComponent(kind)}&fmt=${fmt}&days=${days || 30}`);
+    const a = document.createElement('a');
+    a.href = j.url; a.download = '';          // обычная ссылка на файл — работает и на iPhone
+    document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 1500);
   } catch (e) { toast(e.message, true); }
 }
 

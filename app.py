@@ -166,6 +166,7 @@ async def startup():
         print("✅ Neon pool created, initializing tables...")
         await _create_tables()
         await boss.create_tables()
+        await app.state.reels_create_tables()
         await _seed_if_empty()
         print("✅ Neon PostgreSQL connected and ready!")
     except Exception as e:
@@ -1209,6 +1210,10 @@ async def admin_get_featured(_=Depends(require_admin)):
     """)
     return {"items": [dict(r) for r in rows]}
 
+# ── Happy TV: короткие видео для оптовиков ───────────────────────────────────
+import reels
+reels.register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_user, lambda: _cloudinary_ok)
+
 # ── PDF-каталог для представителей ───────────────────────────────────────────
 # Генерация идёт в фоновом потоке (catalog_pdf.py): фронт запускает задачу,
 # опрашивает прогресс и скачивает готовый файл. Только для админа.
@@ -1253,10 +1258,24 @@ async def catalog_pdf_start(b: PdfExportIn, _=Depends(require_admin)):
 async def catalog_pdf_status(job_id: str, _=Depends(require_admin)):
     job = _pdf_module().get_job(job_id)
     if not job: raise HTTPException(404, "Задача не найдена (возможно, сервер перезапускался). Запустите заново.")
-    return job.public()
+    data = job.public()
+    if job.state == "done":
+        # короткоживущий токен: файл скачивается обычной ссылкой (надёжно для iPhone, без blob:)
+        data["dl"] = jwt.encode({"sub": "pdf", "job": job_id, "exp": datetime.utcnow() + timedelta(minutes=10)},
+                                JWT_SECRET, algorithm="HS256")
+    return data
 
 @app.get("/api/admin/catalog-pdf/{job_id}/file")
-async def catalog_pdf_file(job_id: str, _=Depends(require_admin)):
+async def catalog_pdf_file(job_id: str, t: str = "", creds: HTTPAuthorizationCredentials = Depends(security)):
+    ok = False
+    if t:
+        try:
+            pl = jwt.decode(t, JWT_SECRET, algorithms=["HS256"])
+            ok = pl.get("sub") == "pdf" and pl.get("job") == job_id
+        except jwt.PyJWTError:
+            ok = False
+    if not ok:
+        require_admin(creds)
     job = _pdf_module().get_job(job_id)
     if not job or job.state != "done" or not job.pdf:
         raise HTTPException(404, "Файл ещё не готов или устарел")

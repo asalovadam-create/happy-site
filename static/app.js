@@ -1553,9 +1553,10 @@ ${comment ? `<div class="cmt">💬 <strong>Комментарий:</strong> ${es
 </body></html>`;
 
   // Open in same tab — no popup needed
-  const blob = new Blob([html], {type: 'text/html;charset=utf-8'});
-  const url  = URL.createObjectURL(blob);
-  window.location.href = url;
+  // iOS Safari не умеет открывать blob:-ссылки (ошибка WebKitBlobResource), поэтому пишем страницу напрямую
+  document.open();
+  document.write(html);
+  document.close();
 }
 
 // ── Confetti celebration ────────────────────────────────────────────────────
@@ -1862,14 +1863,13 @@ async function downloadRepPdf() {
     if (job.state === 'error') throw new Error(job.error || 'Не удалось создать PDF');
 
     bar.style.width = '100%'; msg.textContent = 'Скачиваю файл…';
-    const r = await fetch(`/api/admin/catalog-pdf/${job.job_id}/file`, { headers: { Authorization: `Bearer ${State.user?.token}` } });
-    if (!r.ok) throw new Error('Не удалось скачать файл, попробуйте ещё раз');
-    const url = URL.createObjectURL(await r.blob());
-    const a = document.createElement('a');
+    // Обычная ссылка на файл с временным разрешением: так скачивание надёжно работает и на iPhone (без blob:)
     const stp = job.stats || {};
-    a.href = url; a.download = `Happy-Toys-каталог-${new Date().toISOString().slice(0, 10)}${stp.parts > 1 ? `-часть-${stp.part}-из-${stp.parts}` : ''}.pdf`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 120000);
+    const a = document.createElement('a');
+    a.href = `/api/admin/catalog-pdf/${job.job_id}/file?t=${encodeURIComponent(job.dl || '')}`;
+    a.download = '';
+    document.body.appendChild(a); a.click();
+    setTimeout(() => a.remove(), 1500);
 
     const st = job.stats || {};
     const parts = [`В файле: <b>${st.products}</b> тов. · ${st.categories} разд. · ${st.pages} стр. · ${st.size_mb} МБ`, `Собрано за ${((st.sec_photos || 0) + (st.sec_render || 0)).toFixed(1)} с`];
@@ -1910,6 +1910,7 @@ async function renderAdmin() {
   mc.innerHTML = `<div class="admin-page">
     <div class="admin-stats" id="adminStats">${[1,2,3,4,5].map(() => `<div class="stat-card skeleton" style="height:80px"></div>`).join('')}</div>
     ${renderRepPdfCard()}
+    <div id="reelsAdmin"></div>
     <div id="adminBody">
       <div class="admin-section" id="sec-addprod">${skel(40)}${skel(120)}${skel(120)}${skel(44)}</div>
       <div class="admin-section" id="sec-editprod">${skel(40)}${skel(60)}${skel(60)}${skel(60)}</div>
@@ -1919,6 +1920,7 @@ async function renderAdmin() {
     </div>
   </div>`;
   initRepPdf();
+  if (window.initReelsAdmin) initReelsAdmin();
 
   // Load stats first (fastest single query)
   API.adminStats().then(stats => {
@@ -2932,6 +2934,8 @@ function clearSearch() {
 function navigate(page) {
   State.page = page;
   State.pageNum = 1;
+  document.body.classList.toggle('reels-on', page === 'reels');
+  if (page !== 'reels' && window.stopReels) window.stopReels();
 
   document.querySelectorAll('.bn-btn').forEach(b => b.classList.remove('active'));
   const btn = $(`bn-${page}`);
@@ -2956,6 +2960,7 @@ function navigate(page) {
     if (page === 'catalog') { State.category = null; State.search = ''; renderCatalog(); }
     if (page === 'profile') renderProfile();
     if (page === 'admin')   renderAdmin();
+    if (page === 'reels' && window.renderReels) renderReels();
   });
 }
 
