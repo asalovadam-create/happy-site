@@ -32,6 +32,22 @@ FOLDER = "happy-toys/reels"
 # 9:16, 720 px по ширине; если исходник горизонтальный — размытый фон по краям (как в TikTok).
 VIDEO_TRANS = "ar_9:16,c_pad,b_blurred:400:15,w_720,q_auto:good,vc_h264,ac_aac,f_mp4"
 POSTER_TRANS = "so_0,ar_9:16,c_pad,b_blurred:400:15,w_540,q_auto,f_jpg"
+FPS = "fps_24-30"      # iPhone снимает 60 к/с — для ленты хватает 30, обработка вдвое быстрее
+
+
+def pick_trans(width, height):
+    """Лёгкая обработка для обычных вертикальных видео; размытые поля — только если формат другой."""
+    r = (width / height) if width and height else 0
+    tail = f"vc_h264,ac_aac,{FPS},q_auto:good,f_mp4"
+    if 0.52 <= r <= 0.62:                       # уже 9:16 — просто уменьшаем до 720 px
+        return f"c_limit,w_720,h_1280,{tail}"
+    return f"ar_9:16,c_pad,b_blurred:400:15,w_720,{tail}"
+
+
+def poster_trans(trans):
+    return "so_0,c_fill,ar_9:16,w_540,q_auto,f_jpg" if (trans or "").startswith("c_limit") else POSTER_TRANS
+
+
 _PID_RE = re.compile(r"^happy-toys/reels/[A-Za-z0-9_-]{4,80}$")
 _VID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
@@ -177,9 +193,13 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
             customer_id TEXT REFERENCES customers(id) ON DELETE SET NULL,
             author TEXT DEFAULT '', body TEXT NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW()
         )""")
+        await db_execute("ALTER TABLE reels ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'ready'")
+        await db_execute("ALTER TABLE reels ADD COLUMN IF NOT EXISTS trans TEXT DEFAULT ''")
         await db_execute("CREATE INDEX IF NOT EXISTS reels_created ON reels (created_at DESC)")
         await db_execute("CREATE INDEX IF NOT EXISTS reel_comments_reel ON reel_comments (reel_id, id DESC)")
         print("~ reels (Happy TV) tables ready")
+        if not getattr(app.state, "reels_watcher", None):
+            app.state.reels_watcher = asyncio.get_event_loop().create_task(watch_processing())
 
     app.state.reels_create_tables = create_tables
 
@@ -191,7 +211,7 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
               (SELECT COUNT(*) FROM reel_views v WHERE v.reel_id = r.id) AS views,
               (SELECT COUNT(*) FROM reel_likes l WHERE l.reel_id = r.id) AS likes,
               (SELECT COUNT(*) FROM reel_comments c WHERE c.reel_id = r.id) AS comments
-            FROM reels r WHERE r.is_published ORDER BY r.created_at DESC LIMIT 300""")
+            FROM reels r WHERE r.is_published AND r.status = 'ready' ORDER BY r.created_at DESC LIMIT 300""")
         items = [dict(r) for r in rows]
         viewer, cid = viewer_of(user, vid), customer_id(user)
         seen, liked = set(), set()
@@ -288,21 +308,19 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
         import cloudinary
         return cloudinary
 
-    def _urls(cloud_name, public_id):
+    def _urls(cloud_name, public_id, trans=VIDEO_TRANS):
         base = f"https://res.cloudinary.com/{cloud_name}/video/upload"
-        return f"{base}/{VIDEO_TRANS}/{public_id}.mp4", f"{base}/{POSTER_TRANS}/{public_id}.jpg"
+        return f"{base}/{trans}/{public_id}.mp4", f"{base}/{poster_trans(trans)}/{public_id}.jpg"
 
     @app.post("/api/admin/reels/sign")
     async def reels_sign(_=Depends(require_admin)):
         cl = _cloud()
         ts = int(time.time())
-        eager = VIDEO_TRANS
-        # подпись: параметры по алфавиту (eager, eager_async, folder, timestamp) + секрет
-        params = f"eager={eager}&eager_async=true&folder={FOLDER}&timestamp={ts}"
+        # Загружаем «как есть» — обработку запускаем отдельно на сервере (после загрузки), с учётом формата ролика.
+        params = f"folder={FOLDER}&timestamp={ts}"
         sig = hashlib.sha1((params + cl.config().api_secret).encode()).hexdigest()
         return {"cloud_name": cl.config().cloud_name, "api_key": cl.config().api_key, "timestamp": ts,
-                "signature": sig, "folder": FOLDER, "eager": eager, "eager_async": "true",
-                "max_bytes": MAX_BYTES, "max_duration": MAX_DURATION}
+                "signature": sig, "folder": FOLDER, "max_bytes": MAX_BYTES, "max_duration": MAX_DURATION}
 
     def _head(url):
         req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "HappyToysReels/1.0"})
@@ -344,19 +362,53 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
             except Exception:
                 pass
             raise HTTPException(400, f"Видео длиннее {MAX_DURATION // 60} минут — сократите ролик")
-        video_url, poster_url = _urls(cl.config().cloud_name, b.public_id)
+        width, height = int(info.get("width") or 0), int(info.get("height") or 0)
+        trans = pick_trans(width, height)
+        # запускаем оптимизацию в фоне у Cloudinary; ответ приходит сразу, ждать не нужно
+        try:
+            await loop.run_in_executor(None, functools.partial(
+                cl.uploader.explicit, b.public_id, type="upload", resource_type="video",
+                eager=[trans], eager_async=True))
+        except Exception as e:
+            print(f"[reels] explicit() не удалось ({e.__class__.__name__}: {e}) — обработка начнётся при первом запросе")
+        video_url, poster_url = _urls(cl.config().cloud_name, b.public_id, trans)
         row = await db_fetchrow("""
-            INSERT INTO reels(title, caption, public_id, video_url, poster_url, duration, width, height, bytes)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id""",
+            INSERT INTO reels(title, caption, public_id, video_url, poster_url, duration, width, height, bytes, status, trans)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'processing',$10) RETURNING id""",
             b.title.strip()[:80], b.caption.strip()[:300], b.public_id, video_url, poster_url, duration,
-            int(info.get("width") or 0), int(info.get("height") or 0), int(info.get("bytes") or 0))
-        return {"id": row["id"], "video_url": video_url, "poster_url": poster_url}
+            width, height, int(info.get("bytes") or 0), trans)
+        return {"id": row["id"], "status": "processing"}
+
+    async def watch_processing():
+        """Фоновая проверка: как только Cloudinary закончил оптимизацию — ролик появляется в ленте сам."""
+        loop = asyncio.get_event_loop()
+        while True:
+            pause = 20
+            try:
+                rows = await db_fetch("""SELECT id, video_url, created_at FROM reels
+                                         WHERE status = 'processing' ORDER BY id LIMIT 20""")
+                if rows:
+                    pause = 5
+                for r in rows:
+                    code = await loop.run_in_executor(None, _head, r["video_url"])
+                    if code == 200:
+                        await db_execute("UPDATE reels SET status='ready' WHERE id=$1", r["id"])
+                    else:
+                        c = r["created_at"] if r["created_at"].tzinfo else r["created_at"].replace(tzinfo=timezone.utc)
+                        if datetime.now(timezone.utc) - c > timedelta(minutes=45):
+                            await db_execute("UPDATE reels SET status='failed' WHERE id=$1", r["id"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                print(f"[reels] наблюдатель: {e.__class__.__name__}: {e}")
+                pause = 30
+            await asyncio.sleep(pause)
 
     @app.get("/api/admin/reels")
     async def reels_admin_list(_=Depends(require_admin)):
         rows = await db_fetch("""
             SELECT r.id, r.title, r.caption, r.video_url, r.poster_url, r.duration, r.width, r.height, r.bytes,
-              r.is_published, r.created_at,
+              r.is_published, r.status, r.created_at,
               (SELECT COUNT(*) FROM reel_views v WHERE v.reel_id = r.id) AS views,
               (SELECT COUNT(*) FROM reel_views v WHERE v.reel_id = r.id AND v.viewer LIKE 'c:%') AS views_accounts,
               (SELECT COUNT(*) FROM reel_views v WHERE v.reel_id = r.id AND v.viewer LIKE 'v:%') AS views_guests,

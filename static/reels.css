@@ -152,3 +152,5 @@ body.reels-on { overflow: hidden; }
   .rva-acts button { min-width: 0; padding: 7px 4px; font-size: 11.5px; }
   .rva-s span { font-size: 9.5px; }
 }
+
+.rva-poster .st.proc { background: #FF9800; animation: rvap 1.4s ease-in-out infinite; }

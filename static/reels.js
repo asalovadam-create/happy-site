@@ -302,7 +302,12 @@
     $('rvaList').onclick = onListClick;
     loadList();
     clearInterval(A.timer);
-    A.timer = setInterval(() => { if (!$('rvaList')) return clearInterval(A.timer); if (!document.hidden && !A.busy) loadList(true); }, 30000);
+    A.tick = 0;
+    A.timer = setInterval(() => {
+      if (!$('rvaList')) return clearInterval(A.timer);
+      A.tick++;
+      if (!document.hidden && !A.busy && (A.fast || A.tick % 6 === 0)) loadList(true);   // 5 с, пока видео оптимизируется; иначе раз в 30 с
+    }, 5000);
   };
 
   function probe(file) {
@@ -326,8 +331,9 @@
     const ratio = m && m.w && m.h ? m.w / m.h : 0;
     const note = !m ? '' : (Math.abs(ratio - 9 / 16) < 0.03 ? '✅ Формат 9:16 — идеально' : ratio > 1 ? 'ℹ️ Горизонтальное: добавим размытый фон по краям' : 'ℹ️ Формат отличается от 9:16: добавим размытые поля');
     A.file = file;
+    const big = file.size > 50 * 1048576 ? ' · ⚠️ Большой файл — загрузка займёт время. Для скорости снимайте в Full HD (1080p), а не в 4K' : '';
     info.className = 'rva-file on';
-    info.innerHTML = `🎞️ ${esc(file.name)}<small>${fmtMb(file.size)}${m ? ` · ${fmtDur(m.d)} · ${m.w}×${m.h}` : ''}${note ? ' · ' + note : ''}</small>`;
+    info.innerHTML = `🎞️ ${esc(file.name)}<small>${fmtMb(file.size)}${m ? ` · ${fmtDur(m.d)} · ${m.w}×${m.h}` : ''}${note ? ' · ' + note : ''}${big}</small>`;
     go.disabled = false;
     if (!$('rvaTitle').value) $('rvaTitle').value = file.name.replace(/\.[^.]+$/, '').slice(0, 80);
   }
@@ -348,25 +354,25 @@
       const sig = await API.post('/api/admin/reels/sign', {});
       const fd = new FormData();
       fd.append('file', A.file); fd.append('api_key', sig.api_key); fd.append('timestamp', sig.timestamp);
-      fd.append('signature', sig.signature); fd.append('folder', sig.folder); fd.append('eager', sig.eager); fd.append('eager_async', sig.eager_async);
+      fd.append('signature', sig.signature); fd.append('folder', sig.folder);
+      const t0 = Date.now();
       const up = await new Promise((ok, fail) => {
         const x = new XMLHttpRequest();
         x.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloud_name}/video/upload`);
-        x.upload.onprogress = e => { if (e.lengthComputable) setProg(Math.round(e.loaded / e.total * 90), `Загрузка видео… ${Math.round(e.loaded / e.total * 100)}%`); };
+        x.upload.onprogress = e => {
+          if (!e.lengthComputable) return;
+          const sec = Math.max(0.5, (Date.now() - t0) / 1000), speed = e.loaded / sec;           // байт/с
+          const left = Math.max(0, Math.round((e.total - e.loaded) / Math.max(speed, 1)));
+          setProg(Math.round(e.loaded / e.total * 95), `Загрузка видео… ${Math.round(e.loaded / e.total * 100)}% · ${(speed * 8 / 1e6).toFixed(1)} Мбит/с · осталось ~${left} с`);
+        };
         x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {} x.status < 300 && j.public_id ? ok(j) : fail(new Error((j.error && j.error.message) || 'Не удалось загрузить видео')); };
         x.onerror = () => fail(new Error('Нет соединения при загрузке'));
         x.send(fd);
       });
-      setProg(92, 'Оптимизируем видео — это займёт до пары минут…', '', true);
-      let ready = false;
-      for (let t = 0; t < 100 && !ready; t++) {
-        const r = await API.get('/api/admin/reels/ready?public_id=' + encodeURIComponent(up.public_id));
-        ready = r.ready; if (!ready) await sleep(3000);
-      }
-      if (!ready) throw new Error('Оптимизация занимает слишком долго. Подождите и нажмите «Обновить» — видео появится в списке, когда будет готово.');
-      setProg(98, 'Публикуем…');
+      const upSec = Math.round((Date.now() - t0) / 1000);
+      setProg(97, 'Сохраняем и запускаем оптимизацию…');
       await API.post('/api/admin/reels', { public_id: up.public_id, title, caption });
-      setProg(100, '✅ Видео опубликовано и уже доступно в ленте', 'ok');
+      setProg(100, `✅ Загружено за ${upSec} с. Видео оптимизируется в фоне и появится в ленте само (обычно 1–3 минуты). Можно загружать следующее.`, 'ok');
       A.file = null; $('rvaInfo').className = 'rva-file'; $('rvaTitle').value = ''; $('rvaCap').value = ''; $('rvaFile').value = '';
       await loadList();
     } catch (e) {
@@ -378,17 +384,22 @@
 
   async function loadList(silent) {
     const list = $('rvaList'); if (!list) return;
-    try { A.items = (await API.get('/api/admin/reels')).items || []; } catch (e) { if (!silent) list.innerHTML = `<div class="rva-empty">${esc(e.message)}</div>`; return; }
+    let items;
+    try { items = (await API.get('/api/admin/reels')).items || []; } catch (e) { if (!silent) list.innerHTML = `<div class="rva-empty">${esc(e.message)}</div>`; return; }
+    A.fast = items.some(r => r.status === 'processing');
+    const sg = JSON.stringify(items.map(r => [r.id, r.status, r.views, r.likes, r.comments, r.is_published, r.title]));
+    if (silent && sg === A.sig) return;            // ничего не изменилось — не трогаем (чтобы не сбрасывать просмотр ролика)
+    A.sig = sg; A.items = items;
     if (!A.items.length) { list.innerHTML = '<div class="rva-empty">Пока нет видео. Загрузите первое — оно сразу появится в ленте у покупателей.</div>'; return; }
     list.innerHTML = A.items.map(r => `<div class="rva-card ${r.is_published ? '' : 'off'}" data-id="${r.id}">
       <div class="rva-poster" id="rvp${r.id}" style="background-image:url('${esc(r.poster_url)}')">
-        <span class="st ${r.is_published ? '' : 'off'}">${r.is_published ? 'Опубликовано' : 'Скрыто'}</span><span class="dur">${fmtDur(r.duration)}</span>
-        <button class="play" data-a="play" aria-label="Смотреть">▶</button></div>
+        ${r.status === 'processing' ? '<span class="st proc">⏳ Оптимизируется…</span>' : r.status === 'failed' ? '<span class="st off">Ошибка обработки</span>' : `<span class="st ${r.is_published ? '' : 'off'}">${r.is_published ? 'Опубликовано' : 'Скрыто'}</span>`}<span class="dur">${fmtDur(r.duration)}</span>
+        ${r.status === 'ready' ? '<button class="play" data-a="play" aria-label="Смотреть">▶</button>' : ''}</div>
       <div class="rva-body"><div class="rva-t">${esc(r.title || 'Без названия')}</div>
         <div class="rva-d">${new Date(r.created_at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })} · ${fmtMb(r.bytes || 0)}</div>
         <div class="rva-stats"><div class="rva-s"><b>${short(r.views)}</b><span>просмотры</span></div><div class="rva-s"><b>${short(r.likes)}</b><span>лайки</span></div><div class="rva-s"><b>${short(r.comments)}</b><span>комментарии</span></div></div>
         <div class="rva-split">просмотры: аккаунтов ${r.views_accounts} · гостей ${r.views_guests}</div>
-        <div class="rva-acts"><button data-a="cm">💬 Комментарии</button><button data-a="pub">${r.is_published ? 'Скрыть' : 'Показать'}</button><button data-a="del" class="del">Удалить</button></div>
+        <div class="rva-acts"><button data-a="cm">💬 Комментарии</button>${r.status === 'ready' ? `<button data-a="pub">${r.is_published ? 'Скрыть' : 'Показать'}</button>` : ''}<button data-a="del" class="del">Удалить</button></div>
         <div id="rvc${r.id}"></div></div></div>`).join('');
     if (A.openCm) openCm(A.openCm);
   }
