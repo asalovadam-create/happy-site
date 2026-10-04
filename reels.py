@@ -214,6 +214,7 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
             FROM reels r WHERE r.is_published AND r.status = 'ready' ORDER BY r.created_at DESC LIMIT 300""")
         items = [dict(r) for r in rows]
         viewer, cid = viewer_of(user, vid), customer_id(user)
+        is_admin = bool(user and user.get("role") == "admin")
         seen, liked = set(), set()
         if viewer:
             sv = await db_fetch("SELECT reel_id FROM reel_views WHERE viewer = $1", viewer)
@@ -231,19 +232,23 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
             d["is_new"] = c >= border
             d["seen"] = r["id"] in seen
             d["liked"] = r["id"] in liked
+            if not is_admin:
+                d.pop("views", None)           # счётчик просмотров видит только администратор
             out.append(d)
         return {"items": out, "logged_in": bool(cid)}
 
     @app.post("/api/reels/{reel_id}/view")
     async def reel_view(reel_id: int, b: ViewIn, user=Depends(get_current_user)):
+        if user and user.get("role") == "admin":          # просмотры сотрудников не считаем
+            row = await db_fetchrow("SELECT COUNT(*) AS n FROM reel_views WHERE reel_id = $1", reel_id)
+            return {"counted": False, "views": row["n"]}
         viewer = viewer_of(user, b.vid)
         if not viewer:
             return {"counted": False}
         st = await db_execute(
             "INSERT INTO reel_views(reel_id, viewer) SELECT $1::int, $2::text "
             "WHERE EXISTS (SELECT 1 FROM reels WHERE id = $1::int AND is_published) ON CONFLICT DO NOTHING", reel_id, viewer)
-        row = await db_fetchrow("SELECT COUNT(*) AS n FROM reel_views WHERE reel_id = $1", reel_id)
-        return {"counted": st.endswith(" 1"), "views": row["n"]}
+        return {"counted": st.endswith(" 1")}            # покупателям количество просмотров не показываем
 
     @app.post("/api/reels/{reel_id}/like")
     async def reel_like(reel_id: int, user=Depends(get_current_user)):

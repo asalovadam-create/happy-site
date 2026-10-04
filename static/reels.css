@@ -36,16 +36,20 @@ body.reels-on { overflow: hidden; }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; pointer-events: auto; }
 .reel-cap.open { -webkit-line-clamp: unset; max-height: 36vh; overflow-y: auto; }
 
-.reel-actions { position: absolute; right: 8px; bottom: 26px; z-index: 5; display: grid; gap: 16px; justify-items: center; }
-.ra { display: grid; justify-items: center; gap: 3px; color: #fff; background: none; border: 0; cursor: pointer; font-family: inherit; min-width: 56px; padding: 2px; }
-.ra .ico { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.38); backdrop-filter: blur(6px); transition: transform .15s, background .15s; }
-.ra svg { width: 25px; height: 25px; }
-.ra b { font-size: 12.5px; font-weight: 800; text-shadow: 0 1px 4px rgba(0,0,0,.7); }
-.ra:active .ico { transform: scale(.88); }
-.ra.like.on .ico { background: rgba(255,59,100,.9); animation: rpop .35s ease; }
-.ra.like.on svg { fill: #fff; }
-.ra.static { cursor: default; }
-@keyframes rpop { 40% { transform: scale(1.25); } }
+.reel-actions { position: absolute; right: 6px; bottom: 26px; z-index: 5; display: grid; gap: 14px; justify-items: center; }
+/* как в Instagram: просто белые иконки без подложки, под ними — счётчик */
+.ra { display: grid; justify-items: center; gap: 2px; color: #fff; background: none; border: 0; cursor: pointer; font-family: inherit; min-width: 54px; padding: 2px; -webkit-tap-highlight-color: transparent; }
+.ra .ico { width: 36px; height: 36px; display: grid; place-items: center; background: none; transition: transform .15s ease; }
+.ra svg { width: 31px; height: 31px; stroke-width: 1.9; filter: drop-shadow(0 1px 3px rgba(0,0,0,.55)); }
+.ra b { font-size: 12.5px; font-weight: 800; text-shadow: 0 1px 4px rgba(0,0,0,.75); }
+.ra:active .ico { transform: scale(.85); }
+.ra.like.on { color: #ff3040; }
+.ra.like.on b { color: #fff; }
+.ra.like.on svg { fill: #ff3040; stroke: #ff3040; }
+.ra.like.on .ico { animation: rpop .35s ease; }
+.ra.static { cursor: default; opacity: .95; }
+.ra.static svg { width: 27px; height: 27px; }
+@keyframes rpop { 40% { transform: scale(1.28); } }
 
 .reel-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; z-index: 6; background: rgba(255,255,255,.22); }
 .reel-bar i { display: block; height: 100%; width: 0; background: #fff; }
@@ -53,7 +57,8 @@ body.reels-on { overflow: hidden; }
   background: rgba(0,0,0,.45); display: grid; place-items: center; opacity: 0; transform: scale(.7); pointer-events: none; transition: .2s; }
 .reel-pause svg { width: 34px; height: 34px; fill: #fff; }
 .reel.paused .reel-pause { opacity: 1; transform: none; }
-.reel-heart { position: absolute; left: 50%; top: 50%; z-index: 7; font-size: 96px; margin: -58px 0 0 -48px; opacity: 0; pointer-events: none; filter: drop-shadow(0 4px 14px rgba(0,0,0,.4)); }
+.reel-heart { position: absolute; left: 50%; top: 50%; z-index: 7; width: 104px; height: 104px; margin: -52px 0 0 -52px; color: #ff3040; opacity: 0; pointer-events: none; filter: drop-shadow(0 4px 14px rgba(0,0,0,.4)); }
+.reel-heart svg { width: 100%; height: 100%; }
 .reel-heart.go { animation: rheart .8s ease; }
 @keyframes rheart { 0% { opacity: 0; transform: scale(.4); } 20% { opacity: 1; transform: scale(1.15); } 70% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.1) translateY(-20px); } }
 
@@ -63,13 +68,15 @@ body.reels-on { overflow: hidden; }
 .reels-brand span { color: #FFB347; }
 .reels-mute { pointer-events: auto; width: 40px; height: 40px; border-radius: 50%; border: 0; background: rgba(0,0,0,.4); color: #fff; display: grid; place-items: center; cursor: pointer; backdrop-filter: blur(6px); }
 .reels-mute svg { width: 21px; height: 21px; }
-.reels-hint { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 9; background: rgba(0,0,0,.6); padding: 8px 16px; border-radius: 99px; font-weight: 800; font-size: 13px; pointer-events: none; animation: rhint 3.4s ease forwards; }
+.reels-hint { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); z-index: 9; background: rgba(0,0,0,.6); padding: 8px 16px 8px 12px; border-radius: 99px; font-weight: 800; font-size: 13px; pointer-events: none; animation: rhint 3.4s ease forwards; display: flex; align-items: center; gap: 4px; }
+.reels-hint svg { width: 18px; height: 18px; }
 @keyframes rhint { 0%, 80% { opacity: 1; } 100% { opacity: 0; } }
 
 .reel-end, .reels-empty { height: 100%; display: grid; place-content: center; justify-items: center; gap: 12px; text-align: center; padding: 30px; scroll-snap-align: start; background: radial-gradient(500px 300px at 50% 30%, rgba(255,107,53,.35), #0b0b12 70%); }
 .reel-end h3, .reels-empty h3 { font-size: 21px; font-weight: 900; }
 .reel-end p, .reels-empty p { opacity: .8; font-weight: 600; max-width: 280px; }
-.reel-end .big, .reels-empty .big { font-size: 54px; }
+.big-ico { width: 84px; height: 84px; border-radius: 50%; display: grid; place-items: center; background: linear-gradient(135deg, rgba(255,107,53,.9), rgba(255,179,71,.9)); box-shadow: 0 10px 30px rgba(255,107,53,.35); }
+.big-ico svg { width: 42px; height: 42px; stroke-width: 1.8; }
 .rbtn { background: linear-gradient(135deg, #FF6B35, #FFB347); color: #fff; font-weight: 900; font-size: 15px; border: 0; border-radius: 14px; padding: 12px 24px; cursor: pointer; font-family: inherit; box-shadow: 0 8px 22px rgba(255,107,53,.4); }
 .reels-load { height: 100%; display: grid; place-items: center; }
 .reels-load .spin { width: 42px; height: 42px; border-radius: 50%; border: 4px solid rgba(255,255,255,.2); border-top-color: #FF6B35; animation: rspin .8s linear infinite; }
@@ -79,18 +86,22 @@ body.reels-on { overflow: hidden; }
 .rc-sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 21; max-width: 480px; margin: 0 auto; height: 68%; background: #fff; color: #1A1A2E; border-radius: 20px 20px 0 0; display: flex; flex-direction: column; animation: rup .25s ease; }
 @keyframes rup { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 .rc-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px 10px; font-weight: 900; font-size: 15px; border-bottom: 1px solid #eee; }
-.rc-x { border: 0; background: #f2f2f4; width: 32px; height: 32px; border-radius: 50%; font-size: 15px; cursor: pointer; }
+.rc-x { border: 0; background: #f2f2f4; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; display: grid; place-items: center; color: #444; }
+.rc-x svg { width: 17px; height: 17px; }
 .rc-list { flex: 1; overflow-y: auto; padding: 8px 16px; -webkit-overflow-scrolling: touch; }
 .rc-item { display: grid; grid-template-columns: 36px 1fr auto; gap: 10px; padding: 10px 0; align-items: start; }
 .rc-av { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #FF6B35, #FFB347); color: #fff; display: grid; place-items: center; font-weight: 900; }
 .rc-au { font-weight: 800; font-size: 13px; } .rc-au small { color: #999; font-weight: 600; margin-left: 6px; }
 .rc-tx { font-size: 14px; line-height: 1.4; margin-top: 2px; word-break: break-word; }
-.rc-del { border: 0; background: none; color: #bbb; cursor: pointer; font-size: 16px; padding: 4px; }
+.rc-del { border: 0; background: none; color: #bbb; cursor: pointer; padding: 4px; display: grid; place-items: center; }
+.rc-del svg { width: 18px; height: 18px; }
+.rc-del:hover { color: #e53935; }
 .rc-empty { text-align: center; color: #999; font-weight: 700; padding: 40px 10px; }
 .rc-form { display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid #eee; }
 .rc-form input { flex: 1; font-size: 16px; padding: 11px 14px; border-radius: 22px; border: 1.5px solid #e5e5ea; outline: none; font-family: inherit; }
 .rc-form input:focus { border-color: #FF6B35; }
-.rc-form button { border: 0; background: #FF6B35; color: #fff; width: 44px; border-radius: 50%; font-size: 18px; cursor: pointer; }
+.rc-form button { border: 0; background: #FF6B35; color: #fff; width: 44px; border-radius: 50%; cursor: pointer; display: grid; place-items: center; }
+.rc-form button svg { width: 20px; height: 20px; margin-left: -2px; }
 .rc-login { padding: 14px; text-align: center; border-top: 1px solid #eee; font-weight: 700; color: #666; }
 .rc-login button { margin-top: 8px; }
 
@@ -154,3 +165,22 @@ body.reels-on { overflow: hidden; }
 }
 
 .rva-poster .st.proc { background: #FF9800; animation: rvap 1.4s ease-in-out infinite; }
+
+/* ── иконки в тексте (админка) ── */
+.ic { display: inline-grid; place-items: center; vertical-align: middle; margin-right: 6px; }
+.ic svg { width: 1.15em; height: 1.15em; }
+.ic-line { display: flex; align-items: flex-start; gap: 6px; margin-top: 4px; font-weight: 700; }
+.ic-line .ic { margin-right: 0; margin-top: 1px; flex: none; }
+.ic-line.ok { color: #2e7d32; } .ic-line.err { color: #d32f2f; } .ic-line.warn { color: #e65100; } .ic-line.info { color: #1565c0; }
+.rva-h h3 { display: flex; align-items: center; }
+.rva-h h3 .ic svg { width: 22px; height: 22px; color: #FF6B35; }
+.rva-link { border: 0; background: none; color: #FF6B35; font-weight: 900; cursor: pointer; font-family: inherit; }
+.rva-drop b { display: flex; align-items: center; justify-content: center; }
+.rva-drop b .ic svg { width: 20px; height: 20px; }
+.rva-poster .play svg { width: 54px; height: 54px; filter: drop-shadow(0 2px 8px rgba(0,0,0,.5)); }
+.rva-poster .st { display: flex; align-items: center; gap: 4px; }
+.rva-poster .st .ic { margin: 0; } .rva-poster .st .ic svg { width: 12px; height: 12px; }
+.rva-acts button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+.rva-acts button .ic { margin: 0; } .rva-acts button .ic svg { width: 14px; height: 14px; }
+.rva-c button { display: grid; place-items: center; } .rva-c button svg { width: 16px; height: 16px; }
+.rva-msg .ic-line { margin-top: 0; }
