@@ -43,11 +43,12 @@
   <link rel="apple-touch-startup-image" media="screen and (device-width: 1024px) and (device-height: 1366px) and (-webkit-device-pixel-ratio: 2)" href="/static/splash-2048x2732.png">
   <!-- iPad Pro 11 -->
   <link rel="apple-touch-startup-image" media="screen and (device-width: 834px) and (device-height: 1194px) and (-webkit-device-pixel-ratio: 2)" href="/static/splash-1668x2388.png">
-  <link rel="preconnect" href="https://placehold.co" crossorigin>
-  <link rel="dns-prefetch" href="https://placehold.co">
+    <link rel="dns-prefetch" href="https://placehold.co">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  <!-- Шрифты грузятся в фоне и не задерживают показ страницы -->
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&family=Nunito+Sans:wght@400;600;700&display=swap" rel="stylesheet"></noscript>
   <link rel="stylesheet" href="/static/style.css?v=1791052941">
   <link rel="stylesheet" href="/static/reels.css?v=1791120575">
 </head>
@@ -309,9 +310,9 @@
     // Will be overridden by real functions in app.js
     // app.js calls window.__replayNav() at the end of init
   </script>
-  <script src="/static/app.js?v=1791052941"></script>
+  <script src="/static/app.js?v=1791300000"></script>
   <script src="/static/tracker.js?v=1791052941" defer></script>
-  <script src="/static/reels.js?v=1791120575" defer></script>
+  <script src="/static/reels.js?v=1791300000" defer></script>
 <script>
 // iOS Safari: reset zoom after keyboard closes
 (function(){

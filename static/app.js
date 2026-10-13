@@ -84,8 +84,8 @@ async function loadSession() {
 // ── API ───────────────────────────────────────────────────────────────────────
 // ── Client-side image compression ──────────────────────────────────────────
 // Runs before every upload: shrinks huge phone photos (often 3-8MB) down to
-// a small, still-sharp file before it ever leaves the browser. Cloudinary
-// stores and serves the result — nothing heavy ever touches our database.
+// a small, still-sharp file before it ever leaves the browser. The server
+// stores the result on disk — nothing heavy ever touches our database.
 async function compressImageFile(file, maxDim = 1600, quality = 0.85) {
   // Only compress what a <canvas> can safely re-draw; anything else (e.g. an
   // animated GIF) is uploaded as-is so we don't break it.
@@ -178,32 +178,10 @@ const API = {
     // Check size before upload — fail fast, don't waste time uploading
     if (rawFile.size > 5 * 1024 * 1024) throw new Error('Файл слишком большой (макс. 5MB)');
     const file = await compressImageFile(rawFile);
-    // Direct upload to Cloudinary — bypasses our server entirely
-    // This means: no server load, no file size limits from us, faster upload
-    try {
-      const sig = await this.get('/api/cloudinary-signature');
-      const form = new FormData();
-      form.append('file', file);
-      form.append('api_key', sig.api_key);
-      form.append('timestamp', sig.timestamp);
-      form.append('signature', sig.signature);
-      form.append('folder', sig.folder);
-      form.append('eager', sig.eager);
-      const res = await fetch(
-        `https://api.cloudinary.com/v1_1/${sig.cloud_name}/image/upload`,
-        { method: 'POST', body: form }
-      );
-      if (!res.ok) throw new Error('Cloudinary error');
-      const data = await res.json();
-      // Use the eager transformed version (800x800, auto quality)
-      const url = (data.eager && data.eager[0]) ? data.eager[0].secure_url : data.secure_url;
-      return { url, public_id: data.public_id };
-    } catch(e) {
-      // Fallback to server-side upload if direct fails
-      const form = new FormData();
-      form.append('file', file);
-      return this.req('POST', '/api/upload-image', form, true);
-    }
+    // Фото уходит на наш сервер: он делает WebP в трёх размерах и отдаёт через nginx
+    const form = new FormData();
+    form.append('file', file);
+    return this.req('POST', '/api/upload-image', form, true);
   },
 };
 
@@ -406,13 +384,13 @@ function renderCart() {
 }
 
 // ── Product Card ──────────────────────────────────────────────────────────────
-// Optimize Cloudinary URLs — auto WebP, resize, compress
+// Фото товаров лежат на нашем сервере в трёх размерах (_400, _800 и полный до 1200 px) —
+// для карточки берём маленький файл, поэтому каталог открывается мгновенно.
 function cdnImg(url, w=400) {
   if (!url) return '';
-  // Only transform Cloudinary URLs
-  if (!url.includes('cloudinary.com') && !url.includes('res.cloudinary')) return url;
-  // Insert transformation before /upload/
-  return url.replace('/upload/', `/upload/f_auto,q_auto:good,w_${w},c_limit/`);
+  const m = /^(\/media\/products\/[0-9a-f]+)\.webp$/.exec(url);
+  if (!m) return url;
+  return w <= 400 ? `${m[1]}_400.webp` : w <= 800 ? `${m[1]}_800.webp` : url;
 }
 
 function renderProductCard(p) {
@@ -421,7 +399,7 @@ function renderProductCard(p) {
     .map(t=>`<span class="tag ${tagClass[t]||'tag-hit'}">${escHtml(t)}</span>`).join('');
 
   // Images — deduplicate + fallback placeholder if no images at all
-  const PLACEHOLDER = 'https://placehold.co/400x400/f5f5f5/ccc?text=%F0%9F%A7%B8';
+  const PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 400'%3E%3Crect width='400' height='400' fill='%23f5f5f5'/%3E%3Ctext x='200' y='245' font-size='140' text-anchor='middle'%3E%F0%9F%A7%B8%3C/text%3E%3C/svg%3E";   // встроенная заглушка, без запроса в интернет
   const rawImgs = [
     ...(Array.isArray(p.images) ? p.images : []),
     p.image
@@ -2440,7 +2418,7 @@ async function previewUpload(input) {
     area.classList.add('has-img');
     area.innerHTML = `<img src="${data.url}" alt="preview">`;
   } catch(e) {
-    // No local-file fallback: a photo that fails to reach Cloudinary must
+    // No local-file fallback: a photo that fails to reach the server must
     // NOT be saved as text — that's what filled the database before.
     area.classList.remove('has-img');
     area.innerHTML = `<div class="upload-error">Не удалось загрузить фото. Попробуйте ещё раз (файл до 5MB)</div>`;

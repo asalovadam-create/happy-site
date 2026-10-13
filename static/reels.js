@@ -394,27 +394,26 @@
     const title = $('rvaTitle').value.trim(), caption = $('rvaCap').value.trim();
     try {
       setProg(2, 'Подготовка…');
-      const sig = await API.post('/api/admin/reels/sign', {});
       const fd = new FormData();
-      fd.append('file', A.file); fd.append('api_key', sig.api_key); fd.append('timestamp', sig.timestamp);
-      fd.append('signature', sig.signature); fd.append('folder', sig.folder);
+      fd.append('file', A.file); fd.append('title', title); fd.append('caption', caption);
       const t0 = Date.now();
-      const up = await new Promise((ok, fail) => {
+      await new Promise((ok, fail) => {
         const x = new XMLHttpRequest();
-        x.open('POST', `https://api.cloudinary.com/v1_1/${sig.cloud_name}/video/upload`);
+        x.open('POST', `${API.base}/api/admin/reels/upload`);
+        const token = State.user && State.user.token;
+        if (token) x.setRequestHeader('Authorization', `Bearer ${token}`);
         x.upload.onprogress = e => {
           if (!e.lengthComputable) return;
           const sec = Math.max(0.5, (Date.now() - t0) / 1000), speed = e.loaded / sec;           // байт/с
           const left = Math.max(0, Math.round((e.total - e.loaded) / Math.max(speed, 1)));
           setProg(Math.round(e.loaded / e.total * 95), `Загрузка видео… ${Math.round(e.loaded / e.total * 100)}% · ${(speed * 8 / 1e6).toFixed(1)} Мбит/с · осталось ~${left} с`);
         };
-        x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {} x.status < 300 && j.public_id ? ok(j) : fail(new Error((j.error && j.error.message) || 'Не удалось загрузить видео')); };
+        x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) {} x.status < 300 ? ok(j) : fail(new Error(j.detail || 'Ошибка загрузки')); };
         x.onerror = () => fail(new Error('Нет соединения при загрузке'));
         x.send(fd);
       });
       const upSec = Math.round((Date.now() - t0) / 1000);
       setProg(97, 'Сохраняем и запускаем оптимизацию…');
-      await API.post('/api/admin/reels', { public_id: up.public_id, title, caption });
       setProg(100, note('ok', 'check', `Загружено за ${upSec} с. Видео оптимизируется в фоне и появится в ленте само (обычно 1–3 минуты). Можно загружать следующее.`), 'ok');
       A.file = null; $('rvaInfo').className = 'rva-file'; $('rvaTitle').value = ''; $('rvaCap').value = ''; $('rvaFile').value = '';
       A.busy = false; $('rvaDrop').style.opacity = 1;      // форма свободна сразу — можно выбирать следующее видео

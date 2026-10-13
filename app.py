@@ -1,6 +1,6 @@
 """
 Happy Toys — Wholesale Catalog v4
-FastAPI + Neon PostgreSQL + Cloudinary
+FastAPI + PostgreSQL на сервере + фото/видео на диске сервера
 All secrets via environment variables only — never hardcoded!
 """
 
@@ -22,27 +22,15 @@ app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # ── Environment variables (set in Render Dashboard → Environment) ─────────────
 # NEVER put real values here — only os.getenv() calls!
-DATABASE_URL    = os.getenv("DATABASE_URL")          # Neon PostgreSQL URL
-CLOUDINARY_URL  = os.getenv("CLOUDINARY_URL")        # cloudinary://key:secret@cloud
+DATABASE_URL    = os.getenv("DATABASE_URL")          # postgresql://user:pass@127.0.0.1:5432/dbname
 JWT_SECRET      = os.getenv("JWT_SECRET", "change-me-in-render-env")
 ADMIN_USER      = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS      = os.getenv("ADMIN_PASS", "admin123")
 
-# ── Cloudinary setup (only if env var is set) ─────────────────────────────────
-_cloudinary_ok = False
-if CLOUDINARY_URL:
-    try:
-        import cloudinary
-        import cloudinary.uploader
-        cloudinary.config(cloudinary_url=CLOUDINARY_URL)
-        _cloudinary_ok = True
-        print("✅ Cloudinary connected")
-    except ImportError:
-        print("⚠️  cloudinary package not installed")
-else:
-    print("⚠️  CLOUDINARY_URL not set — image upload will use base64 fallback")
+# ── Фото и видео хранятся на диске сервера (папка MEDIA_DIR) ─────────────────
+import media
 
-# ── Neon PostgreSQL setup ─────────────────────────────────────────────────────
+# ── PostgreSQL ─────────────────────────────────────────────────────
 _db_pool = None
 
 async def get_db():
@@ -77,6 +65,9 @@ class CacheHeaders(BaseHTTPMiddleware):
             resp.headers['Service-Worker-Allowed'] = '/'
         elif p in ('/manifest.json', '/static/manifest.json'):
             resp.headers['Cache-Control'] = 'no-cache'
+        elif p.startswith('/media/'):
+            # имя файла уникально, поэтому кэш можно держать год
+            resp.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
         elif p.startswith('/static/') and (p.endswith('.js') or p.endswith('.css')):
             # Cache by content, not by name: browser keeps the file until it
             # actually changes (the ?v=... query string busts the cache then).
@@ -127,6 +118,7 @@ app.add_middleware(CacheHeaders)
 app.add_middleware(VisitorTracker)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/media", StaticFiles(directory=media.MEDIA_DIR), name="media")
 templates = Jinja2Templates(directory="templates")
 
 # Страница владельца /boss (отдельно от админки сотрудников) + сбор аналитики
@@ -149,26 +141,29 @@ async def startup():
     print("🔌 Connecting to DB...")
     try:
         import asyncpg, ssl as _ssl
-        # Neon requires SSL — create proper context
-        ssl_ctx = _ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = _ssl.CERT_NONE
+        # База на этом же сервере — шифрование не нужно (быстрее).
+        # SSL включаем только если база внешняя.
+        ssl_ctx = False
+        if not any(h in db_url for h in ("@127.0.0.1", "@localhost", "@/")) and "sslmode=disable" not in db_url:
+            ssl_ctx = _ssl.create_default_context()
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
 
         _db_pool = await asyncpg.create_pool(
             db_url,
             min_size=2,
-            max_size=20,
+            max_size=10,
             command_timeout=30,
             ssl=ssl_ctx,
-            statement_cache_size=0,  # Required for PgBouncer/Neon pooler
             max_inactive_connection_lifetime=300,
         )
-        print("✅ Neon pool created, initializing tables...")
+        print("✅ Пул подключений создан, проверяю таблицы...")
         await _create_tables()
+        await _create_indexes()
         await boss.create_tables()
         await app.state.reels_create_tables()
         await _seed_if_empty()
-        print("✅ Neon PostgreSQL connected and ready!")
+        print("✅ PostgreSQL подключён и готов")
     except Exception as e:
         print(f"❌ DB connection failed: {type(e).__name__}: {e}")
         _db_pool = None
@@ -179,6 +174,23 @@ async def shutdown():
     global _db_pool
     if _db_pool:
         await _db_pool.close()
+
+async def _create_indexes():
+    """Индексы: каталог, фильтры и поиск отвечают за миллисекунды."""
+    stmts = [
+        "CREATE INDEX IF NOT EXISTS idx_products_active_cat ON products(is_active, category, subcategory, id)",
+        "CREATE INDEX IF NOT EXISTS idx_products_brand ON products(brand)",
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        "CREATE INDEX IF NOT EXISTS idx_products_name_trgm ON products USING gin (name gin_trgm_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_products_sku_trgm ON products USING gin (sku gin_trgm_ops)",
+        "CREATE INDEX IF NOT EXISTS idx_products_brand_trgm ON products USING gin (brand gin_trgm_ops)",
+    ]
+    for q in stmts:
+        try:
+            await db_execute(q)
+        except Exception as e:
+            print(f"⚠️  индекс пропущен: {e.__class__.__name__}: {e}")
+
 
 async def _create_tables():
     """Create all tables if they don't exist."""
@@ -447,7 +459,7 @@ def _reject_base64_images(image: str = "", images: Optional[List[str]] = None):
     if bad:
         raise HTTPException(
             400,
-            "Фото не загрузилось в Cloudinary и не может быть сохранено как текст. "
+            "Фото не загрузилось на сервер и не может быть сохранено как текст. "
             "Попробуйте загрузить фото ещё раз (файл до 2MB)."
         )
 
@@ -662,55 +674,19 @@ async def delete_product(pid: int, _=Depends(require_admin)):
         except Exception:
             pass
 
-# ── Image upload (Cloudinary) ─────────────────────────────────────────────────
-@app.get("/api/cloudinary-signature")
-async def cloudinary_signature(_=Depends(require_admin)):
-    """Return a short-lived signed upload token so browser can upload directly to Cloudinary."""
-    if not _cloudinary_ok:
-        raise HTTPException(503, "Cloudinary not configured")
-    import cloudinary
-    import hashlib
-    ts = int(time.time())
-    folder = "happy-toys/products"
-    eager = "c_limit,w_800,h_800,q_auto:good"
-    params_str = f"eager={eager}&folder={folder}&timestamp={ts}"
-    api_secret = cloudinary.config().api_secret
-    signature = hashlib.sha1((params_str + api_secret).encode()).hexdigest()
-    return {
-        "signature": signature,
-        "timestamp": ts,
-        "api_key": cloudinary.config().api_key,
-        "cloud_name": cloudinary.config().cloud_name,
-        "folder": folder,
-        "eager": eager,
-    }
-
+# ── Загрузка фото (на диск сервера) ───────────────────────────────────────────
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...), _=Depends(require_admin)):
-    """Fallback server-side upload (used only if direct upload fails)."""
+    """Принимает фото, делает 3 размера WebP и возвращает ссылку /media/products/..."""
     content = await file.read()
-    if len(content) > 2*1024*1024:
-        raise HTTPException(400, "File too large (max 2MB)")
-
-    if _cloudinary_ok:
-        import cloudinary.uploader
-        import functools
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            functools.partial(
-                cloudinary.uploader.upload,
-                content,
-                folder="happy-toys/products",
-                resource_type="image",
-                transformation=[{"width": 800, "height": 800, "crop": "limit", "quality": "auto:good"}]
-            )
-        )
-        return {"url": result["secure_url"], "public_id": result["public_id"]}
-    else:
-        # No silent base64 fallback: a data: URI in the DB is what caused
-        # the site to slow to a crawl (huge text stored per product row).
-        raise HTTPException(503, "Cloudinary недоступен — фото не загружено, попробуйте ещё раз")
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Файл слишком большой (макс. 10MB)")
+    loop = asyncio.get_event_loop()
+    try:
+        url = await loop.run_in_executor(None, media.save_product_image, content)
+    except media.MediaError as e:
+        raise HTTPException(400, str(e))
+    return {"url": url, "public_id": url}
 
 # ── Categories ────────────────────────────────────────────────────────────────
 @app.get("/api/categories")
@@ -1117,7 +1093,7 @@ async def health():
         "db_connected": db_ok,
         "db_pool": _db_pool is not None,
         "db_error": db_error,
-        "cloudinary": _cloudinary_ok,
+        "media": os.path.isdir(media.MEDIA_DIR),
         "ts": datetime.utcnow().isoformat()
     }
 
@@ -1212,7 +1188,7 @@ async def admin_get_featured(_=Depends(require_admin)):
 
 # ── Happy TV: короткие видео для оптовиков ───────────────────────────────────
 import reels
-reels.register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_user, lambda: _cloudinary_ok)
+reels.register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_user)
 
 # ── PDF-каталог для представителей ───────────────────────────────────────────
 # Генерация идёт в фоновом потоке (catalog_pdf.py): фронт запускает задачу,

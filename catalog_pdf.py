@@ -445,6 +445,14 @@ def _fetch_bytes(url, timeout=10, limit=8 * 1024 * 1024):
         if "base64" not in head:
             return None
         return base64.b64decode(b64)
+    if url.startswith("/media/"):  # фото на диске сервера
+        import media
+        root = os.path.normpath(media.MEDIA_DIR)
+        path = os.path.normpath(os.path.join(root, url[len("/media/"):].split("?")[0]))
+        if not path.startswith(root) or not os.path.isfile(path):
+            return None
+        with open(path, "rb") as f:
+            return f.read(limit)
     if url.startswith("/"):  # локальный файл из static/
         path = os.path.normpath(os.path.join(BASE_DIR, url.lstrip("/").split("?")[0]))
         if not path.startswith(STATIC_DIR) or not os.path.isfile(path):

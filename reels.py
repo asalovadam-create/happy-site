@@ -4,7 +4,7 @@ Happy TV — короткие вертикальные видео для опт�
 • Лента для покупателей: /api/reels/feed (порядок собирается алгоритмом ниже)
 • Просмотры: 1 аккаунт = 1 просмотр (гости — по устройству); сотрудники не считаются
 • Лайки и комментарии — только для вошедших пользователей
-• Админка: загрузка напрямую в Cloudinary (оптимизация 720×1280 H.264), статистика, модерация
+• Админка: загрузка на диск сервера (сжатие до 720×1280 H.264 через ffmpeg), статистика, модерация
 """
 import asyncio
 import functools
@@ -13,42 +13,24 @@ import json
 import math
 import random
 import re
+import os
 import time
-import urllib.error
-import urllib.request
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+
+import media
 
 FRESH_DAYS = 7                 # «новое» — загружено за последние 7 дней
 FEED_LIMIT = 60
 MAX_DURATION = 180             # секунд
-MAX_BYTES = 100 * 1024 * 1024  # лимит Cloudinary на бесплатном тарифе
-FOLDER = "happy-toys/reels"
-# Один и тот же набор преобразований используется и при загрузке, и для ссылки на видео:
-# 9:16, 720 px по ширине; если исходник горизонтальный — размытый фон по краям (как в TikTok).
-VIDEO_TRANS = "ar_9:16,c_pad,b_blurred:400:15,w_720,q_auto:good,vc_h264,ac_aac,f_mp4"
-POSTER_TRANS = "so_0,ar_9:16,c_pad,b_blurred:400:15,w_540,q_auto,f_jpg"
-FPS = "fps_24-30"      # iPhone снимает 60 к/с — для ленты хватает 30, обработка вдвое быстрее
+MAX_BYTES = 100 * 1024 * 1024  # максимальный размер одного видео
 
 
-def pick_trans(width, height):
-    """Лёгкая обработка для обычных вертикальных видео; размытые поля — только если формат другой."""
-    r = (width / height) if width and height else 0
-    tail = f"vc_h264,ac_aac,{FPS},q_auto:good,f_mp4"
-    if 0.52 <= r <= 0.62:                       # уже 9:16 — просто уменьшаем до 720 px
-        return f"c_limit,w_720,h_1280,{tail}"
-    return f"ar_9:16,c_pad,b_blurred:400:15,w_720,{tail}"
-
-
-def poster_trans(trans):
-    return "so_0,c_fill,ar_9:16,w_540,q_auto,f_jpg" if (trans or "").startswith("c_limit") else POSTER_TRANS
-
-
-_PID_RE = re.compile(r"^happy-toys/reels/[A-Za-z0-9_-]{4,80}$")
 _VID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 
@@ -103,12 +85,6 @@ def order_feed(rows, seen, now=None, rng=None):
 
 
 # ── Подключение к приложению ─────────────────────────────────────────────────
-class ReelCreate(BaseModel):
-    public_id: str
-    title: str = ""
-    caption: str = ""
-
-
 class ReelPatch(BaseModel):
     title: Optional[str] = None
     caption: Optional[str] = None
@@ -151,8 +127,7 @@ def _rate_ok(key, limit, window):
     return cnt <= limit
 
 
-def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_user, cloud_ok):
-    """cloud_ok — функция, возвращающая True, если Cloudinary настроен."""
+def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_user):
 
     def viewer_of(user, vid):
         """Ключ зрителя: аккаунт покупателя или (для гостей) устройство. Сотрудники — None (не считаем)."""
@@ -197,9 +172,9 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
         await db_execute("ALTER TABLE reels ADD COLUMN IF NOT EXISTS trans TEXT DEFAULT ''")
         await db_execute("CREATE INDEX IF NOT EXISTS reels_created ON reels (created_at DESC)")
         await db_execute("CREATE INDEX IF NOT EXISTS reel_comments_reel ON reel_comments (reel_id, id DESC)")
+        # Обработка идёт внутри этого процесса: если сервер перезапускали посреди сжатия, ролик «завис»
+        await db_execute("UPDATE reels SET status='failed' WHERE status='processing'")
         print("~ reels (Happy TV) tables ready")
-        if not getattr(app.state, "reels_watcher", None):
-            app.state.reels_watcher = asyncio.get_event_loop().create_task(watch_processing())
 
     app.state.reels_create_tables = create_tables
 
@@ -307,107 +282,79 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
         return {"ok": True}
 
     # ── админка ──────────────────────────────────────────────────────────────
-    def _cloud():
-        if not cloud_ok():
-            raise HTTPException(503, "Cloudinary не настроен (нужна переменная CLOUDINARY_URL)")
-        import cloudinary
-        return cloudinary
+    _tasks = set()          # ссылки на фоновые задачи (чтобы их не убрал сборщик мусора)
 
-    def _urls(cloud_name, public_id, trans=VIDEO_TRANS):
-        base = f"https://res.cloudinary.com/{cloud_name}/video/upload"
-        return f"{base}/{trans}/{public_id}.mp4", f"{base}/{poster_trans(trans)}/{public_id}.jpg"
-
-    @app.post("/api/admin/reels/sign")
-    async def reels_sign(_=Depends(require_admin)):
-        cl = _cloud()
-        ts = int(time.time())
-        # Загружаем «как есть» — обработку запускаем отдельно на сервере (после загрузки), с учётом формата ролика.
-        params = f"folder={FOLDER}&timestamp={ts}"
-        sig = hashlib.sha1((params + cl.config().api_secret).encode()).hexdigest()
-        return {"cloud_name": cl.config().cloud_name, "api_key": cl.config().api_key, "timestamp": ts,
-                "signature": sig, "folder": FOLDER, "max_bytes": MAX_BYTES, "max_duration": MAX_DURATION}
-
-    def _head(url):
-        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "HappyToysReels/1.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=15) as r:
-                return r.status
-        except urllib.error.HTTPError as e:
-            return e.code
-        except Exception:
-            return 0
-
-    @app.get("/api/admin/reels/ready")
-    async def reels_ready(public_id: str, _=Depends(require_admin)):
-        """Готово ли оптимизированное видео. Сам запрос заодно запускает оптимизацию, если она ещё не началась."""
-        if not _PID_RE.match(public_id):
-            raise HTTPException(400, "Неверный идентификатор видео")
-        cl = _cloud()
-        url, _poster = _urls(cl.config().cloud_name, public_id)
-        status = await asyncio.get_event_loop().run_in_executor(None, _head, url)
-        return {"ready": status == 200, "status": status}
-
-    @app.post("/api/admin/reels")
-    async def reels_create(b: ReelCreate, _=Depends(require_admin)):
-        if not _PID_RE.match(b.public_id):
-            raise HTTPException(400, "Неверный идентификатор видео")
-        cl = _cloud()
-        import cloudinary.api
-        import cloudinary.uploader
+    async def _process(reel_id, vid, src, width, height):
+        """Фон: сжатие до 720×1280 и постер. Сайт при этом не тормозит."""
         loop = asyncio.get_event_loop()
+        dst = os.path.join(media.REELS_DIR, f"{vid}.mp4")
+        poster = os.path.join(media.REELS_DIR, f"{vid}.jpg")
         try:
-            info = await loop.run_in_executor(None, functools.partial(cl.api.resource, b.public_id, resource_type="video"))
+            if media.have_ffmpeg():
+                ok = await loop.run_in_executor(None, media.process_video, src, dst, poster, width, height)
+            else:
+                os.replace(src, dst)        # ffmpeg не установлен — кладём видео как есть
+                ok = True
+            if ok:
+                poster_url = f"{media.MEDIA_URL}/reels/{vid}.jpg" if os.path.isfile(poster) else ""
+                await db_execute("UPDATE reels SET status='ready', bytes=$2, poster_url=$3 WHERE id=$1",
+                                 reel_id, os.path.getsize(dst), poster_url)
+            else:
+                await db_execute("UPDATE reels SET status='failed' WHERE id=$1", reel_id)
         except Exception as e:
-            raise HTTPException(400, f"Видео не найдено в Cloudinary: {e.__class__.__name__}")
-        duration = float(info.get("duration") or 0)
-        if duration > MAX_DURATION + 2:
+            print(f"[reels] обработка не удалась: {e.__class__.__name__}: {e}")
             try:
-                await loop.run_in_executor(None, functools.partial(
-                    cl.uploader.destroy, b.public_id, resource_type="video", invalidate=True))
+                await db_execute("UPDATE reels SET status='failed' WHERE id=$1", reel_id)
             except Exception:
                 pass
-            raise HTTPException(400, f"Видео длиннее {MAX_DURATION // 60} минут — сократите ролик")
-        width, height = int(info.get("width") or 0), int(info.get("height") or 0)
-        trans = pick_trans(width, height)
-        # запускаем оптимизацию в фоне у Cloudinary; ответ приходит сразу, ждать не нужно
+        finally:
+            try:
+                os.remove(src)
+            except OSError:
+                pass
+
+    @app.post("/api/admin/reels/upload")
+    async def reels_upload(file: UploadFile = File(...), title: str = Form(""), caption: str = Form(""),
+                           _=Depends(require_admin)):
+        vid = uuid.uuid4().hex[:16]
+        src = os.path.join(media.REELS_DIR, f"{vid}.src")
+        size = 0
         try:
-            await loop.run_in_executor(None, functools.partial(
-                cl.uploader.explicit, b.public_id, type="upload", resource_type="video",
-                eager=[trans], eager_async=True))
-        except Exception as e:
-            print(f"[reels] explicit() не удалось ({e.__class__.__name__}: {e}) — обработка начнётся при первом запросе")
-        video_url, poster_url = _urls(cl.config().cloud_name, b.public_id, trans)
+            with open(src, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise HTTPException(400, f"Файл больше {MAX_BYTES // 1048576} МБ")
+                    out.write(chunk)
+        except HTTPException:
+            media.delete_reel_files(vid)
+            raise
+        except Exception:
+            media.delete_reel_files(vid)
+            raise HTTPException(500, "Не удалось сохранить файл")
+        if size == 0:
+            media.delete_reel_files(vid)
+            raise HTTPException(400, "Пустой файл")
+        loop = asyncio.get_event_loop()
+        duration, width, height = await loop.run_in_executor(None, media.probe_video, src)
+        if duration > MAX_DURATION + 2:
+            media.delete_reel_files(vid)
+            raise HTTPException(400, f"Видео длиннее {MAX_DURATION // 60} минут — сократите ролик")
+        if media.have_ffmpeg() and not duration:
+            media.delete_reel_files(vid)
+            raise HTTPException(400, "Не удалось прочитать видео — проверьте файл")
         row = await db_fetchrow("""
             INSERT INTO reels(title, caption, public_id, video_url, poster_url, duration, width, height, bytes, status, trans)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'processing',$10) RETURNING id""",
-            b.title.strip()[:80], b.caption.strip()[:300], b.public_id, video_url, poster_url, duration,
-            width, height, int(info.get("bytes") or 0), trans)
+            VALUES($1,$2,$3,$4,'',$5,$6,$7,$8,'processing','') RETURNING id""",
+            title.strip()[:80], caption.strip()[:300], vid, f"{media.MEDIA_URL}/reels/{vid}.mp4",
+            duration, width, height, size)
+        task = asyncio.create_task(_process(row["id"], vid, src, width, height))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
         return {"id": row["id"], "status": "processing"}
-
-    async def watch_processing():
-        """Фоновая проверка: как только Cloudinary закончил оптимизацию — ролик появляется в ленте сам."""
-        loop = asyncio.get_event_loop()
-        while True:
-            pause = 20
-            try:
-                rows = await db_fetch("""SELECT id, video_url, created_at FROM reels
-                                         WHERE status = 'processing' ORDER BY id LIMIT 20""")
-                if rows:
-                    pause = 5
-                for r in rows:
-                    code = await loop.run_in_executor(None, _head, r["video_url"])
-                    if code == 200:
-                        await db_execute("UPDATE reels SET status='ready' WHERE id=$1", r["id"])
-                    else:
-                        c = r["created_at"] if r["created_at"].tzinfo else r["created_at"].replace(tzinfo=timezone.utc)
-                        if datetime.now(timezone.utc) - c > timedelta(minutes=45):
-                            await db_execute("UPDATE reels SET status='failed' WHERE id=$1", r["id"])
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                print(f"[reels] наблюдатель: {e.__class__.__name__}: {e}")
-                pause = 30
-            await asyncio.sleep(pause)
 
     @app.get("/api/admin/reels")
     async def reels_admin_list(_=Depends(require_admin)):
@@ -443,13 +390,8 @@ def register(app, db_fetch, db_fetchrow, db_execute, require_admin, get_current_
         if not row:
             raise HTTPException(404, "Видео не найдено")
         await db_execute("DELETE FROM reels WHERE id=$1", reel_id)
-        if cloud_ok():
-            try:
-                import cloudinary.uploader
-                await asyncio.get_event_loop().run_in_executor(None, functools.partial(
-                    cloudinary.uploader.destroy, row["public_id"], resource_type="video", invalidate=True))
-            except Exception:
-                pass            # из базы удалено — этого достаточно
+        if _VID_RE.match(row["public_id"] or ""):
+            media.delete_reel_files(row["public_id"])
         return {"ok": True}
 
     @app.get("/api/admin/reels/{reel_id}/comments")
